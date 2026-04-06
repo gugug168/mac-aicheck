@@ -36,8 +36,11 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 const commander_1 = require("commander");
 const scanners_1 = require("./scanners");
+const calculator_1 = require("./scoring/calculator");
+const html_1 = require("./report/html");
 const aicoevo_client_1 = require("./api/aicoevo-client");
 const dotenv = __importStar(require("dotenv"));
+const fs = __importStar(require("fs"));
 dotenv.config();
 const program = new commander_1.Command();
 program
@@ -48,16 +51,23 @@ program
     .command('scan')
     .description('执行全量扫描')
     .option('--json', '输出 JSON 格式')
+    .option('--html [path]', '生成 HTML 报告，可指定输出路径')
     .option('--upload', '扫描后上传到 AICO EVO')
     .action(async (opts) => {
     console.log('🔍 MacAICheck 扫描中...\n');
     const results = await (0, scanners_1.scanAll)();
-    const score = (0, scanners_1.calculateScore)(results);
+    const score = (0, calculator_1.calculateScore)(results);
     if (opts.json) {
         console.log(JSON.stringify({ score, results }, null, 2));
     }
     else {
         printReport(results, score);
+    }
+    if (opts.html !== undefined) {
+        const html = (0, html_1.generateHtmlReport)(results, score);
+        const outPath = typeof opts.html === 'string' ? opts.html : 'mac-aicheck-report.html';
+        fs.writeFileSync(outPath, html, 'utf-8');
+        console.log(`\n📄 HTML 报告已生成: ${outPath}`);
     }
     if (opts.upload) {
         await doUpload(score, results);
@@ -68,7 +78,7 @@ program
     .description('上传扫描结果到 AICO EVO')
     .action(async () => {
     const results = await (0, scanners_1.scanAll)();
-    const score = (0, scanners_1.calculateScore)(results);
+    const score = (0, calculator_1.calculateScore)(results);
     await doUpload(score, results);
 });
 async function doUpload(score, results) {
@@ -76,7 +86,7 @@ async function doUpload(score, results) {
         const version = require('child_process').execSync('sw_vers -productVersion', { encoding: 'utf8' }).trim();
         const arch = require('os').arch();
         const platform = { os: 'darwin', version, arch };
-        await (0, aicoevo_client_1.saveFingerprint)({ score, results, platform, timestamp: new Date().toISOString() });
+        await (0, aicoevo_client_1.saveFingerprint)({ score: score.score ?? score, results, platform, timestamp: new Date().toISOString() });
         console.log('\n✅ 已上传到 AICO EVO');
     }
     catch (err) {
@@ -84,16 +94,18 @@ async function doUpload(score, results) {
     }
 }
 function printReport(results, score) {
-    console.log(`总分: ${score}/100\n`);
-    const cats = ['brew', 'apple', 'toolchain', 'ai-tools', 'network'];
+    const icon = { pass: '✅', warn: '⚠️', fail: '❌', unknown: '❓' };
+    const label = score.label ?? '未知';
+    console.log(`总分: ${score.score}/100 (${label})\n`);
+    const cats = ['brew', 'apple', 'toolchain', 'ai-tools', 'network', 'permission'];
     for (const cat of cats) {
         const items = results.filter((r) => r.category === cat);
         if (items.length === 0)
             continue;
-        console.log(`[${cat}]`);
+        const passed = items.filter((r) => r.status === 'pass').length;
+        console.log(`[${cat}] ${passed}/${items.length} 通过`);
         for (const r of items) {
-            const icon = r.status === 'pass' ? '✅' : r.status === 'warn' ? '⚠️' : '❌';
-            console.log(`  ${icon} ${r.name}: ${r.message}`);
+            console.log(`  ${icon[r.status] ?? '❓'} ${r.name}: ${r.message}`);
         }
         console.log('');
     }
