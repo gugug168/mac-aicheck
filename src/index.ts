@@ -48,14 +48,19 @@ function serveHttp() {
     // Installer list
     if (pathname === '/api/installers') {
       const all = getInstallers();
-      const payload = all.map(i => ({
-        id: i.id,
-        name: i.name,
-        description: i.description,
-        icon: i.icon,
-        needsAdmin: i.needsAdmin,
-        installed: i.installed === undefined ? false : i.installed,
-      }));
+      const payload = all.map(i => {
+        const allowed = ALLOWED_COMMANDS[i.id];
+        return {
+          id: i.id,
+          name: i.name,
+          description: i.description,
+          icon: i.icon,
+          needsAdmin: i.needsAdmin,
+          installed: i.installed === undefined ? false : i.installed,
+          cmd: allowed ? allowed.cmd : '',
+          type: allowed ? (i.id === 'gh-copilot' ? 'manual' : i.id === 'xcode-clt' ? 'gui' : 'npm') : 'manual',
+        };
+      });
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
       res.end(JSON.stringify(payload));
       return;
