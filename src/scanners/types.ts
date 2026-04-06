@@ -3,7 +3,7 @@ export type ScannerCategory = 'brew' | 'apple' | 'toolchain' | 'ai-tools' | 'net
 export interface ScanResult {
   id: string;
   name: string;
-  category: string;
+  category: ScannerCategory;
   status: 'pass' | 'warn' | 'fail' | 'unknown';
   message: string;
 }
@@ -11,6 +11,6 @@ export interface ScanResult {
 export interface Scanner {
   id: string;
   name: string;
-  category: string;
+  category: ScannerCategory;
   scan(): Promise<ScanResult>;
 }

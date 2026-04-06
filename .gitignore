@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build output (users run `npm run build` after clone)
+dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Reports (local data)
+reports/
+*.local
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# TypeScript cache
+*.tsbuildinfo

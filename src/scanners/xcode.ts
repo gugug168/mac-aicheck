@@ -8,8 +8,9 @@ const scanner: Scanner = {
   category: 'toolchain',
 
   async scan(): Promise<ScanResult> {
-    const { exitCode } = runCommand('xcode-select -p 2>/dev/null && devtoolsctl -v 2>/dev/null || echo "not found"', 5000);
-    if (exitCode !== 0) {
+    // First check: does xcode-select -p succeed?
+    const { exitCode: xcodeExit } = runCommand('xcode-select -p', 3000);
+    if (xcodeExit !== 0) {
       return {
         id: this.id, name: this.name, category: this.category, status: 'fail',
         message: 'Xcode Command Line Tools 未安装。安装命令: xcode-select --install',

@@ -10,12 +10,14 @@ const scanner = {
         // 测试常用域名解析速度
         const sites = ['github.com', 'google.com', 'npmjs.org'];
         const results = [];
-        for (const site of sites) {
+        const checks = sites.map(async (site) => {
             const t0 = Date.now();
             const { exitCode } = (0, index_1.runCommand)(`nslookup ${site} 2>/dev/null | head -5`, 5000);
             const ms = Date.now() - t0;
-            results.push(`${site}:${exitCode === 0 ? ms + 'ms' : 'FAIL'}`);
-        }
+            return `${site}:${exitCode === 0 ? ms + 'ms' : 'FAIL'}`;
+        });
+        const resolved = await Promise.all(checks);
+        results.push(...resolved);
         const failures = results.filter(r => r.includes('FAIL'));
         if (failures.length > 0) {
             return { id: this.id, name: this.name, category: this.category, status: 'fail',

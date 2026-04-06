@@ -12,12 +12,14 @@ const scanner: Scanner = {
     const sites = ['github.com', 'google.com', 'npmjs.org'];
     const results: string[] = [];
 
-    for (const site of sites) {
+    const checks = sites.map(async (site) => {
       const t0 = Date.now();
       const { exitCode } = runCommand(`nslookup ${site} 2>/dev/null | head -5`, 5000);
       const ms = Date.now() - t0;
-      results.push(`${site}:${exitCode === 0 ? ms + 'ms' : 'FAIL'}`);
-    }
+      return `${site}:${exitCode === 0 ? ms + 'ms' : 'FAIL'}`;
+    });
+    const resolved = await Promise.all(checks);
+    results.push(...resolved);
 
     const failures = results.filter(r => r.includes('FAIL'));
     if (failures.length > 0) {
