@@ -62,9 +62,9 @@ PR labels 自动标注节点：`agent/dagu-macmini`
 git clone https://github.com/gugug168/mac-aicheck.git
 cd mac-aicheck
 # 阅读项目说明
-cat CLAUDE.md      # 项目架构和当前状态
-cat AGENTS.md     # 角色定义和行为规范
-cat CONTRIBUTING.md  # 本文档
+cat CLAUDE.md           # 项目架构和当前状态（必读）
+cat AGENTS.md          # 角色定义和行为规范（必读）
+cat CONTRIBUTING.md    # 本文档（必读）
 ```
 
 **Step 2 — 了解进行中的工作**
@@ -76,8 +76,10 @@ gh pr list --repo gugug168/mac-aicheck --state open
 git checkout main && git pull origin main
 ```
 
-**Step 3 — 向协调者（我）报到**
-发送消息告知：节点名称、能力（Claude Code / Codex / Gemini）、当前状态。
+**Step 3 — 向协调者报到**
+在 GitHub 上开一个 Issue（类型：Question），标题 `Node onboarding: <你的节点名>`，
+内容包含：节点名称、能力（Claude Code / Codex / Gemini）、所在机器。
+或直接联系大古（飞书）。
 
 ---
 
@@ -92,12 +94,13 @@ feat/xxx 分支 → push → 其他人 Review → 修复 → PR → 外部 Revie
 ### 分支命名规范
 
 ```
-feat/ai-review-20260408         # 新功能（日期+描述）
-fix/scan-timeout                 # Bug 修复
-refactor/scanner-registry        # 重构
-docs/contributing                # 文档
-agent/dagu-macmini              # 特定节点任务
+feat/ai-review-20260408             # 新功能（feat 前缀 + 日期 + 描述）
+fix/scan-timeout                     # Bug 修复（fix 前缀）
+refactor/scanner-registry            # 重构（refactor 前缀）
+docs/contributing                    # 文档（docs 前缀）
 ```
+
+> **注意**：`agent/` 前缀仅用于节点专属任务（如实验性分支），正式功能分支统一用 `feat/`。
 
 ---
 
@@ -107,6 +110,9 @@ agent/dagu-macmini              # 特定节点任务
 
 1. **作者不能 merge 自己的 PR** — 必须至少 1 个其他节点 review + approve
 2. **谁写的代码，谁提交；由其他人来 review** — 自由接管，不固定审法
+
+**"作者"定义：** 在 commit message 的 `Author:` 字段署名的人。
+如果 A 写了代码但 B 提交 PR，则 A 是 author，B 是 submitter。
 
 ---
 
@@ -120,6 +126,37 @@ agent/dagu-macmini              # 特定节点任务
 | Merger | 任意非作者的 reviewer | approve + 合并（不能是作者） |
 
 **重要：同一节点的 Claude Code 不能 self-review，必须由其他节点审查。**
+
+---
+
+## MCO 工具（Multi-Agent Orchestration）
+
+MCO 是协调多 AI 协作的核心工具，负责调度多个 AI agent 并行工作、汇总审查意见。
+
+**安装：**
+```bash
+npm install -g @openai-assistants/mco-cli
+# 或
+clawhub install mco
+```
+
+**常用命令：**
+```bash
+# 并行多 agent 任务
+mco run --providers claude,codex -- "修复 scanner 超时问题"
+
+# 多 agent review（自动迭代）
+mco review --providers claude,codex --repo /path/to/repo
+
+# 查看 review findings
+mco findings list
+```
+
+**在 Commit 中引用：**
+```
+Workflow: mco review
+Reviewer: agent/dagu-macbook
+```
 
 ---
 
@@ -160,10 +197,10 @@ agent/dagu-macmini
 
 ## Checklist
 - [ ] External review required（作者不能 self-merge）
-- [ ] mco review passed
 - [ ] CI checks pass
 - [ ] 新功能有对应测试
-- [ ] 手动测试步骤已记录（如适用）" \
+- [ ] 手动测试步骤已记录（如适用）
+- [ ] CHANGELOG 条目已提供" \
   --base main
 ```
 
@@ -187,6 +224,7 @@ PR 必须 CI 通过才能合并。
 
 ### Step 10 — Merge
 - **只有 reviewer 可以 merge**，作者自己不能点 merge
+- PR 作者提供 CHANGELOG 条目，Merger 负责写入 CHANGELOG.md
 - Squash merge 到 main
 - 删除源分支
 
@@ -238,9 +276,13 @@ git merge origin/main  # 或 git rebase origin/main
 
 **处理流程：**
 1. **小冲突**（<5行）：直接在当前分支解决，commit 后 push
-2. **大冲突**：联系对方节点协商（飞书/消息），决定谁让或共同解决
-3. **长时间无法协调**：由我（大古/Mac mini）作为仲裁者，决定保留哪边
+2. **大冲突**：联系对方节点协商（GitHub PR 评论），决定谁让或共同解决
+3. **长时间无法协调**：仲裁者介入，决定保留哪边
 4. **主动避免冲突**：PR 要小而快，改动超过200行优先拆成多个 PR
+
+**仲裁者：**
+- 主仲裁者：大古（agent/dagu-macmini）
+- 备用仲裁者：暂无（当主仲裁者离线时，由我通过 openclaw 代为仲裁）
 
 ---
 
@@ -258,7 +300,7 @@ git merge origin/main  # 或 git rebase origin/main
 - 相关文件路径
 
 **超期处理：**
-- 分支 7 天无活动 → 我（Mac mini）有权接管或关闭
+- 分支 7 天无活动 → 仲裁者有权接管或关闭
 - 作者失联超过 14 天 → 直接由 reviewer merge（需 double approve）
 
 ---
@@ -284,7 +326,9 @@ git merge origin/main  # 或 git rebase origin/main
 - 类型/接口：`PascalCase`（如 `ScanResult`）
 - 常量：`UPPER_SNAKE_CASE`（如 `MAX_RETRIES`）
 - 导入排序：内置模块 → 外部库 → 内部模块
-- 每个文件不超过 200 行
+- 每个文件不超过 200 行（ESLint `max-lines` 规则强制）
+
+**CI 强制执行：** ESLint `max-lines` 规则在 CI 中检查，超出 200 行则 build 失败。
 
 **Prettier 自动格式化：** `npm run format`
 
@@ -296,6 +340,7 @@ git merge origin/main  # 或 git rebase origin/main
 - 新增 scanner 须在 `src/__tests__/` 下有对应测试
 - 测试覆盖率目标：核心逻辑 > 80%
 - 测试命令：`npm test`
+- **CI 强制**：覆盖率低于 80% 时 `npm test` 返回非零，CI 失败
 
 **Scanner 单元测试示例：**
 ```typescript
@@ -326,7 +371,7 @@ const scanner: Scanner = {
   category: 'system',          // system | network | dev-tools | git | ai-tools | privacy
   importance: 3,               // 1-5，5最高
   description: 'What this checks',
-  docs: 'https://...',         // 相关文档链接
+  docs: 'https://...',         // 相关文档链接（类型检查确保是 URL）
   scan: async (): Promise<ScanResult> => {
     return { id, name, category, status: 'pass', message: '...' };
   },
@@ -336,6 +381,8 @@ registerScanner(scanner);
 ```
 
 **必须包含字段：** `id, name, category, importance, description, docs`
+
+**docs 字段规范：** 必须是有效的 http/https URL，类型检查确保格式正确。
 
 ---
 
@@ -368,7 +415,8 @@ main 分支必须配置以下 GitHub branch protection：
 ```
 
 **规则：**
-- 每个 PR merge 到 main 后，更新 CHANGELOG 是 Merge 的职责
+- PR 作者在 PR body 中提供 CHANGELOG 条目（格式如上）
+- Merger 负责将条目写入 CHANGELOG.md（不是作者的责任）
 - 格式：`Added / Changed / Deprecated / Removed / Fixed / Security`
 
 ---
@@ -388,8 +436,8 @@ main 分支必须配置以下 GitHub branch protection：
 ## CI 规范
 
 - Node.js 20+
-- `npm run build` 必须通过（TSC 编译）
-- `npm test` 必须通过（Vitest 测试）
+- `npm run build` 必须通过（TSC 编译 + ESLint max-lines 检查）
+- `npm test` 必须通过（Vitest + 覆盖率门禁 ≥80%）
 - GitHub Actions 自动运行 on push/PR
 - PR 必须 CI 绿了才能合并
 
@@ -398,11 +446,11 @@ main 分支必须配置以下 GitHub branch protection：
 ## 大古（Maintainer）的职责
 
 - 作为备用 Merger，review 并合并所有无人接管的 PR
-- 维护 CONTRIBUTING.md 规范
+- 维护 CONTRIBUTING.md、AGENTS.md、CLAUDE.md 规范
 - 监控 CI 健康状态
 - 决策技术方向和架构演进
-- 担任冲突仲裁者
-- 定期（每14天）review open PRs，处理超期分支
+- 担任仲裁者（主仲裁者）
+- 每14天 review 一次 open PRs，处理超期分支（人工承诺，非自动化）
 
 ---
 
@@ -412,7 +460,9 @@ main 分支必须配置以下 GitHub branch protection：
 |------|------|
 | PR 无人 review 堆积 | 谁先看到谁接，公平轮流 |
 | 作者 self-merge | GitHub branch protection 强制阻止 + 规则约束 |
-| 多人改同一文件分支冲突 | PR 小而快；主动协调；超期由 Maintainer 仲裁 |
-| 低质量代码被 merge | CI 卡下限；Reviewer 卡上限 |
+| 多人改同一文件分支冲突 | PR 小而快；主动协调；超期由仲裁者裁定 |
+| 低质量代码被 merge | CI 卡下限；Reviewer 卡上限；ESLint + 覆盖率门禁 |
 | 节点离线/失联 | 7天无活动可接管；14天失联直接由 reviewer merge |
 | 新节点不了解项目 | onboarding 流程 + CLAUDE.md + AGENTS.md |
+| 仲裁者离线 | 由 openclaw 代为仲裁 |
+| MCO Codex review 失败 | Codex 有时会因 token 问题失败，Claude review 仍正常；自动降级 |
