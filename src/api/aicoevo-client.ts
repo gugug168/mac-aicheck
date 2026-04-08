@@ -1,11 +1,12 @@
 /**
  * AICO EVO 平台 API 客户端
  * 文档: https://github.com/gugug168/aicoevo-platform
- * 基础URL: https://aicoevo.com (环境变量 AICO_EVO_URL 配置)
+ * 基础URL: https://aicoevo.net (环境变量 AICO_EVO_URL 配置)
  *
- * 数据格式与 WinAICheck 保持一致:
- * POST /api/v1/fingerprints
- * Body: { timestamp, score, results:[{id,status,message}], systemInfo:{os,version,arch,hostname} }
+ * 与 WinAICheck 对齐的流程:
+ * 1. stash: POST /api/v1/stash → 获取 token（无需登录）
+ * 2. claim: 浏览器打开 https://aicoevo.net/claim?t=TOKEN
+ * 3. feedback: POST /api/v1/feedback（无需登录）
  */
 
 import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'fs';
@@ -15,8 +16,20 @@ import { execSync } from 'child_process';
 import type { ScanResult } from '../scanners/types';
 import type { ScoreResult } from '../scoring/calculator';
 
-const BASE_URL = process.env.AICO_EVO_URL || 'https://aicoevo.com';
+const DEFAULT_ORIGIN = 'https://aicoevo.net';
 const REPORT_DIR = join(homedir(), '.mac-aicheck', 'reports');
+
+function getOrigin(): string {
+  const env = process.env.AICO_EVO_URL || process.env.AICO_EVO_BASE_URL || '';
+  if (!env) return DEFAULT_ORIGIN;
+  const trimmed = env.trim().replace(/\/+$/, '');
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+
+function getApiBase(): string {
+  return `${getOrigin()}/api/v1`;
+}
 
 // ===== System Info =====
 
@@ -27,12 +40,14 @@ export interface SystemInfo {
   hostname: string;
 }
 
-/** AICO EVO 上传Payload格式（与 WinAICheck 一致） */
+/** 上传Payload格式（与 WinAICheck 一致） */
 export interface AICOEVOPayload {
   timestamp: string;
   score: number;
   results: Array<{
     id: string;
+    name: string;
+    category: string;
     status: string;
     message: string;
   }>;
@@ -61,29 +76,30 @@ function collectSystemInfo(): SystemInfo {
   return { os: 'darwin', version, arch, hostname };
 }
 
-// ===== API Client =====
+// ===== HTTP Helper =====
 
 async function apiFetch<T>(url: string, options?: RequestInit): Promise<T> {
-  const token = process.env.AICO_EVO_TOKEN;
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-    ...(options?.headers as Record<string, string>),
-  };
-  const response = await fetch(url, { ...options, headers });
-  if (!response.ok) throw new Error(`AICO EVO API 错误: ${response.status} ${response.statusText}`);
-  return response.json() as Promise<T>;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    if (!response.ok) throw new Error(`API 错误: ${response.status} ${response.statusText}`);
+    return response.json() as Promise<T>;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-/**
- * 构建与 WinAICheck 格式一致的 Payload
- */
+// ===== Payload Builder =====
+
 export function createPayload(results: ScanResult[], score: ScoreResult): AICOEVOPayload {
   return {
     timestamp: new Date().toISOString(),
     score: score.score,
     results: results.map(r => ({
       id: r.id,
+      name: r.name,
+      category: r.category,
       status: r.status,
       message: sanitize(r.message),
     })),
@@ -91,9 +107,8 @@ export function createPayload(results: ScanResult[], score: ScoreResult): AICOEV
   };
 }
 
-/**
- * 保存到本地（与 WinAICheck saveLocal 一致）
- */
+// ===== Local Storage =====
+
 export function saveLocal(payload: AICOEVOPayload): string {
   if (!existsSync(REPORT_DIR)) mkdirSync(REPORT_DIR, { recursive: true });
   const filename = `scan-${Date.now()}.json`;
@@ -102,9 +117,6 @@ export function saveLocal(payload: AICOEVOPayload): string {
   return filepath;
 }
 
-/**
- * 读取历史报告（最近 max 条）
- */
 export function loadHistory(max = 10): Array<AICOEVOPayload & { filename: string }> {
   if (!existsSync(REPORT_DIR)) return [];
   const files = readdirSync(REPORT_DIR)
@@ -120,20 +132,84 @@ export function loadHistory(max = 10): Array<AICOEVOPayload & { filename: string
   return out;
 }
 
+// ===== Stash → Claim 流程（与 WinAICheck 一致）=====
+
+export interface StashRequest {
+  data: string;
+  fingerprint: string;
+}
+
+export interface StashResponse {
+  token: string;
+}
+
 /**
- * 上传扫描结果到 AICO EVO（POST /api/v1/fingerprints）
+ * 上传扫描数据到 stash，获取一次性 token（无需登录）
  */
-export async function saveFingerprint(data: AICOEVOPayload): Promise<{ id: string; saved_at: string }> {
-  return apiFetch<{ id: string; saved_at: string }>(`${BASE_URL}/api/v1/fingerprints`, {
+export async function stashData(payload: AICOEVOPayload): Promise<StashResponse> {
+  const fingerprint = JSON.stringify({
+    platform: 'Mac',
+    userAgent: `MacAICheck/${process.version}`,
+    system: payload.systemInfo,
+    score: payload.score,
+    failCount: payload.results.filter(r => r.status === 'fail').length,
+    failCategories: [...new Set(payload.results.filter(r => r.status === 'fail').map(r => r.category))],
+  });
+
+  return apiFetch<StashResponse>(`${getApiBase()}/stash`, {
     method: 'POST',
-    body: JSON.stringify(data),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      data: JSON.stringify(payload),
+      fingerprint,
+    }),
   });
 }
 
 /**
- * 获取历史指纹列表
+ * 构建 claim URL（用 token 在浏览器打开）
  */
-export async function listFingerprints(): Promise<any[]> {
-  const data = await apiFetch<{ fingerprints?: any[] }>(`${BASE_URL}/api/v1/fingerprints`);
-  return data.fingerprints || [];
+export function buildClaimUrl(token: string): string {
+  return `${getOrigin()}/claim?t=${encodeURIComponent(token)}`;
+}
+
+// ===== Feedback =====
+
+export interface FeedbackPayload {
+  content: string;
+  category: string;
+  email?: string;
+  env_summary: {
+    score: number;
+    failCount: number;
+    warnCount: number;
+    platform: string;
+  };
+}
+
+/**
+ * 提交反馈到 aicoevo.net（无需登录）
+ */
+export async function submitFeedback(payload: FeedbackPayload): Promise<{ id: string; status: string }> {
+  return apiFetch<{ id: string; status: string }>(`${getApiBase()}/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+// ===== Legacy（兼容旧接口）=====
+
+/**
+ * @deprecated 使用 stashData + buildClaimUrl 代替
+ */
+export async function saveFingerprint(data: AICOEVOPayload): Promise<{ id: string; saved_at: string }> {
+  const token = process.env.AICO_EVO_TOKEN;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return apiFetch<{ id: string; saved_at: string }>(`${getApiBase()}/fingerprints`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(data),
+  });
 }
