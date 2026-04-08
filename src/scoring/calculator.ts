@@ -6,10 +6,11 @@
 import type { ScanResult } from '../scanners/types';
 
 export type ScoreGrade = 'excellent' | 'good' | 'fair' | 'poor';
-export type ScannerCategory = 'brew' | 'apple' | 'toolchain' | 'ai-tools' | 'network' | 'permission';
+export type ScannerCategory = 'brew' | 'apple' | 'toolchain' | 'ai-tools' | 'network' | 'permission' | 'system';
 
 export interface ScoreResult {
   score: number;         // 0-100
+  prevScore?: number;
   grade: ScoreGrade;
   label: string;         // 优秀/良好/一般/需改善
   breakdown: {
@@ -29,6 +30,7 @@ export const CATEGORY_WEIGHTS: Record<ScannerCategory, number> = {
   apple: 0.9,       // macOS 平台特性 ×0.9
   brew: 0.8,        // Homebrew 生态 ×0.8
   network: 1.0,     // 网络连通性 ×1.0
+  system: 0.9,      // 系统硬件 ×0.9
 };
 
 const GRADE_LABELS: Record<ScoreGrade, string> = {
@@ -55,7 +57,7 @@ function groupByCategory(results: ScanResult[]): Map<ScannerCategory, ScanResult
   return map;
 }
 
-export function calculateScore(results: ScanResult[]): ScoreResult {
+export function calculateScore(results: ScanResult[], prevScore?: number): ScoreResult {
   const grouped = groupByCategory(results);
 
   let totalWeightedPass = 0;
@@ -85,5 +87,11 @@ export function calculateScore(results: ScanResult[]): ScoreResult {
     : 0;
 
   const { grade, label } = getGrade(score);
-  return { score, grade, label, breakdown };
+  return {
+    score,
+    prevScore,
+    grade,
+    label,
+    breakdown,
+  };
 }

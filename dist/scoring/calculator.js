@@ -14,6 +14,7 @@ exports.CATEGORY_WEIGHTS = {
     apple: 0.9, // macOS 平台特性 ×0.9
     brew: 0.8, // Homebrew 生态 ×0.8
     network: 1.0, // 网络连通性 ×1.0
+    system: 0.9, // 系统硬件 ×0.9
 };
 const GRADE_LABELS = {
     excellent: '优秀',
@@ -40,7 +41,7 @@ function groupByCategory(results) {
     }
     return map;
 }
-function calculateScore(results) {
+function calculateScore(results, prevScore) {
     const grouped = groupByCategory(results);
     let totalWeightedPass = 0;
     let totalWeightedAll = 0;
@@ -65,5 +66,11 @@ function calculateScore(results) {
         ? Math.round((totalWeightedPass / totalWeightedAll) * 100)
         : 0;
     const { grade, label } = getGrade(score);
-    return { score, grade, label, breakdown };
+    return {
+        score,
+        prevScore,
+        grade,
+        label,
+        breakdown,
+    };
 }

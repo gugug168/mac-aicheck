@@ -20,9 +20,11 @@ import './ssl-certs';
 import './dns-resolution';
 import './git-identity-config';
 import './admin-perms';
+import './gpu-monitor';
 
 export { getScanners, getScannerByCategory, SCANNER_CATEGORIES } from './registry';
-export type { ScanResult, Scanner } from './types';
+export { checkGpu } from './gpu-monitor';
+export type { ScanResult, Scanner, ScannerResult } from './types';
 
 export async function scanAll(): Promise<ScanResult[]> {
   const scanners = getScanners();

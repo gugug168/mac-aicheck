@@ -5,6 +5,7 @@
 
 import type { ScanResult, ScannerCategory } from '../scanners/types';
 import type { ScoreResult } from '../scoring/calculator';
+import { renderScoreWithTrend } from '../web/render';
 
 const CATEGORY_LABELS: Record<ScannerCategory, string> = {
   brew: 'Homebrew 生态',
@@ -13,6 +14,7 @@ const CATEGORY_LABELS: Record<ScannerCategory, string> = {
   'ai-tools': 'AI 工具链',
   network: '网络与镜像',
   permission: '权限与安全',
+  system: '系统硬件',
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -30,6 +32,8 @@ const STATUS_ICONS: Record<string, string> = {
 };
 
 export function generateHtmlReport(results: ScanResult[], score: ScoreResult): string {
+  const scoreData = renderScoreWithTrend(score);
+
   const grouped = new Map<ScannerCategory, ScanResult[]>();
   for (const r of results) {
     const list = grouped.get(r.category as ScannerCategory) || [];
@@ -75,8 +79,14 @@ export function generateHtmlReport(results: ScanResult[], score: ScoreResult): s
   h1 { text-align: center; font-size: 1.8rem; margin-bottom: 0.5rem; color: #f8fafc; }
   .subtitle { text-align: center; color: #64748b; margin-bottom: 2rem; font-size: 0.9rem; }
   .score-card { text-align: center; background: linear-gradient(135deg, #1e293b, #0f172a); border: 1px solid #334155; border-radius: 16px; padding: 2rem; margin-bottom: 2rem; }
+  .score-head { display: flex; align-items: center; justify-content: center; gap: 1.25rem; flex-wrap: wrap; }
+  .score-main { min-width: 180px; }
   .score-number { font-size: 5rem; font-weight: bold; color: ${gradeColor}; line-height: 1; }
   .score-label { font-size: 1.2rem; color: #94a3b8; margin-top: 0.5rem; }
+  .score-trend { min-width: 150px; text-align: left; padding: 0.9rem 1rem; border-radius: 12px; border: 1px solid #334155; background: rgba(15, 23, 42, 0.65); }
+  .score-trend-title { font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.08em; }
+  .score-trend-value { margin-top: 0.45rem; font-size: 1.6rem; font-weight: 700; }
+  .score-trend-prev { display: inline-flex; margin-top: 0.55rem; padding: 0.2rem 0.55rem; border-radius: 999px; background: #1e293b; border: 1px solid #334155; font-size: 0.78rem; color: #cbd5e1; }
   .breakdown { display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center; margin-top: 1.5rem; }
   .breakdown-item { background: #1e293b; border: 1px solid #334155; padding: 0.4rem 0.9rem; border-radius: 8px; font-size: 0.85rem; }
   .category { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; }
@@ -96,8 +106,18 @@ export function generateHtmlReport(results: ScanResult[], score: ScoreResult): s
   <p class="subtitle">生成时间: ${new Date().toLocaleString('zh-CN')} · 共 ${results.length} 项检测</p>
 
   <div class="score-card">
-    <div class="score-number">${score.score}</div>
-    <div class="score-label">${score.label}</div>
+    <div class="score-head">
+      <div class="score-main">
+        <div class="score-number">${score.score}</div>
+        <div class="score-label">${score.label}</div>
+      </div>
+      ${scoreData.trend ? `
+      <div class="score-trend">
+        <div class="score-trend-title">vs上次</div>
+        <div class="score-trend-value" style="color:${scoreData.trend.color}">${scoreData.trend.arrow} ${scoreData.trend.deltaLabel}</div>
+        <div class="score-trend-prev">上次: ${scoreData.trend.prevScore}</div>
+      </div>` : ''}
+    </div>
     <div class="breakdown">
       ${score.breakdown.map(b => `<div class="breakdown-item">${CATEGORY_LABELS[b.category] || b.category}: ${b.passed}/${b.total}</div>`).join('\n')}
     </div>

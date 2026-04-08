@@ -2,7 +2,7 @@
 
 import { scanAll } from './scanners/index';
 import { calculateScore } from './scoring/calculator';
-import { createPayload, saveLocal, stashData, buildClaimUrl, submitFeedback } from './api/aicoevo-client';
+import { createPayload, saveLocal, saveFingerprint, stashData, buildClaimUrl, submitFeedback } from './api/aicoevo-client';
 import { getInstallers } from './installers/index';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -219,7 +219,10 @@ async function runScan(serve: boolean) {
   const score = calculateScore(results);
   // 保存本地 + 上报 AICO EVO
   const payload = createPayload(results, score);
-  try { saveLocal(payload); } catch (e) { /* ignore */ }
+  try {
+    saveLocal(payload);
+    saveFingerprint(payload).catch(() => {}); // non-blocking
+  } catch (e) { /* ignore */ }
   const passed = results.filter(r => r.status === 'pass').length;
   const warn = results.filter(r => r.status === 'warn').length;
   const fail = results.filter(r => r.status === 'fail').length;

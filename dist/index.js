@@ -77,14 +77,19 @@ function serveHttp() {
         // Installer list
         if (pathname === '/api/installers') {
             const all = (0, index_2.getInstallers)();
-            const payload = all.map(i => ({
-                id: i.id,
-                name: i.name,
-                description: i.description,
-                icon: i.icon,
-                needsAdmin: i.needsAdmin,
-                installed: i.installed === undefined ? false : i.installed,
-            }));
+            const payload = all.map(i => {
+                const allowed = ALLOWED_COMMANDS[i.id];
+                return {
+                    id: i.id,
+                    name: i.name,
+                    description: i.description,
+                    icon: i.icon,
+                    needsAdmin: i.needsAdmin,
+                    installed: i.installed === undefined ? false : i.installed,
+                    cmd: allowed ? allowed.cmd : '',
+                    type: allowed ? (i.id === 'gh-copilot' ? 'manual' : i.id === 'xcode-clt' ? 'gui' : 'npm') : 'manual',
+                };
+            });
             res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
             res.end(JSON.stringify(payload));
             return;
@@ -166,10 +171,64 @@ function serveHttp() {
             });
             return;
         }
-        // Block all unknown /api/ routes
-        if (pathname.startsWith('/api/')) {
+        // Block all unknown /api/ routes (except stash and feedback)
+        if (pathname.startsWith('/api/') && pathname !== '/api/stash' && pathname !== '/api/feedback') {
             res.writeHead(404);
             res.end('Not Found');
+            return;
+        }
+        // Stash proxy: MacAICheck → aicoevo.net
+        if (pathname === '/api/stash' && req.method === 'POST') {
+            let body = '';
+            let size = 0;
+            req.on('data', chunk => {
+                size += chunk.length;
+                if (size > MAX_BODY) {
+                    res.writeHead(413);
+                    res.end('Payload Too Large');
+                    return;
+                }
+                body += chunk;
+            });
+            req.on('end', async () => {
+                try {
+                    const payload = JSON.parse(body);
+                    const result = await (0, aicoevo_client_1.stashData)(payload);
+                    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+                    res.end(JSON.stringify(result));
+                }
+                catch (e) {
+                    res.writeHead(502, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: '无法连接 aicoevo.net: ' + e.message }));
+                }
+            });
+            return;
+        }
+        // Feedback proxy: MacAICheck → aicoevo.net
+        if (pathname === '/api/feedback' && req.method === 'POST') {
+            let body = '';
+            let size = 0;
+            req.on('data', chunk => {
+                size += chunk.length;
+                if (size > MAX_BODY) {
+                    res.writeHead(413);
+                    res.end('Payload Too Large');
+                    return;
+                }
+                body += chunk;
+            });
+            req.on('end', async () => {
+                try {
+                    const payload = JSON.parse(body);
+                    const result = await (0, aicoevo_client_1.submitFeedback)(payload);
+                    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+                    res.end(JSON.stringify(result));
+                }
+                catch (e) {
+                    res.writeHead(502, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: '无法提交反馈: ' + e.message }));
+                }
+            });
             return;
         }
         // Static files with path traversal protection
@@ -200,8 +259,10 @@ async function runScan(serve) {
     const results = await (0, index_1.scanAll)();
     const score = (0, calculator_1.calculateScore)(results);
     // 保存本地 + 上报 AICO EVO
+    const payload = (0, aicoevo_client_1.createPayload)(results, score);
     try {
-        (0, aicoevo_client_1.saveLocal)((0, aicoevo_client_1.createPayload)(results, score));
+        (0, aicoevo_client_1.saveLocal)(payload);
+        (0, aicoevo_client_1.saveFingerprint)(payload).catch(() => { }); // non-blocking
     }
     catch (e) { /* ignore */ }
     const passed = results.filter(r => r.status === 'pass').length;
@@ -210,7 +271,8 @@ async function runScan(serve) {
     console.log(`Score: ${score.score}/100 ${score.label}`);
     console.log(`Pass: ${passed}  Warn: ${warn}  Fail: ${fail}\n`);
     if (serve) {
-        const data = JSON.stringify({ score, results }, null, 2);
+        // 保存完整数据供 Web UI 和社区功能使用
+        const data = JSON.stringify({ score, results, payload }, null, 2);
         if (!fs.existsSync(WEB_DIR))
             fs.mkdirSync(WEB_DIR, { recursive: true });
         fs.writeFileSync(DATA_FILE, data, 'utf-8');

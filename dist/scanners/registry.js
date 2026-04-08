@@ -6,7 +6,7 @@ exports.getScanners = getScanners;
 exports.getScannerByCategory = getScannerByCategory;
 exports.clearScanners = clearScanners;
 const _scanners = [];
-exports.SCANNER_CATEGORIES = ['brew', 'apple', 'toolchain', 'ai-tools', 'network'];
+exports.SCANNER_CATEGORIES = ['brew', 'apple', 'toolchain', 'ai-tools', 'network', 'permission', 'system'];
 function registerScanner(scanner) {
     _scanners.push(scanner);
 }

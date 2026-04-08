@@ -1,13 +1,81 @@
 /**
  * Web UI 数据渲染模块 — 只负责 JS 数据注入
  */
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import type { ScanResult } from '../scanners/types';
 import type { ScoreResult } from '../scoring/calculator';
 
+const CACHE_FILE = path.join(os.homedir(), '.mac-aicheck-cache.json');
+
+interface ScoreTrendData {
+  prevScore: number;
+  delta: number;
+  deltaLabel: string;
+  arrow: string;
+  color: string;
+  direction: 'up' | 'down' | 'flat';
+}
+
+function loadPreviousScoreFromCache(): number | undefined {
+  try {
+    if (!fs.existsSync(CACHE_FILE)) return undefined;
+    const raw = fs.readFileSync(CACHE_FILE, 'utf-8');
+    const cached = JSON.parse(raw) as { score?: { score?: number } | number };
+    const value = typeof cached.score === 'number' ? cached.score : cached.score?.score;
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function getScoreTrend(score: ScoreResult): ScoreTrendData | undefined {
+  const prevScore = typeof score.prevScore === 'number' ? score.prevScore : loadPreviousScoreFromCache();
+  if (typeof prevScore !== 'number' || !Number.isFinite(prevScore)) return undefined;
+
+  const delta = score.score - prevScore;
+  if (delta > 0) {
+    return {
+      prevScore,
+      delta,
+      deltaLabel: `+${delta}`,
+      arrow: '↑',
+      color: '#22c55e',
+      direction: 'up',
+    };
+  }
+
+  if (delta < 0) {
+    return {
+      prevScore,
+      delta,
+      deltaLabel: `${delta}`,
+      arrow: '↓',
+      color: '#ef4444',
+      direction: 'down',
+    };
+  }
+
+  return {
+    prevScore,
+    delta,
+    deltaLabel: '0',
+    arrow: '→',
+    color: '#94a3b8',
+    direction: 'flat',
+  };
+}
+
 export function renderScoreData(score: ScoreResult) {
+  return renderScoreWithTrend(score);
+}
+
+export function renderScoreWithTrend(score: ScoreResult) {
   const passed = score.breakdown.reduce((s, b) => s + b.passed, 0);
   const total = score.breakdown.reduce((s, b) => s + b.total, 0);
-  return { score, passed, total };
+  const trend = getScoreTrend(score);
+  return { score, passed, total, trend };
 }
 
 export function groupByCategory(results: ScanResult[]) {

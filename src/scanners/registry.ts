@@ -2,7 +2,7 @@ import type { Scanner } from './types';
 
 const _scanners: Scanner[] = [];
 
-export const SCANNER_CATEGORIES = ['brew', 'apple', 'toolchain', 'ai-tools', 'network'];
+export const SCANNER_CATEGORIES = ['brew', 'apple', 'toolchain', 'ai-tools', 'network', 'permission', 'system'];
 
 export function registerScanner(scanner: Scanner): void {
   _scanners.push(scanner);

@@ -207,9 +207,11 @@ export async function saveFingerprint(data: AICOEVOPayload): Promise<{ id: strin
   const token = process.env.AICO_EVO_TOKEN;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
+  // Rename systemInfo → platform for API compatibility with FingerprintSaveRequest
+  const apiPayload = { ...data, platform: data.systemInfo, systemInfo: undefined };
   return apiFetch<{ id: string; saved_at: string }>(`${getApiBase()}/fingerprints`, {
     method: 'POST',
     headers,
-    body: JSON.stringify(data),
+    body: JSON.stringify(apiPayload),
   });
 }
