@@ -15,10 +15,12 @@ export interface PreflightResult {
  * Execute all preflight checks for a fixer (D-17, DIA-02).
  * Runs sequentially, aborts on first failure.
  * Returns { passed: true } if all checks pass.
+ * @param fixer - The fixer whose preflightChecks will be executed
+ * @param scanResult - Reserved for future use (pass context to checks)
  */
 export async function runPreflights(
   fixer: Fixer,
-  scanResult: ScanResult
+  scanResult: ScanResult // Reserved for future use
 ): Promise<PreflightResult> {
   const checks = fixer.preflightChecks || [];
 
