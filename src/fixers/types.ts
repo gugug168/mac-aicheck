@@ -36,4 +36,22 @@ export interface Fixer {
   execute(scanResult: ScanResult, dryRun?: boolean): Promise<FixResult>;
   // Optional: which scanner IDs this fixer handles
   scannerIds?: string[];
+  // Optional extensions (D-13, D-15, D-20)
+  preflightChecks?: PreflightCheck[];                           // D-15
+  getGuidance?: () => PostFixGuidance | undefined;              // D-13
+  getVerificationCommand?: () => string | string[] | undefined; // D-20
+}
+
+// PostFixGuidance interface (D-13, PST-01)
+export interface PostFixGuidance {
+  needsTerminalRestart: boolean;
+  needsReboot: boolean;
+  verifyCommands?: string[];
+  notes?: string[];
+}
+
+// PreflightCheck type (D-15, D-16, DIA-02)
+export interface PreflightCheck {
+  id: string;
+  check: () => Promise<{ pass: boolean; message?: string }>;
 }
