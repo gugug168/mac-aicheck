@@ -34,7 +34,10 @@ Plans:
   1. Each error type maps to Chinese message + recovery suggestion
   2. Preflight checks prevent invalid fix attempts
   3. PostFixGuidance interface implemented
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 02-01-PLAN.md — Wave 1: types.ts extension, errors.ts extension, diagnostics.ts module
+- [ ] 02-02-PLAN.md — Wave 2: preflight.ts, fixAll integration, CLI guidance
 
 ### Phase 3: Green Risk Fixers
 **Goal**: 实现四个低风险 fixer，验证完整修复流程
@@ -61,6 +64,6 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Fixer Infrastructure | 1/1 | Complete | 2026-04-12 |
-| 2. Diagnostic & Guidance Layers | 0/? | Not started | - |
+| 2. Diagnostic & Guidance Layers | 0/2 | Not started | - |
 | 3. Green Risk Fixers | 0/? | Not started | - |
 | 4. Yellow Risk Fixers | 0/? | Not started | - |
