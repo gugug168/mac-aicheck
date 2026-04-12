@@ -2,6 +2,7 @@ import type { Fixer, FixResult } from './types';
 import type { ScanResult } from '../scanners/types';
 import { getFixers, getFixerForScanResult } from './registry';
 import { verifyFix, preflightCheck, buildNextSteps } from './verify';
+import { runPreflights } from './preflight';
 import { scanAll } from '../scanners/index';
 
 // Re-export all types
@@ -79,14 +80,14 @@ export async function fixAll(options: FixAllOptions = {}): Promise<FixAllResult>
   for (const scanResult of toFix) {
     const fixer = getFixerForScanResult(scanResult)!;
 
-    // Preflight check (FIX-04)
-    const preflightError = preflightCheck(scanResult);
-    if (preflightError) {
+    // Preflight check (D-17, DIA-02)
+    const preflightResult = await runPreflights(fixer, scanResult);
+    if (!preflightResult.passed) {
       results.push({
         scannerId: scanResult.id,
         fixerId: fixer.id,
         originalStatus: scanResult.status,
-        error: preflightError,
+        error: preflightResult.message,
       });
       continue;
     }
@@ -127,6 +128,26 @@ export async function fixAll(options: FixAllOptions = {}): Promise<FixAllResult>
           fixer.risk,
           fixResult.message
         );
+      }
+
+      // Add guidance from fixer (D-13, PST-01, PST-02, PST-03, PST-04)
+      const guidance = fixer.getGuidance?.();
+      if (guidance) {
+        if (guidance.needsTerminalRestart) {
+          fixResult.nextSteps!.push('请关闭当前终端并重新打开以使 PATH 生效');
+        }
+        if (guidance.needsReboot) {
+          fixResult.nextSteps!.push('系统配置已更新，请重启电脑使更改生效');
+        }
+        if (guidance.verifyCommands?.length) {
+          fixResult.nextSteps!.push('请运行以下命令确认修复成功:');
+          guidance.verifyCommands.forEach(cmd => {
+            fixResult.nextSteps!.push(`  ${cmd}`);
+          });
+        }
+        if (guidance.notes?.length) {
+          fixResult.nextSteps!.push(...guidance.notes);
+        }
       }
 
       results.push({
