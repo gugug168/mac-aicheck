@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { scanAll } from './scanners/index';
-import { fixAll } from './fixers/index';
+import { fixAll, getFixerById } from './fixers/index';
 import { calculateScore } from './scoring/calculator';
 import { createPayload, saveLocal, saveFingerprint, stashData, buildClaimUrl, submitFeedback } from './api/aicoevo-client';
 import { getInstallers } from './installers/index';
@@ -281,6 +281,19 @@ if (args.includes('--serve') || args.includes('--web')) {
       if (r.fixResult) {
         const icon = r.fixResult.success ? '[+]' : '[-]';
         console.log(`${icon} ${r.scannerId}: ${r.fixResult.message}`);
+
+        // Display verification command if fixer provides one (D-21, PST-04)
+        if (r.fixerId) {
+          const fixer = getFixerById(r.fixerId);
+          const verificationCmd = fixer?.getVerificationCommand?.();
+          if (verificationCmd) {
+            const cmds = Array.isArray(verificationCmd) ? verificationCmd : [verificationCmd];
+            console.log('    验证命令:');
+            cmds.forEach(cmd => console.log(`      ${cmd}`));
+          }
+        }
+
+        // Display nextSteps (now includes guidance from getGuidance) (D-14)
         if (r.fixResult.nextSteps?.length) {
           for (const step of r.fixResult.nextSteps) {
             console.log(`    -> ${step}`);
