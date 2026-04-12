@@ -47,7 +47,9 @@ Plans:
   1. All 4 green fixers implemented and working
   2. Each fixer passes verification loop
   3. Dry-run mode works
-**Plans**: TBD
+**Plans**: 1 plan
+Plans:
+- [ ] 03-01-PLAN.md — Wave 1: homebrew, git, npm-mirror, rosetta fixers + SCANNER_TO_FIXER_MAP
 
 ### Phase 4: Yellow Risk Fixers
 **Goal**: 实现两个中风险 fixer，完成 v1 功能集
@@ -57,7 +59,9 @@ Plans:
   1. Node.js LTS installer works
   2. Python 3.12 installer works
   3. Restart guidance displayed correctly
-**Plans**: TBD
+**Plans**: 1 plan
+Plans:
+- [ ] 04-01-PLAN.md — Wave 1: node-version, python-versions fixers + SCANNER_TO_FIXER_MAP integration
 
 ## Progress
 
@@ -65,5 +69,5 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. Fixer Infrastructure | 1/1 | Complete | 2026-04-12 |
 | 2. Diagnostic & Guidance Layers | 0/2 | Not started | - |
-| 3. Green Risk Fixers | 0/? | Not started | - |
-| 4. Yellow Risk Fixers | 0/? | Not started | - |
+| 3. Green Risk Fixers | 0/1 | Not started | - |
+| 4. Yellow Risk Fixers | 0/1 | Not started | - |
