@@ -36,8 +36,8 @@ Plans:
   3. PostFixGuidance interface implemented
 **Plans**: 2 plans
 Plans:
-- [ ] 02-01-PLAN.md — Wave 1: types.ts extension, errors.ts extension, diagnostics.ts module
-- [ ] 02-02-PLAN.md — Wave 2: preflight.ts, fixAll integration, CLI guidance
+- [x] 02-01-PLAN.md — Wave 1: types.ts extension, errors.ts extension, diagnostics.ts module
+- [x] 02-02-PLAN.md — Wave 2: preflight.ts, fixAll integration, CLI guidance
 
 ### Phase 3: Green Risk Fixers
 **Goal**: 实现四个低风险 fixer，验证完整修复流程
