@@ -10,8 +10,10 @@ export type ErrorCategory =
 // Error classification result
 export interface ClassifiedError {
   category: ErrorCategory;
-  message: string;
+  code: string;           // e.g., "ERR_TIMEOUT_001" (D-18)
   recoverable: boolean;  // true if fixer should retry
+  message: string;
+  context?: string;       // additional diagnostic context (D-18)
 }
 
 /**
@@ -25,19 +27,32 @@ export function classifyError(
 ): ClassifiedError {
   const combined = `${stderr} ${errorMessage || ''}`.toLowerCase();
 
+  // Error code mapping (D-18)
+  const codeSuffix: Record<ErrorCategory, string> = {
+    'timeout': '001',
+    'command-not-found': '002',
+    'permission-denied': '003',
+    'network-error': '004',
+    'disk-full': '005',
+    'generic': '006',
+  };
+
   // command-not-found: exit 127, "command not found", "not found"
   if (exitCode === 127 || combined.includes('command not found') || combined.includes('not found')) {
-    return { category: 'command-not-found', message: `Command not found: ${stderr}`, recoverable: false };
+    const code = `ERR_COMMAND_NOT_FOUND_${codeSuffix['command-not-found']}`;
+    return { category: 'command-not-found', code, recoverable: false, message: `Command not found: ${stderr}`, context: stderr };
   }
 
   // permission-denied: exit 126, "permission denied", "eacces"
   if (exitCode === 126 || combined.includes('permission denied') || combined.includes('eacces')) {
-    return { category: 'permission-denied', message: `Permission denied: ${stderr}`, recoverable: false };
+    const code = `ERR_PERMISSION_DENIED_${codeSuffix['permission-denied']}`;
+    return { category: 'permission-denied', code, recoverable: false, message: `Permission denied: ${stderr}`, context: stderr };
   }
 
   // disk-full: "no space left", "disk full", "enospc"
   if (combined.includes('no space left') || combined.includes('disk full') || combined.includes('enospc')) {
-    return { category: 'disk-full', message: `Disk full: ${stderr}`, recoverable: false };
+    const code = `ERR_DISK_FULL_${codeSuffix['disk-full']}`;
+    return { category: 'disk-full', code, recoverable: false, message: `Disk full: ${stderr}`, context: stderr };
   }
 
   // network-error: "connection refused", "network", "ename resolution", "http error", "eai_again"
@@ -48,16 +63,19 @@ export function classifyError(
     combined.includes('http error') ||
     combined.includes('eai_again')
   ) {
-    return { category: 'network-error', message: `Network error: ${stderr}`, recoverable: true };
+    const code = `ERR_NETWORK_ERROR_${codeSuffix['network-error']}`;
+    return { category: 'network-error', code, recoverable: true, message: `Network error: ${stderr}`, context: stderr };
   }
 
   // timeout: exit 124 (timeout command), "timed out"
   if (exitCode === 124 || combined.includes('timeout') || combined.includes('timed out')) {
-    return { category: 'timeout', message: `Command timed out: ${stderr}`, recoverable: true };
+    const code = `ERR_TIMEOUT_${codeSuffix['timeout']}`;
+    return { category: 'timeout', code, recoverable: true, message: `Command timed out: ${stderr}`, context: stderr };
   }
 
   // generic: everything else
-  return { category: 'generic', message: errorMessage || `Command failed: ${stderr}`, recoverable: false };
+  const code = `ERR_GENERIC_${codeSuffix['generic']}`;
+  return { category: 'generic', code, recoverable: false, message: errorMessage || `Command failed: ${stderr}`, context: stderr };
 }
 
 /**
