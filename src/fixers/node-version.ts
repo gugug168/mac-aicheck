@@ -4,6 +4,31 @@ import { registerFixer } from './registry';
 import { classifyError, ERROR_MESSAGES } from './errors';
 import { runCommand } from '../executor/index';
 
+const NODE_VERSION = '20.10.0';
+const NODE_PKG_URL = `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}.pkg`;
+const DOWNLOAD_TIMEOUT = 60_000;
+const INSTALL_TIMEOUT = 300_000;
+const MAX_RETRIES = 3;
+
+/**
+ * Download with retry — attempts up to MAX_RETRIES times on failure.
+ */
+function downloadWithRetry(url: string, dest: string, timeout: number): { stdout: string; stderr: string; exitCode: number; success: boolean } {
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const result = runCommand(`curl -fsSL "${url}" -o "${dest}"`, timeout);
+    if (result.exitCode === 0) {
+      return { ...result, success: true };
+    }
+    if (attempt < MAX_RETRIES) {
+      // Wait 2 seconds before retry
+      runCommand('sleep 2', 3000);
+    }
+  }
+  // Return the last failure result
+  const lastResult = runCommand(`curl -fsSL "${url}" -o "${dest}"`, timeout);
+  return { ...lastResult, success: false };
+}
+
 const nodeVersionFixer: Fixer = {
   id: 'node-version-fixer',
   name: 'Node.js LTS 安装',
@@ -19,8 +44,8 @@ const nodeVersionFixer: Fixer = {
     }
 
     try {
-      // Download official Node.js LTS .pkg installer
-      const download = runCommand('curl -fsSL https://nodejs.org/dist/v20.10.0/node-v20.10.0.pkg -o /tmp/node-installer.pkg', 60_000);
+      // Download official Node.js LTS .pkg installer (with retry)
+      const download = downloadWithRetry(NODE_PKG_URL, '/tmp/node-installer.pkg', DOWNLOAD_TIMEOUT);
       if (download.exitCode !== 0) {
         const classified = classifyError(download.exitCode, download.stderr, 'Node.js 下载失败');
         const errMsg = ERROR_MESSAGES[classified.category];
@@ -28,7 +53,7 @@ const nodeVersionFixer: Fixer = {
       }
 
       // Install via official installer
-      const install = runCommand('sudo installer -pkg /tmp/node-installer.pkg -target /', 300_000);
+      const install = runCommand('sudo installer -pkg /tmp/node-installer.pkg -target /', INSTALL_TIMEOUT);
       if (install.exitCode !== 0) {
         const classified = classifyError(install.exitCode, install.stderr, 'Node.js 安装失败');
         const errMsg = ERROR_MESSAGES[classified.category];
@@ -39,10 +64,12 @@ const nodeVersionFixer: Fixer = {
       runCommand('rm -f /tmp/node-installer.pkg', 5000);
 
       return { success: true, message: 'Node.js LTS 安装成功', verified: false };
-    } catch (err: any) {
-      const classified = classifyError(1, String(err), 'Node.js 安装异常');
-      const errMsg = ERROR_MESSAGES[classified.category];
-      return { success: false, partial: true, message: `Node.js 安装失败: ${errMsg.title}，${errMsg.suggestion}`, verified: false };
+    } catch (err: unknown) {
+      // Extract meaningful error context from unknown error type
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const classified = classifyError(1, errMsg, 'Node.js 安装异常');
+      const msg = ERROR_MESSAGES[classified.category];
+      return { success: false, partial: true, message: `Node.js 安装失败: ${msg.title}，${msg.suggestion}`, verified: false };
     }
   },
 
