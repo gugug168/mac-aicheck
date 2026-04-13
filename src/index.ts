@@ -199,7 +199,9 @@ function serveHttp() {
 
     // Static files with path traversal protection
     let filePath = path.join(WEB_DIR, pathname === '/' ? 'index.html' : pathname);
-    if (!filePath.startsWith(WEB_DIR)) {
+    // Resolve to absolute path before checking boundary (prevents symlink bypass)
+    filePath = path.resolve(filePath);
+    if (!filePath.startsWith(path.resolve(WEB_DIR))) {
       res.writeHead(403);
       res.end('Forbidden');
       return;
