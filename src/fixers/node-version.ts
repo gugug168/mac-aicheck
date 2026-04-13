@@ -28,7 +28,7 @@ const nodeVersionFixer: Fixer = {
       }
 
       // Install via official installer
-      const install = runCommand('sudo installer -pkg /tmp/node-installer.pkg -target / -allowLegacyPython', 300_000);
+      const install = runCommand('sudo installer -pkg /tmp/node-installer.pkg -target /', 300_000);
       if (install.exitCode !== 0) {
         const classified = classifyError(install.exitCode, install.stderr, 'Node.js 安装失败');
         const errMsg = ERROR_MESSAGES[classified.category];
