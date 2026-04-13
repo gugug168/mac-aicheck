@@ -3,7 +3,7 @@
 import { scanAll } from './scanners/index';
 import { fixAll, getFixerById } from './fixers/index';
 import { calculateScore } from './scoring/calculator';
-import { createPayload, saveLocal, saveFingerprint, stashData, buildClaimUrl, submitFeedback } from './api/aicoevo-client';
+import { createPayload, saveLocal, stashData, buildClaimUrl, submitFeedback } from './api/aicoevo-client';
 import { getInstallers } from './installers/index';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -234,11 +234,17 @@ async function runScan(serve: boolean) {
   console.log(`[*] MacAICheck v${VERSION} scanning...\n`);
   const results = await scanAll();
   const score = calculateScore(results);
-  // 保存本地 + 上报 AICO EVO
+  // 保存本地 + 上报 aicoevo.net 获取认领 token
   const payload = createPayload(results, score);
   try {
     saveLocal(payload);
-    saveFingerprint(payload).catch(() => {}); // non-blocking
+    stashData(payload)
+      .then(({ token }) => {
+        const claimUrl = buildClaimUrl(token);
+        console.log('\n[+] 扫描结果已上传，请在浏览器打开认领你的环境报告:');
+        console.log(`    ${claimUrl}\n`);
+      })
+      .catch(() => {});
   } catch (e) { /* ignore */ }
   const passed = results.filter(r => r.status === 'pass').length;
   const warn = results.filter(r => r.status === 'warn').length;
@@ -264,7 +270,7 @@ if (args.includes('--serve') || args.includes('--web')) {
 } else if (args.includes('--json')) {
   runScan(false).then(r => { if (r) console.log(JSON.stringify(r, null, 2)); }).catch(console.error);
 } else if (args.includes('--help') || args.length === 0) {
-  console.log('MacAICheck - AI Dev Environment Checker\nUsage:\n  mac-aicheck          Run diagnosis\n  mac-aicheck fix      Auto-fix detected issues\n  mac-aicheck fix --dry-run   Show what would be fixed\n  mac-aicheck --serve   Start Web UI\n  mac-aicheck --json    JSON output');
+  console.log('MacAICheck - AI Dev Environment Checker\nUsage:\n  mac-aicheck          Run diagnosis\n  mac-aicheck --serve   Start Web UI\n  mac-aicheck --json    JSON output');
 } else if (args.includes('fix')) {
   const dryRun = args.includes('--dry-run');
   const riskLevel = args.includes('--green') ? 'green' :
@@ -282,7 +288,6 @@ if (args.includes('--serve') || args.includes('--web')) {
         const icon = r.fixResult.success ? '[+]' : '[-]';
         console.log(`${icon} ${r.scannerId}: ${r.fixResult.message}`);
 
-        // Display verification command if fixer provides one (D-21, PST-04)
         if (r.fixerId) {
           const fixer = getFixerById(r.fixerId);
           const verificationCmd = fixer?.getVerificationCommand?.();
@@ -293,7 +298,6 @@ if (args.includes('--serve') || args.includes('--web')) {
           }
         }
 
-        // Display nextSteps (now includes guidance from getGuidance) (D-14)
         if (r.fixResult.nextSteps?.length) {
           for (const step of r.fixResult.nextSteps) {
             console.log(`    -> ${step}`);
