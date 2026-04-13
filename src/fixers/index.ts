@@ -5,6 +5,14 @@ import { verifyFix, preflightCheck, buildNextSteps } from './verify';
 import { runPreflights } from './preflight';
 import { scanAll } from '../scanners/index';
 
+// Import all fixers to trigger self-registration
+import './homebrew';
+import './git';
+import './npm-mirror';
+import './rosetta';
+import './node-version';
+import './python-versions';
+
 // Re-export all types
 export type { Fixer, FixResult, FixerRisk, VerificationStatus, ErrorCategory } from './types';
 export type { ScanResult } from '../scanners/types';
