@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { scanAll } from './scanners/index';
+import { fixAll, getFixerById } from './fixers/index';
 import { calculateScore } from './scoring/calculator';
-import { createPayload, saveLocal, saveFingerprint, stashData, buildClaimUrl, submitFeedback } from './api/aicoevo-client';
+import { createPayload, saveLocal, stashData, buildClaimUrl, submitFeedback } from './api/aicoevo-client';
 import { getInstallers } from './installers/index';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -233,11 +234,17 @@ async function runScan(serve: boolean) {
   console.log(`[*] MacAICheck v${VERSION} scanning...\n`);
   const results = await scanAll();
   const score = calculateScore(results);
-  // 保存本地 + 上报 AICO EVO
+  // 保存本地 + 上报 aicoevo.net 获取认领 token
   const payload = createPayload(results, score);
   try {
     saveLocal(payload);
-    saveFingerprint(payload).catch(() => {}); // non-blocking
+    stashData(payload)
+      .then(({ token }) => {
+        const claimUrl = buildClaimUrl(token);
+        console.log('\n[+] 扫描结果已上传，请在浏览器打开认领你的环境报告:');
+        console.log(`    ${claimUrl}\n`);
+      })
+      .catch(() => {});
   } catch (e) { /* ignore */ }
   const passed = results.filter(r => r.status === 'pass').length;
   const warn = results.filter(r => r.status === 'warn').length;
@@ -264,6 +271,43 @@ if (args.includes('--serve') || args.includes('--web')) {
   runScan(false).then(r => { if (r) console.log(JSON.stringify(r, null, 2)); }).catch(console.error);
 } else if (args.includes('--help') || args.length === 0) {
   console.log('MacAICheck - AI Dev Environment Checker\nUsage:\n  mac-aicheck          Run diagnosis\n  mac-aicheck --serve   Start Web UI\n  mac-aicheck --json    JSON output');
+} else if (args.includes('fix')) {
+  const dryRun = args.includes('--dry-run');
+  const riskLevel = args.includes('--green') ? 'green' :
+                    args.includes('--yellow') ? 'yellow' :
+                    args.includes('--red') ? 'red' : undefined;
+
+  console.log('[*] MacAICheck fixing...\n');
+  if (dryRun) console.log('[DRY RUN] No changes will be made.\n');
+
+  fixAll({ dryRun, riskLevel }).then(result => {
+    console.log(`Total: ${result.total}  Attempted: ${result.attempted}  Succeeded: ${result.succeeded}  Failed: ${result.failed}\n`);
+
+    for (const r of result.results) {
+      if (r.fixResult) {
+        const icon = r.fixResult.success ? '[+]' : '[-]';
+        console.log(`${icon} ${r.scannerId}: ${r.fixResult.message}`);
+
+        if (r.fixerId) {
+          const fixer = getFixerById(r.fixerId);
+          const verificationCmd = fixer?.getVerificationCommand?.();
+          if (verificationCmd) {
+            const cmds = Array.isArray(verificationCmd) ? verificationCmd : [verificationCmd];
+            console.log('    验证命令:');
+            cmds.forEach(cmd => console.log(`      ${cmd}`));
+          }
+        }
+
+        if (r.fixResult.nextSteps?.length) {
+          for (const step of r.fixResult.nextSteps) {
+            console.log(`    -> ${step}`);
+          }
+        }
+      } else if (r.error) {
+        console.log(`[-] ${r.scannerId}: ERROR - ${r.error}`);
+      }
+    }
+  }).catch(console.error);
 } else {
   runScan(false).catch(console.error);
 }

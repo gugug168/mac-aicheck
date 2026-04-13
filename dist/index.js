@@ -46,6 +46,7 @@ const MAX_BODY = 1024 * 1024;
 const PORT = 7890;
 const WEB_DIR = path.join(__dirname, '../dist/web');
 const DATA_FILE = path.join(WEB_DIR, 'scan-data.json');
+const VERSION = "1.0.0";
 function gc(s) { return s >= 90 ? '#22c55e' : s >= 70 ? '#3b82f6' : s >= 50 ? '#eab308' : '#ef4444'; }
 // Security: whitelisted installer commands only (NEVER trust frontend with arbitrary cmd)
 const ALLOWED_COMMANDS = {
@@ -171,10 +172,16 @@ function serveHttp() {
             });
             return;
         }
-        // Block all unknown /api/ routes (except stash and feedback)
-        if (pathname.startsWith('/api/') && pathname !== '/api/stash' && pathname !== '/api/feedback') {
+        // Block all unknown /api/ routes (except stash, feedback, version-check)
+        if (pathname.startsWith('/api/') && pathname !== '/api/stash' && pathname !== '/api/feedback' && pathname !== '/api/version-check') {
             res.writeHead(404);
             res.end('Not Found');
+            return;
+        }
+        // Version check endpoint
+        if (pathname === '/api/version-check' && req.method === 'GET') {
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+            res.end(JSON.stringify({ current: VERSION, latest: VERSION }));
             return;
         }
         // Stash proxy: MacAICheck → aicoevo.net
@@ -198,8 +205,12 @@ function serveHttp() {
                     res.end(JSON.stringify(result));
                 }
                 catch (e) {
+                    let detail = e.message || '未知错误';
+                    if (e.message && e.message.includes('API 错误:')) {
+                        detail = e.message.replace('API 错误: ', '');
+                    }
                     res.writeHead(502, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: '无法连接 aicoevo.net: ' + e.message }));
+                    res.end(JSON.stringify({ error: '无法连接 aicoevo.net: ' + detail }));
                 }
             });
             return;
@@ -225,8 +236,12 @@ function serveHttp() {
                     res.end(JSON.stringify(result));
                 }
                 catch (e) {
+                    let detail = e.message || '未知错误';
+                    if (e.message && e.message.includes('API 错误:')) {
+                        detail = e.message.replace('API 错误: ', '');
+                    }
                     res.writeHead(502, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: '无法提交反馈: ' + e.message }));
+                    res.end(JSON.stringify({ error: '无法提交反馈: ' + detail }));
                 }
             });
             return;
@@ -249,20 +264,26 @@ function serveHttp() {
         res.end(fs.readFileSync(filePath));
     });
     server.listen(PORT, '127.0.0.1', () => {
-        console.log(`\n[*] Web UI: http://localhost:${PORT}`);
+        console.log(`\n[*] MacAICheck v${VERSION} Web UI: http://localhost:${PORT}`);
         console.log(`    Ctrl+C to stop\n`);
         require('child_process').spawn('open', [`http://localhost:${PORT}`], { detached: true, stdio: 'ignore' }).unref();
     });
 }
 async function runScan(serve) {
-    console.log('[*] MacAICheck scanning...\n');
+    console.log(`[*] MacAICheck v${VERSION} scanning...\n`);
     const results = await (0, index_1.scanAll)();
     const score = (0, calculator_1.calculateScore)(results);
-    // 保存本地 + 上报 AICO EVO
+    // 保存本地 + 上报 aicoevo.net 获取认领 token
     const payload = (0, aicoevo_client_1.createPayload)(results, score);
     try {
         (0, aicoevo_client_1.saveLocal)(payload);
-        (0, aicoevo_client_1.saveFingerprint)(payload).catch(() => { }); // non-blocking
+        (0, aicoevo_client_1.stashData)(payload)
+            .then(({ token }) => {
+            const claimUrl = (0, aicoevo_client_1.buildClaimUrl)(token);
+            console.log('\n[+] 扫描结果已上传，请在浏览器打开认领你的环境报告:');
+            console.log(`    ${claimUrl}\n`);
+        })
+            .catch(() => { });
     }
     catch (e) { /* ignore */ }
     const passed = results.filter(r => r.status === 'pass').length;
