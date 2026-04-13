@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { scanAll } from './scanners/index';
+import { fixAll, getFixerById } from './fixers/index';
 import { calculateScore } from './scoring/calculator';
 import { createPayload, saveLocal, saveFingerprint, stashData, buildClaimUrl, submitFeedback } from './api/aicoevo-client';
 import { getInstallers } from './installers/index';
@@ -263,7 +264,46 @@ if (args.includes('--serve') || args.includes('--web')) {
 } else if (args.includes('--json')) {
   runScan(false).then(r => { if (r) console.log(JSON.stringify(r, null, 2)); }).catch(console.error);
 } else if (args.includes('--help') || args.length === 0) {
-  console.log('MacAICheck - AI Dev Environment Checker\nUsage:\n  mac-aicheck          Run diagnosis\n  mac-aicheck --serve   Start Web UI\n  mac-aicheck --json    JSON output');
+  console.log('MacAICheck - AI Dev Environment Checker\nUsage:\n  mac-aicheck          Run diagnosis\n  mac-aicheck fix      Auto-fix detected issues\n  mac-aicheck fix --dry-run   Show what would be fixed\n  mac-aicheck --serve   Start Web UI\n  mac-aicheck --json    JSON output');
+} else if (args.includes('fix')) {
+  const dryRun = args.includes('--dry-run');
+  const riskLevel = args.includes('--green') ? 'green' :
+                    args.includes('--yellow') ? 'yellow' :
+                    args.includes('--red') ? 'red' : undefined;
+
+  console.log('[*] MacAICheck fixing...\n');
+  if (dryRun) console.log('[DRY RUN] No changes will be made.\n');
+
+  fixAll({ dryRun, riskLevel }).then(result => {
+    console.log(`Total: ${result.total}  Attempted: ${result.attempted}  Succeeded: ${result.succeeded}  Failed: ${result.failed}\n`);
+
+    for (const r of result.results) {
+      if (r.fixResult) {
+        const icon = r.fixResult.success ? '[+]' : '[-]';
+        console.log(`${icon} ${r.scannerId}: ${r.fixResult.message}`);
+
+        // Display verification command if fixer provides one (D-21, PST-04)
+        if (r.fixerId) {
+          const fixer = getFixerById(r.fixerId);
+          const verificationCmd = fixer?.getVerificationCommand?.();
+          if (verificationCmd) {
+            const cmds = Array.isArray(verificationCmd) ? verificationCmd : [verificationCmd];
+            console.log('    验证命令:');
+            cmds.forEach(cmd => console.log(`      ${cmd}`));
+          }
+        }
+
+        // Display nextSteps (now includes guidance from getGuidance) (D-14)
+        if (r.fixResult.nextSteps?.length) {
+          for (const step of r.fixResult.nextSteps) {
+            console.log(`    -> ${step}`);
+          }
+        }
+      } else if (r.error) {
+        console.log(`[-] ${r.scannerId}: ERROR - ${r.error}`);
+      }
+    }
+  }).catch(console.error);
 } else {
   runScan(false).catch(console.error);
 }
