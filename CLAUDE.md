@@ -2,48 +2,62 @@
 
 ## Project Overview
 
-**mac-aicheck** — AI Tooling Health Check for macOS
+**mac-aicheck** — macOS AI 开发环境检测工具 + 三层修复系统
 - Node.js CLI + Web Dashboard
-- 扫描 macOS 开发环境（Node.js、Python、Git、代理、SSL 证书等）
-- 输出 HTML 报告（静态，可离线查看）
-- 支持上报社区（通过 aicoevo.net API）
+- 当前：18 项环境检测（scanner）
+- 目标：三层修复系统（Fixer Infrastructure → 精准诊断 → 修复后指导）
 
-## Current Status (2026-04-08)
+## Current Status (2026-04-12)
 
 - **main 分支**: 稳定可发布
 - **最新 commit**: 7a404aa (CONTRIBUTING major overhaul)
-- **16 个 Scanner**：admin-perms, apple-silicon, claude-code, dns-resolution, git-identity, git, gpu-monitor, node-version, npm-mirror, openclaw, proxy-config, python-versions, rosetta, ssl-certs, xcode, developer-mode
-- **Web UI**: macOS 风格静态 HTML，端口 7891
-- **CI**: GitHub Actions，push/PR 到 main 自动运行
+- **项目阶段**: 初始化完成，Phase 1 待开始
+- **研究方向**: WinAICheck `src/fixers/index.ts` 作为参考实现
 
 ## Architecture
 
 ```
 src/
-├── scanners/          # 各 scanner 实现
-│   ├── registry.ts   # scanner 注册表
-│   └── types.ts      # 类型定义
+├── scanners/          # Scanner 实现（自注册到 registry）
+│   ├── registry.ts   # Scanner 注册表
+│   └── types.ts      # ScanResult 类型定义
+├── fixers/           # Fixer 实现（新增）
+│   ├── types.ts     # Fixer 接口、FixResult、ErrorCategory
+│   ├── registry.ts   # Fixer 注册表
+│   ├── errors.ts     # 错误分类系统
+│   ├── verify.ts     # 验证闭环
+│   └── index.ts      # fixAll() 编排
 ├── scoring/          # 计分系统
 ├── report/           # HTML 报告生成
 ├── web/              # Web UI（dist/web/）
 ├── api/              # AICoEvo API 客户端
-└── cli/              # CLI 命令（gen-web 等）
+└── installers/        # AI 工具安装器
+
+三层修复架构：
+1. 验证闭环 (Verification Loop) — 修复后重扫验证
+2. 精准诊断 (Precise Diagnostics) — 错误分类 + 预检
+3. 修复后指导 (Post-Fix Guidance) — 重启提示、手动验证
 ```
 
 ## Key Files
 
 - `package.json` — 依赖和脚本
 - `tsconfig.json` — TypeScript 配置
-- `src/index.ts` — 入口，扫描 + API 上报
-- `dist/web/index.html` — Web UI 首页
+- `src/index.ts` — 入口，scanAll() + fixAll()
+- `.planning/ROADMAP.md` — Phase 结构
+- `.planning/research/` — 生态系统研究
 - `CONTRIBUTING.md` — 多 AI 协作规范（必读）
 
-## Current Open Work
+## Current Phase
 
-- MCO multi-agent review workflow 搭建中
-- Community reporting 集成（aicoevo.net /api/stash）
-- Web UI polish
+**Phase 1: Fixer Infrastructure**
+- Fixer 接口 + 注册表 + 错误分类 + 验证闭环
+- 目标：建立核心架构
 
 ## Repository
 
 https://github.com/gugug168/mac-aicheck
+
+## 参考
+
+- WinAICheck `src/fixers/index.ts` — 四阶段流程：preflight → backup → execute → verify
