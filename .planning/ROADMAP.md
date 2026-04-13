@@ -9,7 +9,7 @@
 - [x] **Phase 1: Fixer Infrastructure** - Fixer 接口、注册表、错误分类、验证闭环
 - [ ] **Phase 2: Diagnostic & Guidance Layers** - 错误映射、预检机制、修复后指导
 - [ ] **Phase 3: Green Risk Fixers** - homebrew、npm-mirror、git、rosetta 四个绿色 fixer
-- [ ] **Phase 4: Yellow Risk Fixers** - node-version、python-versions 两个黄色 fixer
+- [x] **Phase 4: Yellow Risk Fixers** - node-version、python-versions 两个黄色 fixer (completed 2026-04-13)
 
 ## Phase Details
 
@@ -61,7 +61,7 @@ Plans:
   3. Restart guidance displayed correctly
 **Plans**: 1 plan
 Plans:
-- [ ] 04-01-PLAN.md — Wave 1: node-version, python-versions fixers + SCANNER_TO_FIXER_MAP integration
+- [x] 04-01-PLAN.md — Wave 1: node-version, python-versions fixers + SCANNER_TO_FIXER_MAP integration
 
 ## Progress
 
@@ -70,4 +70,4 @@ Plans:
 | 1. Fixer Infrastructure | 1/1 | Complete | 2026-04-12 |
 | 2. Diagnostic & Guidance Layers | 0/2 | Not started | - |
 | 3. Green Risk Fixers | 0/1 | Not started | - |
-| 4. Yellow Risk Fixers | 0/1 | Not started | - |
+| 4. Yellow Risk Fixers | 1/1 | Complete   | 2026-04-13 |
