@@ -3,6 +3,14 @@
  * Implementation details live in dedicated modules.
  */
 
+// Import all fixers to trigger self-registration (side-effect)
+import './homebrew';
+import './git';
+import './npm-mirror';
+import './rosetta';
+import './node-version';
+import './python-versions';
+
 // Re-export orchestrator (and its types for backward compatibility)
 export {
   fixAll,
