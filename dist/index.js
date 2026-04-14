@@ -39,6 +39,7 @@ const index_2 = require("./fixers/index");
 const calculator_1 = require("./scoring/calculator");
 const aicoevo_client_1 = require("./api/aicoevo-client");
 const index_3 = require("./installers/index");
+const local_state_1 = require("./agent/local-state");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const http = __importStar(require("http"));
@@ -50,16 +51,8 @@ const DATA_FILE = path.join(WEB_DIR, 'scan-data.json');
 const VERSION = "1.0.0";
 function gc(s) { return s >= 90 ? '#22c55e' : s >= 70 ? '#3b82f6' : s >= 50 ? '#eab308' : '#ef4444'; }
 // Security: whitelisted installer commands only (NEVER trust frontend with arbitrary cmd)
-const ALLOWED_COMMANDS = {
-    'claude-code': { cmd: 'npm install -g @anthropic-ai/claude-code --registry=https://registry.npmmirror.com' },
-    'openclaw': { cmd: 'npm install -g openclaw --registry=https://registry.npmmirror.com' },
-    'gemini-cli': { cmd: 'npm install -g @google/gemini-cli --registry=https://registry.npmmirror.com' },
-    'opencode': { cmd: 'npm install -g opencode-ai --registry=https://registry.npmjs.org' },
-    'ccswitch': { cmd: 'npm install -g ccswitch --registry=https://registry.npmjs.org' },
-    'cute-claude-hooks': { cmd: 'npm install -g cute-claude-hooks --registry=https://registry.npmmirror.com' },
-    'xcode-clt': { cmd: 'xcode-select --install' },
-    'gh-copilot': { cmd: 'gh copilot' },
-};
+// 单数据源：命令定义统一存储在 installers/index.ts 的 getAllowedCommands()
+const ALLOWED_COMMANDS = (0, index_3.getAllowedCommands)();
 function serveHttp() {
     const server = http.createServer((req, res) => {
         const pathname = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).pathname;
@@ -80,7 +73,6 @@ function serveHttp() {
         if (pathname === '/api/installers') {
             const all = (0, index_3.getInstallers)();
             const payload = all.map(i => {
-                const allowed = ALLOWED_COMMANDS[i.id];
                 return {
                     id: i.id,
                     name: i.name,
@@ -88,8 +80,8 @@ function serveHttp() {
                     icon: i.icon,
                     needsAdmin: i.needsAdmin,
                     installed: i.installed === undefined ? false : i.installed,
-                    cmd: allowed ? allowed.cmd : '',
-                    type: allowed ? (i.id === 'gh-copilot' ? 'manual' : i.id === 'xcode-clt' ? 'gui' : 'npm') : 'manual',
+                    cmd: i.cmd || '',
+                    type: i.type || 'manual',
                 };
             });
             res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
@@ -173,10 +165,63 @@ function serveHttp() {
             });
             return;
         }
-        // Block all unknown /api/ routes (except stash, feedback, version-check)
-        if (pathname.startsWith('/api/') && pathname !== '/api/stash' && pathname !== '/api/feedback' && pathname !== '/api/version-check') {
+        // Block all unknown /api/ routes (except stash, feedback, version-check, agent)
+        if (pathname.startsWith('/api/') &&
+            pathname !== '/api/stash' &&
+            pathname !== '/api/feedback' &&
+            pathname !== '/api/version-check' &&
+            !pathname.startsWith('/api/agent')) {
             res.writeHead(404);
             res.end('Not Found');
+            return;
+        }
+        // Agent Lite: 本地状态
+        if (pathname === '/api/agent/status' && req.method === 'GET') {
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+            res.end(JSON.stringify((0, local_state_1.getAgentLocalStatus)()));
+            return;
+        }
+        // Agent Lite: 安装本地 runner + hook
+        if (pathname === '/api/agent/enable' && req.method === 'POST') {
+            let body = '';
+            let size = 0;
+            req.on('data', chunk => {
+                size += chunk.length;
+                if (size > MAX_BODY) {
+                    res.writeHead(413);
+                    res.end('Payload Too Large');
+                    return;
+                }
+                body += chunk;
+            });
+            req.on('end', () => {
+                let payload = {};
+                try {
+                    payload = JSON.parse(body);
+                }
+                catch { /* ignore */ }
+                const result = (0, local_state_1.enableAgentExperience)(payload.target || 'all');
+                res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+                res.end(JSON.stringify(result));
+            });
+            return;
+        }
+        // Agent Lite: 暂停上传
+        if (pathname === '/api/agent/pause' && req.method === 'POST') {
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+            res.end(JSON.stringify((0, local_state_1.pauseAgentUploads)(true)));
+            return;
+        }
+        // Agent Lite: 恢复上传
+        if (pathname === '/api/agent/resume' && req.method === 'POST') {
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+            res.end(JSON.stringify((0, local_state_1.pauseAgentUploads)(false)));
+            return;
+        }
+        // Agent Lite: 手动同步一次
+        if (pathname === '/api/agent/sync' && req.method === 'POST') {
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+            res.end(JSON.stringify((0, local_state_1.syncAgentEvents)()));
             return;
         }
         // Version check endpoint
@@ -249,7 +294,9 @@ function serveHttp() {
         }
         // Static files with path traversal protection
         let filePath = path.join(WEB_DIR, pathname === '/' ? 'index.html' : pathname);
-        if (!filePath.startsWith(WEB_DIR)) {
+        // Resolve to absolute path before checking boundary (prevents symlink bypass)
+        filePath = path.resolve(filePath);
+        if (!filePath.startsWith(path.resolve(WEB_DIR))) {
             res.writeHead(403);
             res.end('Forbidden');
             return;
@@ -312,7 +359,15 @@ else if (args.includes('--json')) {
         console.log(JSON.stringify(r, null, 2)); }).catch(console.error);
 }
 else if (args.includes('--help') || args.length === 0) {
-    console.log('MacAICheck - AI Dev Environment Checker\nUsage:\n  mac-aicheck          Run diagnosis\n  mac-aicheck fix      Auto-fix detected issues\n  mac-aicheck fix --dry-run   Show what would be fixed\n  mac-aicheck --serve   Start Web UI\n  mac-aicheck --json    JSON output');
+    console.log('MacAICheck - AI Dev Environment Checker\nUsage:\n  mac-aicheck          Run diagnosis\n  mac-aicheck --serve   Start Web UI\n  mac-aicheck --json    JSON output\n  mac-aicheck agent     Agent Lite commands (install-hook, sync, etc.)');
+}
+else if (args.includes('agent')) {
+    // Agent Lite CLI 子命令
+    const agentArgs = args.slice(args.indexOf('agent') + 1);
+    const { spawn: spawnAsync } = require('child_process');
+    const agentCmd = path.join(__dirname, '../bin/mac-aicheck-agent');
+    const proc = spawnAsync('bash', [agentCmd, ...agentArgs], { stdio: 'inherit' });
+    proc.on('close', (code) => { process.exitCode = code ?? 0; });
 }
 else if (args.includes('fix')) {
     const dryRun = args.includes('--dry-run');
@@ -328,7 +383,6 @@ else if (args.includes('fix')) {
             if (r.fixResult) {
                 const icon = r.fixResult.success ? '[+]' : '[-]';
                 console.log(`${icon} ${r.scannerId}: ${r.fixResult.message}`);
-                // Display verification command if fixer provides one (D-21, PST-04)
                 if (r.fixerId) {
                     const fixer = (0, index_2.getFixerById)(r.fixerId);
                     const verificationCmd = fixer?.getVerificationCommand?.();
@@ -338,7 +392,6 @@ else if (args.includes('fix')) {
                         cmds.forEach(cmd => console.log(`      ${cmd}`));
                     }
                 }
-                // Display nextSteps (now includes guidance from getGuidance) (D-14)
                 if (r.fixResult.nextSteps?.length) {
                     for (const step of r.fixResult.nextSteps) {
                         console.log(`    -> ${step}`);

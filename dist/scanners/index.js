@@ -33,8 +33,20 @@ var gpu_monitor_1 = require("./gpu-monitor");
 Object.defineProperty(exports, "checkGpu", { enumerable: true, get: function () { return gpu_monitor_1.checkGpu; } });
 async function scanAll() {
     const scanners = (0, registry_1.getScanners)();
-    const results = await Promise.all(scanners.map(s => s.scan()));
+    const results = await Promise.all(scanners.map(s => scanWithTimeout(s, 30_000)));
     return results;
+}
+async function scanWithTimeout(scanner, ms) {
+    return Promise.race([
+        scanner.scan(),
+        new Promise(resolve => setTimeout(() => resolve({
+            id: scanner.id,
+            name: scanner.name,
+            category: scanner.category,
+            status: 'unknown',
+            message: `扫描超时（${ms / 1000}s），跳过`,
+        }), ms)),
+    ]);
 }
 async function scanCategory(category) {
     const scanners = (0, registry_1.getScannerByCategory)(category);
