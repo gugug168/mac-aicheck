@@ -4,7 +4,7 @@ import { scanAll } from './scanners/index';
 import { fixAll, getFixerById } from './fixers/index';
 import { calculateScore } from './scoring/calculator';
 import { createPayload, saveLocal, stashData, buildClaimUrl, submitFeedback } from './api/aicoevo-client';
-import { getInstallers } from './installers/index';
+import { getInstallers, getAllowedCommands } from './installers/index';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as http from 'http';
@@ -19,16 +19,8 @@ const VERSION = "1.0.0";
 function gc(s: number) { return s>=90?'#22c55e':s>=70?'#3b82f6':s>=50?'#eab308':'#ef4444'; }
 
 // Security: whitelisted installer commands only (NEVER trust frontend with arbitrary cmd)
-const ALLOWED_COMMANDS: Record<string, { cmd: string }> = {
-  'claude-code':        { cmd: 'npm install -g @anthropic-ai/claude-code --registry=https://registry.npmmirror.com' },
-  'openclaw':           { cmd: 'npm install -g openclaw --registry=https://registry.npmmirror.com' },
-  'gemini-cli':         { cmd: 'npm install -g @google/gemini-cli --registry=https://registry.npmmirror.com' },
-  'opencode':           { cmd: 'npm install -g opencode-ai --registry=https://registry.npmjs.org' },
-  'ccswitch':           { cmd: 'npm install -g ccswitch --registry=https://registry.npmjs.org' },
-  'cute-claude-hooks':  { cmd: 'npm install -g cute-claude-hooks --registry=https://registry.npmmirror.com' },
-  'xcode-clt':          { cmd: 'xcode-select --install' },
-  'gh-copilot':         { cmd: 'gh copilot' },
-};
+// 单数据源：命令定义统一存储在 installers/index.ts 的 getAllowedCommands()
+const ALLOWED_COMMANDS: Record<string, { cmd: string }> = getAllowedCommands();
 
 function serveHttp() {
   const server = http.createServer((req, res) => {
@@ -51,7 +43,6 @@ function serveHttp() {
     if (pathname === '/api/installers') {
       const all = getInstallers();
       const payload = all.map(i => {
-        const allowed = ALLOWED_COMMANDS[i.id];
         return {
           id: i.id,
           name: i.name,
@@ -59,8 +50,8 @@ function serveHttp() {
           icon: i.icon,
           needsAdmin: i.needsAdmin,
           installed: i.installed === undefined ? false : i.installed,
-          cmd: allowed ? allowed.cmd : '',
-          type: allowed ? (i.id === 'gh-copilot' ? 'manual' : i.id === 'xcode-clt' ? 'gui' : 'npm') : 'manual',
+          cmd: i.cmd || '',
+          type: i.type || 'manual',
         };
       });
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });

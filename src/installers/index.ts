@@ -10,6 +10,10 @@ export interface Installer {
   description: string;
   icon: string;
   needsAdmin: boolean;
+  /** 安装命令（部分 installer 如 gh-copilot/xcode-clt 为空） */
+  cmd?: string;
+  /** 安装类型：npm | gui | manual */
+  type?: 'npm' | 'gui' | 'manual';
   run(onProgress: (event: InstallEvent) => void): Promise<InstallResult>;
 }
 
@@ -92,6 +96,8 @@ const claudeCodeInstaller: Installer = {
   description: 'Anthropic 官方 AI 编程 CLI 工具，支持 MCO 多模型编排',
   icon: '🤖',
   needsAdmin: false,
+  cmd: 'npm install -g @anthropic-ai/claude-code --registry=https://registry.npmmirror.com',
+  type: 'npm',
   async run(onProgress): Promise<InstallResult> {
     if (isInstalled('claude-code')) {
       const v = execSync('claude --version 2>/dev/null || echo "已安装"', { encoding: 'utf-8' }).trim();
@@ -119,6 +125,8 @@ const openclawInstaller: Installer = {
   description: '开源 AI 编程框架，支持 Claude/DeepSeek/Kimi 等多模型（内置飞书/Discord）',
   icon: '🦀',
   needsAdmin: false,
+  cmd: 'npm install -g openclaw --registry=https://registry.npmmirror.com',
+  type: 'npm',
   async run(onProgress): Promise<InstallResult> {
     if (isInstalled('openclaw')) {
       const v = execSync('openclaw --version 2>/dev/null || echo "已安装"', { encoding: 'utf-8' }).trim();
@@ -146,6 +154,8 @@ const geminiCliInstaller: Installer = {
   description: 'Google Gemini CLI 工具，Gemini 2.5/Deep Research 支持',
   icon: '✨',
   needsAdmin: false,
+  cmd: 'npm install -g @google/gemini-cli --registry=https://registry.npmmirror.com',
+  type: 'npm',
   async run(onProgress): Promise<InstallResult> {
     if (isInstalled('gemini-cli')) {
       const v = execSync('gemini --version 2>/dev/null || echo "已安装"', { encoding: 'utf-8' }).trim();
@@ -173,6 +183,8 @@ const opencodeInstaller: Installer = {
   description: '开源 AI 编程助手（开源版 Claude Code），支持 75+ 模型，免费跨平台',
   icon: '🔓',
   needsAdmin: false,
+  cmd: 'npm install -g opencode-ai --registry=https://registry.npmjs.org',
+  type: 'npm',
   async run(onProgress): Promise<InstallResult> {
     if (isInstalled('opencode')) {
       const v = execSync('opencode --version 2>/dev/null || echo "已安装"', { encoding: 'utf-8' }).trim();
@@ -201,6 +213,8 @@ const ccswitchInstaller: Installer = {
   description: 'Claude Code 多账号/API Key 切换工具，支持 Claude/Codex/Gemini/OpenCode/OpenClaw',
   icon: '🔄',
   needsAdmin: false,
+  cmd: 'npm install -g ccswitch --registry=https://registry.npmjs.org',
+  type: 'npm',
   async run(onProgress): Promise<InstallResult> {
     if (isInstalled('ccswitch')) {
       const v = execSync('ccswitch --version 2>/dev/null || echo "已安装"', { encoding: 'utf-8' }).trim();
@@ -246,6 +260,8 @@ const cuteClaudeHooksInstaller: Installer = {
   description: 'Claude Code 中文界面汉化包，让 AI 编程助手拥有完整中文体验',
   icon: '🌸',
   needsAdmin: false,
+  cmd: 'npm install -g cute-claude-hooks --registry=https://registry.npmmirror.com',
+  type: 'npm',
   async run(onProgress): Promise<InstallResult> {
     if (!cmdExists('npm')) {
       onProgress({ type: 'done', success: false, message: '请先安装 Node.js' });
@@ -269,6 +285,8 @@ const ghCopilotInstaller: Installer = {
   description: 'GitHub Copilot 命令行工具，代码补全和 AI 问答（需 Copilot 订阅），内置于 gh CLI',
   icon: '💜',
   needsAdmin: false,
+  cmd: 'gh copilot',
+  type: 'manual',
   async run(onProgress): Promise<InstallResult> {
     if (isInstalled('gh-copilot')) {
       onProgress({ type: 'done', success: true, message: 'GitHub Copilot CLI 已安装（gh 内置）' });
@@ -294,6 +312,8 @@ const xcodeCltInstaller: Installer = {
   description: 'macOS 开发工具链基础，git/gcc/make 等编译器依赖（无 IDE 可单独安装）',
   icon: '🔧',
   needsAdmin: false,
+  cmd: 'xcode-select --install',
+  type: 'gui',
   async run(onProgress): Promise<InstallResult> {
     if (isInstalled('xcode-clt')) {
       onProgress({ type: 'done', success: true, message: 'Xcode Command Line Tools 已安装' });
@@ -330,4 +350,12 @@ export function getInstallers(): Installer[] {
 
 export function getInstallerById(id: string) {
   return ALL_INSTALLERS.find(i => i.id === id);
+}
+
+/** 从 installers 动态导出命令白名单（单数据源原则） */
+export function getAllowedCommands(): Record<string, { cmd: string }> {
+  return ALL_INSTALLERS.reduce((acc, i) => {
+    if (i.cmd) acc[i.id] = { cmd: i.cmd };
+    return acc;
+  }, {} as Record<string, { cmd: string }>);
 }
