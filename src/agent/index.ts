@@ -16,6 +16,7 @@ function paths() {
     dailyDir: join(base, 'daily'), agentDir: join(base, 'agent'),
     agentJs: join(base, 'agent', 'agent-lite.js'), agentCmd: join(base, 'agent', 'mac-aicheck-agent'),
     experience: join(base, 'experience.jsonl'),
+    versionCache: join(base, 'version-cache.json'),
   };
 }
 function ensureDir(dir: string) { if (!existsSync(dir)) mkdirSync(dir, { recursive: true }); }
@@ -40,6 +41,191 @@ const SENSITIVE_PATTERNS: Array<{ regex: RegExp; replacement: string }> = [
 
 function sanitizeText(text: string): string { let r = String(text || ''); for (const p of SENSITIVE_PATTERNS) r = r.replace(p.regex, p.replacement); return r; }
 function trimForCapture(text: string): string { const s = sanitizeText(text); return s.length <= 8000 ? s : s.slice(0, 8000) + '\n<TRUNCATED>'; }
+
+// 版本检测和更新检查（参考 gstack）
+const VERSION_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 小时限速
+
+interface VersionInfo {
+  current: string;
+  latest: string;
+  repo: string;
+  lastCheck: string;
+  hasUpdate: boolean;
+}
+
+async function checkForUpdates(): Promise<VersionInfo | null> {
+  const p = paths();
+  const cache = readJson<VersionInfo>(p.versionCache, { current: '', latest: '', repo: '', lastCheck: '', hasUpdate: false });
+
+  // 限速：1 小时内不重复检查
+  if (cache.lastCheck) {
+    const elapsed = Date.now() - new Date(cache.lastCheck).getTime();
+    if (elapsed < VERSION_CHECK_INTERVAL_MS) {
+      return cache.hasUpdate ? cache : null;
+    }
+  }
+
+  // 获取当前安装的版本
+  const currentVersion = await getInstalledVersion();
+  if (!currentVersion) return null;
+
+  // 检查各仓库最新版本
+  const repos = [
+    { name: 'claude-code', cmd: 'claude', repo: 'anthropics/claude-code' },
+    { name: 'openclaw', cmd: 'openclaw', repo: 'openclaw/openclaw' },
+  ];
+
+  const updates: Array<{ name: string; current: string; latest: string }> = [];
+
+  for (const r of repos) {
+    try {
+      const latest = await getLatestVersion(r.repo);
+      const installed = getCommandVersion(r.cmd, currentVersion);
+      if (installed && latest && installed !== latest) {
+        updates.push({ name: r.name, current: installed, latest });
+      }
+    } catch {}
+  }
+
+  const result: VersionInfo = {
+    current: currentVersion,
+    latest: updates.map(u => `${u.name}: ${u.current} → ${u.latest}`).join(', ') || 'up to date',
+    repo: '',
+    lastCheck: nowIso(),
+    hasUpdate: updates.length > 0,
+  };
+
+  writeJson(p.versionCache, result);
+  return result;
+}
+
+function getInstalledVersion(): string | null {
+  try {
+    const nodeVersion = process.version.replace(/^v/, '');
+    const claudeVersion = getCommandVersion('claude', '');
+    const openclawVersion = getCommandVersion('openclaw', '');
+    return `node:${nodeVersion}|claude:${claudeVersion || 'unknown'}|openclaw:${openclawVersion || 'unknown'}`;
+  } catch {
+    return null;
+  }
+}
+
+function getCommandVersion(cmd: string, fallback: string): string {
+  try {
+    const result = execFileSync(cmd, ['--version'], { encoding: 'utf-8', timeout: 5000 });
+    const match = result.match(/(\d+\.\d+\.\d+)/);
+    return match ? match[1] : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function getLatestVersion(repo: string): Promise<string | null> {
+  try {
+    const resp = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+      headers: { 'User-Agent': 'mac-aicheck-agent' },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json() as { tag_name?: string };
+    return data.tag_name?.replace(/^v/, '') || null;
+  } catch {
+    return null;
+  }
+}
+
+async function checkUpdatesWithNotify(): Promise<void> {
+  const info = await checkForUpdates();
+  if (info && info.hasUpdate) {
+    process.stderr.write(`\n🔔 mac-aicheck 版本更新通知:\n`);
+    process.stderr.write(`   ${info.latest}\n`);
+    process.stderr.write(`   运行 'mac-aicheck agent upgrade' 一键更新\n`);
+  }
+}
+
+// 检测命令的安装方式（brew / npm / npx）
+// npm 包名可能和命令名不同，如 @anthropic-ai/claude-code
+const NPM_PKG_MAP: Record<string, string> = {
+  claude: '@anthropic-ai/claude-code',
+  claude_code: '@anthropic-ai/claude-code',
+  openclaw: 'openclaw',
+};
+
+function detectInstaller(cmd: string): { type: 'brew' | 'npm' | 'npx' | 'unknown'; pkg: string } {
+  try {
+    // 检查 which -a 找出所有路径
+    const out = execFileSync('which', ['-a', cmd], { encoding: 'utf-8', timeout: 3000 }).split('\n').filter(Boolean);
+    for (const p of out) {
+      if (p.includes('/Homebrew/') || p.includes('/linuxbrew/')) return { type: 'brew', pkg: cmd };
+      if (p.includes('/node_modules/')) return { type: 'npx', pkg: cmd };
+    }
+    // 检查 npm list -g，找到真实包名
+    const npmPkg = NPM_PKG_MAP[cmd] || cmd;
+    try {
+      const npmOut = execFileSync('npm', ['list', '-g', '--depth=0', 'json'], { encoding: 'utf-8', timeout: 5000 });
+      const npmData = JSON.parse(npmOut);
+      if ((npmData.dependencies || {})[npmPkg]) return { type: 'npm', pkg: npmPkg };
+      // 模糊匹配
+      for (const dep of Object.keys(npmData.dependencies || {})) {
+        if (dep.includes(cmd) || dep.includes(npmPkg)) return { type: 'npm', pkg: dep };
+      }
+    } catch {}
+    // 默认 brew
+    return { type: 'brew', pkg: cmd };
+  } catch {
+    return { type: 'unknown', pkg: cmd };
+  }
+}
+
+async function upgradeCommand(): Promise<{ ok: boolean; results: Array<{ name: string; from: string; to: string; status: string }> }> {
+  const results: Array<{ name: string; from: string; to: string; status: string }> = [];
+  const repos = [
+    { name: 'claude-code', cmd: 'claude', npmPkg: '@anthropic-ai/claude-code', repo: 'anthropics/claude-code' },
+    { name: 'openclaw', cmd: 'openclaw', npmPkg: 'openclaw', repo: 'openclaw/openclaw' },
+  ];
+
+  for (const r of repos) {
+    const current = getCommandVersion(r.cmd, 'unknown');
+    const latest = await getLatestVersion(r.repo);
+    if (!latest || current === latest) {
+      results.push({ name: r.name, from: current, to: latest || current, status: latest ? 'up to date' : 'unknown' });
+      continue;
+    }
+
+    // 优先用 npm 升级（brew cask 可能未安装）
+    let upgraded = false;
+    for (const tryNpm of [true, false]) {
+      if (upgraded) break;
+      try {
+        const installer = detectInstaller(r.cmd);
+        // 首次优先 npm（因为 brew cask 可能没装），失败后换 brew
+        if (tryNpm) {
+          const npmCmd = ['npm', 'install', '-g', r.npmPkg];
+          execFileSync(npmCmd[0], npmCmd.slice(1), { stdio: 'inherit', timeout: 120000 });
+        } else {
+          const brewCmd = ['brew', 'upgrade', r.cmd];
+          execFileSync(brewCmd[0], brewCmd.slice(1), { stdio: 'inherit', timeout: 120000 });
+        }
+        const newVersion = getCommandVersion(r.cmd, '?');
+        results.push({ name: r.name, from: current, to: newVersion, status: 'upgraded' });
+        upgraded = true;
+      } catch (e: unknown) {
+        if (tryNpm) continue; // npm 失败，尝试 brew
+        results.push({ name: r.name, from: current, to: latest, status: `failed: ${e instanceof Error ? e.message : String(e)}` });
+      }
+    }
+  }
+
+  // 清除版本缓存，强制下次重新检查
+  const p = paths();
+  if (existsSync(p.versionCache)) {
+    const cache = readJson<VersionInfo>(p.versionCache, { current: '', latest: '', repo: '', lastCheck: '', hasUpdate: false });
+    cache.lastCheck = ''; // 清除限速标记
+    writeJson(p.versionCache, cache);
+  }
+
+  return { ok: true, results };
+}
 
 // 经验库：已知错误的本地修复建议（类比 Evolver genes.json）
 // 匹配顺序：按出现顺序优先，所以更具体的模式要放前面
@@ -294,6 +480,8 @@ function installLocalAgent() {
 
 async function runOriginalAgent(args: Record<string, unknown>) {
   const original = String(args.original); if (!original) throw new Error('缺少 --original');
+  // 启动时检查更新（参考 gstack，限速 1 小时）
+  checkUpdatesWithNotify().catch(() => {});
   const passthrough = (args._ as string[]) || [];
   const stderrChunks: Buffer[] = [];
   const stdoutChunks: Buffer[] = [];
@@ -367,6 +555,7 @@ async function main(argv: string[]) {
   mac-aicheck agent advice --format json|markdown
   mac-aicheck agent diagnose          分析失败模式，类比 Evolver 信号诊断
   mac-aicheck agent install-local-agent
+  mac-aicheck agent upgrade        一键更新 claude-code / openclaw 到最新版本
   mac-aicheck agent run --agent <name> --original <cmd>
 `);
     return 0;
@@ -441,6 +630,23 @@ async function main(argv: string[]) {
     lines.push('\n---\n运行 `mac-aicheck scan` 获取完整环境诊断。');
     process.stdout.write(lines.join('\n') + '\n');
     return 0;
+  }
+  if (command === 'upgrade') {
+    // 一键更新 claude-code 和 openclaw
+    process.stderr.write('🔍 正在检查可用更新...\n');
+    const result = await upgradeCommand();
+    for (const r of result.results) {
+      if (r.status === 'up to date') {
+        process.stdout.write(`✅ ${r.name}: 已是最新版本 ${r.to}\n`);
+      } else if (r.status === 'upgraded') {
+        process.stdout.write(`✅ ${r.name}: ${r.from} → ${r.to} (已更新)\n`);
+      } else if (r.status === 'unknown') {
+        process.stdout.write(`⚠️  ${r.name}: 无法确定最新版本\n`);
+      } else {
+        process.stdout.write(`❌ ${r.name}: 更新失败 (${r.status})\n`);
+      }
+    }
+    return result.ok ? 0 : 1;
   }
   throw new Error(`未知 agent 命令: ${command}`);
 }
