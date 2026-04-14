@@ -79,4 +79,23 @@ describe('fixer registry (isolation)', () => {
     registerFixer(fixer);
     expect(getFixerByScannerId('unknown-scanner')).toBeUndefined();
   });
+
+  it('clearFixers empties the registry and allows re-registration', () => {
+    const fixer: Fixer = {
+      id: 'test-fixer',
+      name: 'Test Fixer',
+      risk: 'green',
+      scannerIds: ['test-scanner'],
+      canFix: () => false,
+      execute: async () => ({ success: true, message: 'ok' }),
+    };
+    registerFixer(fixer);
+    expect(getFixers()).toHaveLength(1);
+    clearFixers();
+    expect(getFixers()).toHaveLength(0);
+    // After clear, re-registration should work
+    registerFixer(fixer);
+    expect(getFixers()).toHaveLength(1);
+    expect(getFixers()[0].id).toBe('test-fixer');
+  });
 });
