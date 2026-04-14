@@ -1,0 +1,12 @@
+#!/bin/bash
+# Find mac-aicheck agent entry point
+AGENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MAC_AICHECK_DIR="$(dirname "$AGENT_DIR")"
+
+# dist/agent/index.js 是唯一的运行版本
+if [ -f "$MAC_AICHECK_DIR/dist/agent/index.js" ]; then
+  exec node "$MAC_AICHECK_DIR/dist/agent/index.js" "$@"
+else
+  echo "Error: mac-aicheck agent not found. Run: npm run build" >&2
+  exit 1
+fi

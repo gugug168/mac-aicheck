@@ -5,6 +5,7 @@ import { fixAll, getFixerById } from './fixers/index';
 import { calculateScore } from './scoring/calculator';
 import { createPayload, saveLocal, stashData, buildClaimUrl, submitFeedback } from './api/aicoevo-client';
 import { getInstallers, getAllowedCommands } from './installers/index';
+import { getAgentLocalStatus, enableAgentExperience, pauseAgentUploads, syncAgentEvents } from './agent/local-state';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as http from 'http';
@@ -129,10 +130,61 @@ function serveHttp() {
       return;
     }
 
-    // Block all unknown /api/ routes (except stash, feedback, version-check)
-    if (pathname.startsWith('/api/') && pathname !== '/api/stash' && pathname !== '/api/feedback' && pathname !== '/api/version-check') {
+    // Block all unknown /api/ routes (except stash, feedback, version-check, agent)
+    if (pathname.startsWith('/api/') &&
+        pathname !== '/api/stash' &&
+        pathname !== '/api/feedback' &&
+        pathname !== '/api/version-check' &&
+        !pathname.startsWith('/api/agent')) {
       res.writeHead(404);
       res.end('Not Found');
+      return;
+    }
+
+    // Agent Lite: 本地状态
+    if (pathname === '/api/agent/status' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+      res.end(JSON.stringify(getAgentLocalStatus()));
+      return;
+    }
+
+    // Agent Lite: 安装本地 runner + hook
+    if (pathname === '/api/agent/enable' && req.method === 'POST') {
+      let body = '';
+      let size = 0;
+      req.on('data', chunk => {
+        size += chunk.length;
+        if (size > MAX_BODY) { res.writeHead(413); res.end('Payload Too Large'); return; }
+        body += chunk;
+      });
+      req.on('end', () => {
+        let payload: { target?: string } = {};
+        try { payload = JSON.parse(body); } catch { /* ignore */ }
+        const result = enableAgentExperience(payload.target || 'all');
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+        res.end(JSON.stringify(result));
+      });
+      return;
+    }
+
+    // Agent Lite: 暂停上传
+    if (pathname === '/api/agent/pause' && req.method === 'POST') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+      res.end(JSON.stringify(pauseAgentUploads(true)));
+      return;
+    }
+
+    // Agent Lite: 恢复上传
+    if (pathname === '/api/agent/resume' && req.method === 'POST') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+      res.end(JSON.stringify(pauseAgentUploads(false)));
+      return;
+    }
+
+    // Agent Lite: 手动同步一次
+    if (pathname === '/api/agent/sync' && req.method === 'POST') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+      res.end(JSON.stringify(syncAgentEvents()));
       return;
     }
 
@@ -263,7 +315,14 @@ if (args.includes('--serve') || args.includes('--web')) {
 } else if (args.includes('--json')) {
   runScan(false).then(r => { if (r) console.log(JSON.stringify(r, null, 2)); }).catch(console.error);
 } else if (args.includes('--help') || args.length === 0) {
-  console.log('MacAICheck - AI Dev Environment Checker\nUsage:\n  mac-aicheck          Run diagnosis\n  mac-aicheck --serve   Start Web UI\n  mac-aicheck --json    JSON output');
+  console.log('MacAICheck - AI Dev Environment Checker\nUsage:\n  mac-aicheck          Run diagnosis\n  mac-aicheck --serve   Start Web UI\n  mac-aicheck --json    JSON output\n  mac-aicheck agent     Agent Lite commands (install-hook, sync, etc.)');
+} else if (args.includes('agent')) {
+  // Agent Lite CLI 子命令
+  const agentArgs = args.slice(args.indexOf('agent') + 1);
+  const { spawn: spawnAsync } = require('child_process');
+  const agentCmd = path.join(__dirname, '../bin/mac-aicheck-agent');
+  const proc = spawnAsync('bash', [agentCmd, ...agentArgs], { stdio: 'inherit' });
+  proc.on('close', (code: number | null) => { process.exitCode = code ?? 0; });
 } else if (args.includes('fix')) {
   const dryRun = args.includes('--dry-run');
   const riskLevel = args.includes('--green') ? 'green' :
