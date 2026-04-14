@@ -119,6 +119,9 @@ export function getAgentLocalStatus(): AgentStatus {
     uniqueFingerprints: 0,
     repeatedEvents: 0,
     fixedEvents: 0,
+    consecutiveFailures: 0,
+    lastFailureFingerprint: null,
+    lastEventAt: null,
     topProblems: [],
   });
   const advice = readJson<Record<string, unknown>>(paths.adviceJson, {});

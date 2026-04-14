@@ -80,13 +80,37 @@ function createEvent(input: { agent?: string; message?: string; eventType?: stri
   };
 }
 
+const FAILURE_LOOP_THRESHOLD = 5; // 连续同一错误超过此值视为 failure loop
+
 function storeEvent(event: ReturnType<typeof createEvent>) {
   const p = paths();
   appendJsonl(p.outbox, event);
   const date = event.occurredAt.slice(0, 10);
   const file = join(p.dailyDir, `${date}.json`);
-  const pack = readJson(file, { date, totalEvents: 0, uniqueFingerprints: 0, repeatedEvents: 0, fixedEvents: 0, topProblems: [] as Array<{ fingerprint: string; title: string; count: number; status: string }> });
+  const defaultPack = {
+    date, totalEvents: 0, uniqueFingerprints: 0, repeatedEvents: 0, fixedEvents: 0,
+    consecutiveFailures: 0, lastFailureFingerprint: null as string | null,
+    lastEventAt: null as string | null,
+    topProblems: [] as Array<{ fingerprint: string; title: string; count: number; status: string }>,
+  };
+  const pack = readJson(file, defaultPack);
   pack.totalEvents++;
+  pack.lastEventAt = event.occurredAt;
+
+  // 连续失败追踪（Evolver 风格）
+  if (event.severity === 'error' || event.severity === 'warn') {
+    if (pack.lastFailureFingerprint === event.fingerprint) {
+      pack.consecutiveFailures++;
+    } else {
+      pack.consecutiveFailures = 1;
+      pack.lastFailureFingerprint = event.fingerprint;
+    }
+    // 检测 failure loop
+    if (pack.consecutiveFailures >= FAILURE_LOOP_THRESHOLD) {
+      pack.topProblems.find(item => item.fingerprint === event.fingerprint)!.status = 'looping';
+    }
+  }
+
   const prob = pack.topProblems.find(item => item.fingerprint === event.fingerprint);
   if (prob) { prob.count++; prob.status = 'repeated'; pack.repeatedEvents++; }
   else pack.topProblems.push({ fingerprint: event.fingerprint, title: event.sanitizedMessage.split('\n')[0].slice(0, 120) || event.eventType, count: 1, status: 'new' });
@@ -281,6 +305,7 @@ async function main(argv: string[]) {
   mac-aicheck agent sync
   mac-aicheck agent pause|resume
   mac-aicheck agent advice --format json|markdown
+  mac-aicheck agent diagnose          分析失败模式，类比 Evolver 信号诊断
   mac-aicheck agent install-local-agent
   mac-aicheck agent run --agent <name> --original <cmd>
 `);
@@ -321,6 +346,41 @@ async function main(argv: string[]) {
     const p = paths(); const fmt = String(args.format || 'json'); const f = fmt === 'markdown' ? p.adviceMd : p.adviceJson;
     const content = existsSync(f) ? readFileSync(f, 'utf-8') : (fmt === 'markdown' ? '# AICOEVO 修复建议\n\n暂无建议。\n' : '{}\n');
     process.stdout.write(content.endsWith('\n') ? content : content + '\n'); return 0;
+  }
+  if (command === 'diagnose') {
+    // 分析失败模式，类似 Evolver 的信号诊断
+    const p = paths();
+    const todayFile = join(p.dailyDir, `${today()}.json`);
+    const defaultPack = { date: today(), totalEvents: 0, uniqueFingerprints: 0, repeatedEvents: 0, fixedEvents: 0, consecutiveFailures: 0, lastFailureFingerprint: null as string | null, lastEventAt: null as string | null, topProblems: [] as Array<{ fingerprint: string; title: string; count: number; status: string }> };
+    const raw = readJson<typeof defaultPack>(todayFile, defaultPack);
+    const pack = raw || defaultPack;
+    const lines: string[] = [`# AI Agent 诊断报告 - ${today()}`, ''];
+    if (!pack) {
+      lines.push('暂无数据。正常运行至少一次后会有诊断信息。');
+    } else {
+      lines.push(`总事件数: ${pack.totalEvents}`);
+      lines.push(`唯一错误: ${pack.uniqueFingerprints}`);
+      lines.push(`重复错误: ${pack.repeatedEvents}`);
+      lines.push(`连续失败: ${pack.consecutiveFailures}`);
+      if (pack.consecutiveFailures >= FAILURE_LOOP_THRESHOLD) {
+        lines.push(`\n⚠️  检测到 Failure Loop: 同一错误连续出现 ${pack.consecutiveFailures} 次`);
+      }
+      if (pack.lastEventAt) {
+        const minsAgo = Math.round((Date.now() - new Date(pack.lastEventAt).getTime()) / 60000);
+        lines.push(`最后事件: ${minsAgo} 分钟前`);
+        if (minsAgo > 60) {
+          lines.push('\n💤 静默警告: 超过 1 小时无活动');
+        }
+      }
+      lines.push('\n## Top 问题');
+      for (const prob of (pack.topProblems || []).slice(0, 5)) {
+        const loopMark = prob.status === 'looping' ? ' 🔄 LOOP' : prob.status === 'repeated' ? ' ↻' : '';
+        lines.push(`- [${prob.count}次] ${prob.title}${loopMark}`);
+      }
+    }
+    lines.push('\n---\n运行 `mac-aicheck scan` 获取完整环境诊断。');
+    process.stdout.write(lines.join('\n') + '\n');
+    return 0;
   }
   throw new Error(`未知 agent 命令: ${command}`);
 }

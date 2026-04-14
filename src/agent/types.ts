@@ -51,6 +51,9 @@ export interface DailyPack {
   uniqueFingerprints: number;
   repeatedEvents: number;
   fixedEvents: number;
+  consecutiveFailures: number;      // 连续失败计数（用于检测 failure loop）
+  lastFailureFingerprint: string | null;  // 上次失败的 fingerprint
+  lastEventAt: string | null;        // 上次事件时间（用于检测静默）
   topProblems: Array<{
     fingerprint: string;
     title: string;
