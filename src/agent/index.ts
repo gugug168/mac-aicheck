@@ -232,24 +232,27 @@ async function runOriginalAgent(args: Record<string, unknown>) {
   const stderrText = Buffer.concat(stderrChunks).toString('utf-8');
   const stdoutText = Buffer.concat(stdoutChunks).toString('utf-8');
 
-  // 提取 Claude Code 输出中的 Error: 块（命令执行失败的错误）
+  // 提取 Claude Code 输出中的错误块
   const errorBlocks: string[] = [];
-  const errorBlockRegex = /^Error:.*$/gm;
-  let match;
-  while ((match = errorBlockRegex.exec(stdoutText)) !== null) {
-    const block = match[0];
-    // 收集后续几行作为完整错误上下文
-    const lines = stdoutText.slice(match.index).split('\n');
-    const context = lines.slice(0, 6).join('\n');
-    if (context.trim()) errorBlocks.push(context);
-  }
-  // 也提取 Exit code 相关的错误行
-  const exitCodeRegex = /^Error: Exit code \d+.*$/gm;
-  while ((match = exitCodeRegex.exec(stdoutText)) !== null) {
-    const lines = stdoutText.slice(match.index).split('\n');
-    const context = lines.slice(0, 4).join('\n');
-    if (context.trim() && !errorBlocks.some(b => b.includes(match![0]))) errorBlocks.push(context);
-  }
+  const extractBlock = (regex: RegExp, maxLines = 6) => {
+    let match;
+    while ((match = regex.exec(stdoutText)) !== null) {
+      const lines = stdoutText.slice(match.index).split('\n');
+      const context = lines.slice(0, maxLines).join('\n');
+      if (context.trim() && !errorBlocks.some(b => b.includes(match![0]))) {
+        errorBlocks.push(context);
+      }
+    }
+  };
+  extractBlock(/^Error:.*$/gm);
+  extractBlock(/^Error: Exit code \d+.*$/gm);
+  extractBlock(/^✘ .*$/gm, 4);          // Claude Code ✘ 前缀错误
+  extractBlock(/^unknown flag:.*$/gm, 3);  // CLI 参数错误
+  extractBlock(/^Unknown skill:.*$/gm, 3); // Claude Code 技能不存在
+  extractBlock(/^fatal:.*$/gm, 4);          // git fatal 错误
+  extractBlock(/^GraphQL:.*$/gm, 3);        // GitHub API 错误
+  extractBlock(/^    at .*$/gm, 5);          // JavaScript stack trace
+  extractBlock(/^  File ".*$/gm, 5);        // Python traceback
 
   // 优先用 stderr，其次用提取的 Error 块
   const errorMessage = stderrText.trim() || errorBlocks.join('\n---\n');
