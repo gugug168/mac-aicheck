@@ -15,6 +15,7 @@ function paths() {
     adviceJson: join(base, 'advice', 'latest.json'), adviceMd: join(base, 'advice', 'latest.md'),
     dailyDir: join(base, 'daily'), agentDir: join(base, 'agent'),
     agentJs: join(base, 'agent', 'agent-lite.js'), agentCmd: join(base, 'agent', 'mac-aicheck-agent'),
+    experience: join(base, 'experience.jsonl'),
   };
 }
 function ensureDir(dir: string) { if (!existsSync(dir)) mkdirSync(dir, { recursive: true }); }
@@ -39,6 +40,53 @@ const SENSITIVE_PATTERNS: Array<{ regex: RegExp; replacement: string }> = [
 
 function sanitizeText(text: string): string { let r = String(text || ''); for (const p of SENSITIVE_PATTERNS) r = r.replace(p.regex, p.replacement); return r; }
 function trimForCapture(text: string): string { const s = sanitizeText(text); return s.length <= 8000 ? s : s.slice(0, 8000) + '\n<TRUNCATED>'; }
+
+// 经验库：已知错误的本地修复建议（类比 Evolver genes.json）
+// 匹配顺序：按出现顺序优先，所以更具体的模式要放前面
+const EXPERIENCE_PATTERNS: Array<{ patterns: string[]; title: string; advice: string; commands?: string[] }> = [
+  // 高优先级：非常具体的错误
+  { patterns: ['ModuleNotFoundError', 'No module named', 'ImportError'], title: 'Python 模块缺失', advice: '安装缺失的 Python 依赖', commands: ['pip install <module>', 'pip3 install <module>'] },
+  { patterns: ['SyntaxError:', 'IndentationError', 'TabError'], title: 'Python 语法错误', advice: '检查 Python 代码缩进和语法', commands: ['python3 -m py_compile <file>'] },
+  { patterns: ['TypeError:', 'AttributeError:', 'KeyError:', 'ValueError:'], title: 'Python 运行时错误', advice: '检查数据类型和属性访问', commands: [] },
+  { patterns: ['alembic'], title: 'Alembic 数据库迁移工具缺失', advice: '安装 alembic', commands: ['pip install alembic', 'pip3 install alembic'] },
+  { patterns: ['Permission denied', 'EACCES', 'operation not permitted'], title: '权限错误', advice: '需要提升权限或检查文件权限', commands: ['ls -la', 'sudo <cmd>'] },
+  { patterns: ['ECONNREFUSED', 'Connection refused'], title: '连接被拒绝', advice: '检查服务是否运行，或网络是否正常', commands: [] },
+  { patterns: ['ETIMEDOUT', 'Timed out'], title: '连接超时', advice: '网络连接超时，稍后重试', commands: [] },
+  { patterns: ['MCP server error', 'mcp server', 'MCP error'], title: 'MCP 服务器错误', advice: 'MCP 服务器连接失败，检查配置和日志', commands: [] },
+  // 中优先级：特定类型的错误
+  { patterns: ['unknown flag:', 'invalid option', 'Unknown skill:'], title: '命令参数错误', advice: '命令参数不正确，检查帮助信息', commands: ['<cmd> --help'] },
+  { patterns: ['fatal:', 'not an empty directory', 'needs merge'], title: 'Git 操作错误', advice: '检查 git 仓库状态', commands: ['git status', 'git pull --rebase'] },
+  { patterns: ['command not found', 'not found:', 'ENOENT'], title: '命令不存在', advice: '请安装缺失的命令，或检查 PATH', commands: ['which <cmd>', 'brew install <pkg>'] },
+  { patterns: ['Traceback', 'most recent call last'], title: '代码执行错误', advice: '查看上方堆栈跟踪定位错误位置', commands: [] },
+  { patterns: ['GraphQL:', 'GitHub API'], title: 'GitHub API 错误', advice: '检查 GitHub 认证状态和网络连接', commands: ['gh auth status'] },
+  // 低优先级：通用的错误
+  { patterns: ['npm', 'node_modules', 'package.json'], title: 'Node.js 项目问题', advice: '检查 Node.js 环境', commands: ['npm install', 'node --version'] },
+  { patterns: ['git'], title: 'Git 错误', advice: '检查 git 仓库状态', commands: ['git status', 'git log'] },
+];
+
+function lookupExperience(message: string): { title: string; advice: string; commands: string[] } | null {
+  for (const exp of EXPERIENCE_PATTERNS) {
+    for (const pattern of exp.patterns) {
+      if (message.toLowerCase().includes(pattern.toLowerCase())) {
+        return { title: exp.title, advice: exp.advice, commands: exp.commands || [] };
+      }
+    }
+  }
+  return null;
+}
+
+function appendExperience(event: { fingerprint: string; sanitizedMessage: string; eventType: string }, exp: { title: string; advice: string; commands: string[] }) {
+  const p = paths();
+  appendJsonl(p.experience, {
+    fingerprint: event.fingerprint,
+    eventType: event.eventType,
+    title: exp.title,
+    advice: exp.advice,
+    commands: exp.commands,
+    happenedAt: nowIso(),
+    resolved: false,
+  });
+}
 
 function loadConfig() {
   const p = paths();
@@ -284,7 +332,19 @@ async function runOriginalAgent(args: Record<string, unknown>) {
 
   if (hasError) {
     const msg = errorMessage || `${normalizeAgent(String(args.agent))} exited with code ${exitCode}`;
-    const event = storeEvent(createEvent({ agent: String(args.agent), message: msg, severity: exitCode === 0 && errorBlocks.length ? 'warn' : 'error' }));
+    const event = createEvent({ agent: String(args.agent), message: msg, severity: exitCode === 0 && errorBlocks.length ? 'warn' : 'error' });
+    storeEvent(event);
+    // 查找本地经验库，给出即时建议
+    const exp = lookupExperience(msg);
+    if (exp) {
+      appendExperience(event, exp);
+      process.stderr.write(`\n💡 mac-aicheck 经验库建议:\n`);
+      process.stderr.write(`   ${exp.title}\n`);
+      process.stderr.write(`   ${exp.advice}\n`);
+      if (exp.commands.length > 0) {
+        process.stderr.write(`   可尝试: ${exp.commands.join(' | ')}\n`);
+      }
+    }
     const config = loadConfig(); if (config.autoSync && config.shareData && !config.paused) { try { await syncEvents(); } catch {} }
     process.stderr.write(`\nmac-aicheck: 已记录 Agent 问题 ${event.eventId}\n`);
   }
