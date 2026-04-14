@@ -78,16 +78,50 @@ function collectSystemInfo(): SystemInfo {
 
 // ===== HTTP Helper =====
 
-async function apiFetch<T>(url: string, options?: RequestInit): Promise<T> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
-  try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    if (!response.ok) throw new Error(`API 错误: ${response.status} ${response.statusText}`);
-    return response.json() as Promise<T>;
-  } finally {
-    clearTimeout(timer);
+const DEFAULT_TIMEOUT_MS = 8000;
+const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
+
+interface FetchOptions extends RequestInit {
+  timeoutMs?: number;
+}
+
+/**
+ * Fetch with timeout and exponential-backoff retry.
+ * Retries on network errors and retryable HTTP status codes.
+ */
+async function apiFetch<T>(url: string, options?: FetchOptions): Promise<T> {
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxRetries = 3;
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      if (response.ok) {
+        return response.json() as Promise<T>;
+      }
+      if (!RETRYABLE_STATUS_CODES.has(response.status) || attempt === maxRetries) {
+        throw new Error(`API 错误: ${response.status} ${response.statusText}`);
+      }
+      lastError = new Error(`API 错误: ${response.status} ${response.statusText}`);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (lastError.name === 'AbortError' || attempt === maxRetries) {
+        throw lastError;
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+
+    // Exponential backoff: 500ms, 1000ms, 2000ms
+    if (attempt < maxRetries) {
+      await new Promise(resolve => setTimeout(resolve, 500 * Math.pow(2, attempt)));
+    }
   }
+
+  throw lastError ?? new Error('API 请求失败');
 }
 
 // ===== Payload Builder =====
