@@ -242,6 +242,7 @@ async function main(argv: string[]) {
     process.stdout.write(`mac-aicheck Agent Lite
 
 用法:
+  mac-aicheck agent enable --target claude-code|all  一键启用监控
   mac-aicheck agent install-hook --target claude-code|all
   mac-aicheck agent uninstall-hook --target all
   mac-aicheck agent capture --agent <name> --message <text>
@@ -265,6 +266,23 @@ async function main(argv: string[]) {
   if (command === 'pause' || command === 'resume') { const cfg = loadConfig(); cfg.paused = command === 'pause'; saveConfig(cfg); process.stdout.write(command === 'pause' ? '已暂停自动上传。\n' : '已恢复自动上传。\n'); return 0; }
   if (command === 'install-hook') { const r = installHook(args); process.stdout.write(`已安装 Hook: ${r.agents.map((a: { target: string }) => a.target).join(', ')}\n`); return 0; }
   if (command === 'install-local-agent') { const r = installLocalAgent(); process.stdout.write(JSON.stringify({ ok: true, ...r }) + '\n'); return 0; }
+  if (command === 'enable') {
+    // 一键安装：runner + hook + 启用同步
+    const target = String(args.target || 'all');
+    const r = installLocalAgent();
+    const hookResult = installHook({ target });
+    const cfg = loadConfig();
+    cfg.shareData = true;
+    cfg.autoSync = true;
+    cfg.paused = false;
+    saveConfig(cfg);
+    process.stdout.write(`mac-aicheck Agent Lite 已启用\n`);
+    process.stdout.write(`  Agent Runner: ${r.agentJs}\n`);
+    process.stdout.write(`  Hook: ${hookResult.agents.map((a: { target: string }) => a.target).join(', ')}\n`);
+    process.stdout.write(`  自动同步: 已启用\n`);
+    process.stdout.write(`\n请运行: source ~/.zshrc  (或重启终端)\n`);
+    return 0;
+  }
   if (command === 'uninstall-hook') { uninstallHook(args); process.stdout.write('已卸载 mac-aicheck Agent Hook。\n'); return 0; }
   if (command === 'run') return await runOriginalAgent(args);
   if (command === 'advice') {
