@@ -222,13 +222,42 @@ function installLocalAgent() {
 
 async function runOriginalAgent(args: Record<string, unknown>) {
   const original = String(args.original); if (!original) throw new Error('缺少 --original');
-  const passthrough = (args._ as string[]) || []; const stderrChunks: Buffer[] = [];
-  const child = spawn(original, passthrough, { stdio: ['inherit', 'inherit', 'pipe'], shell: process.platform === 'darwin' ? '/bin/zsh' : '/bin/sh' });
+  const passthrough = (args._ as string[]) || [];
+  const stderrChunks: Buffer[] = [];
+  const stdoutChunks: Buffer[] = [];
+  const child = spawn(original, passthrough, { stdio: ['inherit', 'pipe', 'pipe'], shell: process.platform === 'darwin' ? '/bin/zsh' : '/bin/sh' });
   child.stderr?.on('data', (c: Buffer) => { stderrChunks.push(c); process.stderr.write(c); });
+  child.stdout?.on('data', (c: Buffer) => { stdoutChunks.push(c); process.stdout.write(c); });
   const exitCode = await new Promise<number>(resolve => { child.on('error', (e: Error) => { stderrChunks.push(Buffer.from(e.message)); resolve(127); }); child.on('close', c => resolve(c ?? 0)); });
   const stderrText = Buffer.concat(stderrChunks).toString('utf-8');
-  if (exitCode !== 0 || stderrText.trim()) {
-    const event = storeEvent(createEvent({ agent: String(args.agent), message: stderrText.trim() || `${normalizeAgent(String(args.agent))} exited with code ${exitCode}`, severity: exitCode === 0 ? 'warn' : 'error' }));
+  const stdoutText = Buffer.concat(stdoutChunks).toString('utf-8');
+
+  // 提取 Claude Code 输出中的 Error: 块（命令执行失败的错误）
+  const errorBlocks: string[] = [];
+  const errorBlockRegex = /^Error:.*$/gm;
+  let match;
+  while ((match = errorBlockRegex.exec(stdoutText)) !== null) {
+    const block = match[0];
+    // 收集后续几行作为完整错误上下文
+    const lines = stdoutText.slice(match.index).split('\n');
+    const context = lines.slice(0, 6).join('\n');
+    if (context.trim()) errorBlocks.push(context);
+  }
+  // 也提取 Exit code 相关的错误行
+  const exitCodeRegex = /^Error: Exit code \d+.*$/gm;
+  while ((match = exitCodeRegex.exec(stdoutText)) !== null) {
+    const lines = stdoutText.slice(match.index).split('\n');
+    const context = lines.slice(0, 4).join('\n');
+    if (context.trim() && !errorBlocks.some(b => b.includes(match![0]))) errorBlocks.push(context);
+  }
+
+  // 优先用 stderr，其次用提取的 Error 块
+  const errorMessage = stderrText.trim() || errorBlocks.join('\n---\n');
+  const hasError = exitCode !== 0 || !!errorBlocks.length;
+
+  if (hasError) {
+    const msg = errorMessage || `${normalizeAgent(String(args.agent))} exited with code ${exitCode}`;
+    const event = storeEvent(createEvent({ agent: String(args.agent), message: msg, severity: exitCode === 0 && errorBlocks.length ? 'warn' : 'error' }));
     const config = loadConfig(); if (config.autoSync && config.shareData && !config.paused) { try { await syncEvents(); } catch {} }
     process.stderr.write(`\nmac-aicheck: 已记录 Agent 问题 ${event.eventId}\n`);
   }
