@@ -444,7 +444,15 @@ function stripHookBlock(text: string) {
 function installHook(args: Record<string, unknown>) {
   const p = paths();
   const target = String(args.target || 'all');
-  const agents = (target === 'all' ? [{ target: 'claude-code', command: 'claude', functionName: 'claude' }] : target === 'claude-code' || target === 'claude' ? [{ target: 'claude-code', command: 'claude', functionName: 'claude' }] : [{ target: 'openclaw', command: 'openclaw', functionName: 'openclaw' }]).map(a => ({ ...a, original: resolveCommand(a.command) }));
+  const agents = (target === 'all'
+    ? [
+        { target: 'claude-code', command: 'claude', functionName: 'claude' },
+        { target: 'openclaw', command: 'openclaw', functionName: 'openclaw' },
+      ]
+    : target === 'claude-code' || target === 'claude'
+    ? [{ target: 'claude-code', command: 'claude', functionName: 'claude' }]
+    : [{ target: 'openclaw', command: 'openclaw', functionName: 'openclaw' }]
+  ).map(a => ({ ...a, original: resolveCommand(a.command) }));
   const profiles = defaultProfilePaths();
   const hooks = readJson(p.hooks, { installedAt: null as string | null, profiles: [] as string[], agents: [] as Array<{ target: string; command: string; functionName: string; original: string }> });
   hooks.installedAt = nowIso(); hooks.agents = agents; hooks.profiles = profiles; writeJson(p.hooks, hooks);
