@@ -500,6 +500,16 @@ async function runOriginalAgent(args: Record<string, unknown>) {
   const stderrText = Buffer.concat(stderrChunks).toString('utf-8');
   const stdoutText = Buffer.concat(stdoutChunks).toString('utf-8');
 
+  // 已知非关键错误的过滤模式（不记录，不上报）
+  // 这些是 CLI 参数校验提示，不是真正的运行时失败
+  const NOISE_PATTERNS: Array<{ regex: RegExp; reason: string }> = [
+    { regex: /Input must be provided either through stdin or as a prompt argument when using --print/i, reason: '--print 参数校验（正常行为）' },
+    { regex: /^Error: Input must be provided/i, reason: '--print 参数校验（正常行为）' },
+  ];
+  function isNoise(msg: string): boolean {
+    return NOISE_PATTERNS.some(p => p.regex.test(msg));
+  }
+
   // 提取 Claude Code 输出中的错误块
   const errorBlocks: string[] = [];
   const extractBlock = (regex: RegExp, maxLines = 6) => {
@@ -523,12 +533,15 @@ async function runOriginalAgent(args: Record<string, unknown>) {
   extractBlock(/^  File ".*$/gm, 5);        // Python traceback
 
   // 优先用 stderr，其次用提取的 Error 块
-  const errorMessage = stderrText.trim() || errorBlocks.join('\n---\n');
-  const hasError = exitCode !== 0 || !!errorBlocks.length;
+  const rawErrorMessage = stderrText.trim() || errorBlocks.join('\n---\n');
+  const errorMessage = rawErrorMessage;
 
-  if (hasError) {
+  // 真正的错误判断：exit code 非零 且 不是已知噪声错误
+  const hasRealError = exitCode !== 0 && !isNoise(rawErrorMessage);
+
+  if (hasRealError) {
     const msg = errorMessage || `${normalizeAgent(String(args.agent))} exited with code ${exitCode}`;
-    const event = createEvent({ agent: String(args.agent), message: msg, severity: exitCode === 0 && errorBlocks.length ? 'warn' : 'error' });
+    const event = createEvent({ agent: String(args.agent), message: msg, severity: 'error' });
     storeEvent(event);
     // 查找本地经验库，给出即时建议
     const exp = lookupExperience(msg);
