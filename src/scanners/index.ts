@@ -28,8 +28,25 @@ export type { ScanResult, Scanner, ScannerResult } from './types';
 
 export async function scanAll(): Promise<ScanResult[]> {
   const scanners = getScanners();
-  const results = await Promise.all(scanners.map(s => s.scan()));
+  const results = await Promise.all(
+    scanners.map(s => scanWithTimeout(s, 30_000))
+  );
   return results;
+}
+
+async function scanWithTimeout(scanner: ReturnType<typeof getScanners>[number], ms: number): Promise<ScanResult> {
+  return Promise.race([
+    scanner.scan(),
+    new Promise<ScanResult>(resolve =>
+      setTimeout(() => resolve({
+        id: scanner.id,
+        name: scanner.name,
+        category: scanner.category,
+        status: 'unknown' as const,
+        message: `扫描超时（${ms / 1000}s），跳过`,
+      }), ms)
+    ),
+  ]);
 }
 
 export async function scanCategory(category: string): Promise<ScanResult[]> {
