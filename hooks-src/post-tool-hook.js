@@ -74,7 +74,7 @@ process.stdin.on('end', () => {
 
 function handleToolResult(data) {
   // Only handle Bash and Agent tools
-  if (!['Bash', 'Agent', 'Task', 'bashcon'].some(t => data.toolName?.toLowerCase().includes(t))) {
+  if (!['bash', 'agent', 'task', 'bashcon'].some(t => data.toolName?.toLowerCase().includes(t))) {
     return;
   }
 
