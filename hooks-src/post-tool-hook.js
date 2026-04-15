@@ -3,10 +3,10 @@
 // PostToolUse hook: 捕获 Bash/Agent 执行错误，存储到经验库
 // 从 stdin 读取 hook payload
 
-import { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from 'fs';
-import { join } from 'path';
-import { homedir } from 'os';
-import crypto from 'node:crypto';
+const { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } = require('fs');
+const { join } = require('path');
+const { homedir } = require('os');
+const crypto = require('crypto');
 
 function getHome(): string { return process.env.HOME || homedir(); }
 const BASE_DIR = join(getHome(), '.mac-aicheck');
@@ -82,7 +82,7 @@ process.stdin.on('end', () => {
 
 function handleToolResult(data: HookPayload): void {
   // Only handle Bash and Agent tools
-  if (!['Bash', 'Agent', 'Task', 'BashCon'.toLowerCase()].some(t => data.toolName?.toLowerCase().includes(t.toLowerCase()))) {
+  if (!['Bash', 'Agent', 'Task', 'bashcon'].some(t => data.toolName?.toLowerCase().includes(t))) {
     return;
   }
 

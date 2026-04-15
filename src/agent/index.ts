@@ -481,9 +481,14 @@ function installSettingsHook(): { hookType: 'settings'; hooks: string[] } {
   const hooksDir = join(getHome(), '.claude', 'hooks');
   ensureDir(hooksDir);
 
-  // Copy hook scripts to ~/.claude/hooks/
-  const sessionHookSrc = process.argv[1]?.replace(/index\.ts$/, 'session-start-hook.ts') || __filename;
-  const postToolHookSrc = process.argv[1]?.replace(/index\.ts$/, 'post-tool-hook.ts') || __filename;
+  // Resolve hook source files from hooks-src/ directory
+  const execPath = process.argv[1] || __filename;
+  const projectRoot = execPath.includes('/dist/')
+    ? execPath.replace(/\/dist\/.*$/, '')  // e.g. /path/to/mac-aicheck
+    : execPath.replace(/\/src\/.*$/, ''); // same
+
+  const sessionHookSrc = join(projectRoot, 'hooks-src', 'session-start-hook.js');
+  const postToolHookSrc = join(projectRoot, 'hooks-src', 'post-tool-hook.js');
 
   const sessionHookDest = join(hooksDir, 'mac-aicheck-session-start.js');
   const postToolHookDest = join(hooksDir, 'mac-aicheck-post-tool.js');
@@ -491,12 +496,16 @@ function installSettingsHook(): { hookType: 'settings'; hooks: string[] } {
   try {
     if (existsSync(sessionHookSrc)) {
       writeFileSync(sessionHookDest, readFileSync(sessionHookSrc, 'utf-8'), { mode: 0o755 });
+    } else {
+      throw new Error(`源文件不存在: ${sessionHookSrc}`);
     }
     if (existsSync(postToolHookSrc)) {
       writeFileSync(postToolHookDest, readFileSync(postToolHookSrc, 'utf-8'), { mode: 0o755 });
+    } else {
+      throw new Error(`源文件不存在: ${postToolHookSrc}`);
     }
   } catch (e) {
-    // Fallback: write inline scripts
+    throw new Error(`无法复制 hook 脚本: ${e}`);
   }
 
   // Read existing settings
@@ -765,7 +774,7 @@ async function main(argv: string[]) {
     process.stderr.write(`  ✓ 已安装 SessionStart Hook: ${settingsHooks.hooks.join(', ')}\n`);
 
     // Step 3: Backup and update hooks.json
-    const hooksData = readJson(p.hooks, {});
+    const hooksData = readJson<{ migratedAt?: string; hookType?: string }>(p.hooks, {});
     hooksData.migratedAt = nowIso();
     hooksData.hookType = 'settings';
     writeJson(p.hooks, hooksData);

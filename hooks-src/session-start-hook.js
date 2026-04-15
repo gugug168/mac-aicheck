@@ -3,11 +3,11 @@
 // SessionStart hook: 后台检查版本更新，不阻塞 Claude Code 启动
 // 参考 gsd-check-update.js 的后台执行模式
 
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
-import { join } from 'path';
-import { homedir } from 'os';
-import { spawn, execFileSync } from 'child_process';
-import crypto from 'node:crypto';
+const { existsSync, mkdirSync, writeFileSync, readFileSync } = require('fs');
+const { join } = require('path');
+const { homedir } = require('os');
+const { spawn, execFileSync } = require('child_process');
+const crypto = require('crypto');
 
 function getHome(): string { return process.env.HOME || homedir(); }
 const CACHE_DIR = join(getHome(), '.cache', 'mac-aicheck');
