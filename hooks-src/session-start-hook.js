@@ -9,7 +9,7 @@ const { homedir } = require('os');
 const { spawn, execFileSync } = require('child_process');
 const crypto = require('crypto');
 
-function getHome(): string { return process.env.HOME || homedir(); }
+function getHome() { return process.env.HOME || homedir(); }
 const CACHE_DIR = join(getHome(), '.cache', 'mac-aicheck');
 const CACHE_FILE = join(CACHE_DIR, 'version-check.json');
 const VERSION_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
