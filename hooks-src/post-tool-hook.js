@@ -8,25 +8,25 @@ const { join } = require('path');
 const { homedir } = require('os');
 const crypto = require('crypto');
 
-function getHome(): string { return process.env.HOME || homedir(); }
+function getHome() { return process.env.HOME || homedir(); }
 const BASE_DIR = join(getHome(), '.mac-aicheck');
 const OUTBOX_FILE = join(BASE_DIR, 'outbox', 'events.jsonl');
 const EXPERIENCE_FILE = join(BASE_DIR, 'experience.jsonl');
 const DAILY_DIR = join(BASE_DIR, 'daily');
 
-function ensureDir(dir: string): void {
+function ensureDir(dir) {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
-function nowIso(): string { return new Date().toISOString(); }
-function today(): string { return nowIso().slice(0, 10); }
+function nowIso() { return new Date().toISOString(); }
+function today() { return nowIso().slice(0, 10); }
 
-function shortHash(v: string): string {
+function shortHash(v) {
   return crypto.createHash('sha256').update(v).digest('hex').slice(0, 16);
 }
 
 // Experience patterns (same as agent-lite)
-const EXPERIENCE_PATTERNS: Array<{ patterns: string[]; title: string; advice: string; commands?: string[] }> = [
+const EXPERIENCE_PATTERNS = [
   { patterns: ['ModuleNotFoundError', 'No module named', 'ImportError'], title: 'Python 模块缺失', advice: '安装缺失的 Python 依赖', commands: ['pip install <module>', 'pip3 install <module>'] },
   { patterns: ['SyntaxError:', 'IndentationError', 'TabError'], title: 'Python 语法错误', advice: '检查 Python 代码缩进和语法', commands: ['python3 -m py_compile <file>'] },
   { patterns: ['TypeError:', 'AttributeError:', 'KeyError:', 'ValueError:'], title: 'Python 运行时错误', advice: '检查数据类型和属性访问', commands: [] },
@@ -44,7 +44,7 @@ const EXPERIENCE_PATTERNS: Array<{ patterns: string[]; title: string; advice: st
   { patterns: ['git'], title: 'Git 错误', advice: '检查 git 仓库状态', commands: ['git status', 'git log'] },
 ];
 
-function lookupExperience(message: string): { title: string; advice: string; commands: string[] } | null {
+function lookupExperience(message) {
   for (const exp of EXPERIENCE_PATTERNS) {
     for (const pattern of exp.patterns) {
       if (message.toLowerCase().includes(pattern.toLowerCase())) {
@@ -55,24 +55,16 @@ function lookupExperience(message: string): { title: string; advice: string; com
   return null;
 }
 
-interface HookPayload {
-  toolName: string;
-  toolInput?: { command?: string };
-  toolOutput?: { error?: string; stderr?: string; stdout?: string };
-  exitCode?: number;
-  sessionId?: string;
-  error?: string;
-}
 
 // Read payload from stdin
 let payload = '';
-process.stdin.on('data', (chunk: Buffer) => {
+process.stdin.on('data', (chunk) => {
   payload += chunk.toString();
 });
 
 process.stdin.on('end', () => {
   try {
-    const data: HookPayload = JSON.parse(payload);
+    const data = JSON.parse(payload);
     handleToolResult(data);
   } catch (e) {
     // Silent exit on parse error - don't block Claude Code
@@ -80,7 +72,7 @@ process.stdin.on('end', () => {
   }
 });
 
-function handleToolResult(data: HookPayload): void {
+function handleToolResult(data) {
   // Only handle Bash and Agent tools
   if (!['Bash', 'Agent', 'Task', 'bashcon'].some(t => data.toolName?.toLowerCase().includes(t))) {
     return;
@@ -118,20 +110,20 @@ function handleToolResult(data: HookPayload): void {
     eventId: `evt_${Date.now()}_${Math.random().toString(36).slice(2)}`,
     clientId: 'hook',
     deviceId: 'hook',
-    source: 'mac-aicheck-post-tool-hook' as const,
+    source: 'mac-aicheck-post-tool-hook',
     agent: 'claude-code',
     eventType: 'post_tool_error',
     occurredAt: nowIso(),
     fingerprint,
     sanitizedMessage: errorMsg.slice(0, 8000),
-    severity: 'error' as const,
+    severity: 'error',
     localContext: {
       os: `${process.platform} ${process.release}`,
       shell: process.env.SHELL || '',
       node: process.version,
       cwdHash: shortHash(process.cwd()),
     },
-    syncStatus: 'pending' as const,
+    syncStatus: 'pending'
   };
 
   // Store event
@@ -139,21 +131,10 @@ function handleToolResult(data: HookPayload): void {
   ensureDir(DAILY_DIR);
   appendFileSync(OUTBOX_FILE, JSON.stringify(event) + '\n');
 
-  // Update daily pack
+    // Update daily pack
   const dateFile = join(DAILY_DIR, `${today()}.json`);
-  interface DailyPack {
-    date: string;
-    totalEvents: number;
-    uniqueFingerprints: number;
-    repeatedEvents: number;
-    fixedEvents: number;
-    consecutiveFailures: number;
-    lastFailureFingerprint: string | null;
-    lastEventAt: string | null;
-    topProblems: Array<{ fingerprint: string; title: string; count: number; status: string }>;
-  }
 
-  const defaultPack: DailyPack = {
+  const defaultPack = {
     date: today(),
     totalEvents: 0,
     uniqueFingerprints: 0,
@@ -165,7 +146,7 @@ function handleToolResult(data: HookPayload): void {
     topProblems: [],
   };
 
-  let pack: DailyPack = defaultPack;
+  let pack = defaultPack;
   try {
     if (existsSync(dateFile)) {
       pack = JSON.parse(readFileSync(dateFile, 'utf8'));
