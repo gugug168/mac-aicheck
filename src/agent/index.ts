@@ -475,6 +475,149 @@ function uninstallHook(args: Record<string, unknown>) {
   return { profiles };
 }
 
+// Install SessionStart and PostToolUse hooks to ~/.claude/settings.json
+function installSettingsHook(): { hookType: 'settings'; hooks: string[] } {
+  const settingsFile = join(getHome(), '.claude', 'settings.json');
+  const hooksDir = join(getHome(), '.claude', 'hooks');
+  ensureDir(hooksDir);
+
+  // Resolve hook source files from hooks-src/ directory
+  const execPath = process.argv[1] || __filename;
+  const projectRoot = execPath.includes('/dist/')
+    ? execPath.replace(/\/dist\/.*$/, '')  // e.g. /path/to/mac-aicheck
+    : execPath.replace(/\/src\/.*$/, ''); // same
+
+  const sessionHookSrc = join(projectRoot, 'hooks-src', 'session-start-hook.js');
+  const postToolHookSrc = join(projectRoot, 'hooks-src', 'post-tool-hook.js');
+
+  const sessionHookDest = join(hooksDir, 'mac-aicheck-session-start.js');
+  const postToolHookDest = join(hooksDir, 'mac-aicheck-post-tool.js');
+
+  try {
+    if (existsSync(sessionHookSrc)) {
+      writeFileSync(sessionHookDest, readFileSync(sessionHookSrc, 'utf-8'), { mode: 0o755 });
+    } else {
+      throw new Error(`源文件不存在: ${sessionHookSrc}`);
+    }
+    if (existsSync(postToolHookSrc)) {
+      writeFileSync(postToolHookDest, readFileSync(postToolHookSrc, 'utf-8'), { mode: 0o755 });
+    } else {
+      throw new Error(`源文件不存在: ${postToolHookSrc}`);
+    }
+  } catch (e) {
+    throw new Error(`无法复制 hook 脚本: ${e}`);
+  }
+
+  // Read existing settings
+  interface Settings {
+    hooks?: {
+      SessionStart?: Array<{ hooks?: Array<{ type?: string; command?: string; timeout?: number }> }>;
+      PostToolUse?: Array<{ matcher?: string; hooks?: Array<{ type?: string; command?: string; timeout?: number }> }>;
+    };
+    [key: string]: unknown;
+  }
+
+  let settings: Settings = {};
+  try {
+    if (existsSync(settingsFile)) {
+      settings = JSON.parse(readFileSync(settingsFile, 'utf-8'));
+    }
+  } catch (e) {}
+
+  // Ensure hooks object exists
+  if (!settings.hooks) {
+    settings.hooks = {};
+  }
+
+  // Add SessionStart hook if not present
+  const sessionHookCmd = `node "${sessionHookDest}"`;
+  if (!settings.hooks.SessionStart) {
+    settings.hooks.SessionStart = [];
+  }
+  const hasSessionHook = settings.hooks.SessionStart.some(h =>
+    h?.hooks?.some(g => g?.command?.includes('mac-aicheck'))
+  );
+  if (!hasSessionHook) {
+    settings.hooks.SessionStart.push({
+      hooks: [{ type: 'command', command: sessionHookCmd, timeout: 10 }],
+    });
+  }
+
+  // Add PostToolUse hook if not present
+  const postToolHookCmd = `node "${postToolHookDest}"`;
+  if (!settings.hooks.PostToolUse) {
+    settings.hooks.PostToolUse = [];
+  }
+  const hasPostToolHook = settings.hooks.PostToolUse.some(h =>
+    h?.hooks?.some(g => g?.command?.includes('mac-aicheck'))
+  );
+  if (!hasPostToolHook) {
+    settings.hooks.PostToolUse.push({
+      matcher: 'Bash|Agent|Task',
+      hooks: [{ type: 'command', command: postToolHookCmd, timeout: 10 }],
+    });
+  }
+
+  // Write updated settings
+  try {
+    writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+  } catch (e) {
+    throw new Error(`无法写入 settings.json: ${e}`);
+  }
+
+  return {
+    hookType: 'settings',
+    hooks: ['SessionStart (版本检查)', 'PostToolUse (错误捕获)'],
+  };
+}
+
+// Remove hooks from settings.json
+function uninstallSettingsHook(): void {
+  const settingsFile = join(getHome(), '.claude', 'settings.json');
+
+  interface Settings {
+    hooks?: {
+      SessionStart?: Array<{ hooks?: Array<{ type?: string; command?: string; timeout?: number }> }>;
+      PostToolUse?: Array<{ matcher?: string; hooks?: Array<{ type?: string; command?: string; timeout?: number }> }>;
+    };
+    [key: string]: unknown;
+  }
+
+  let settings: Settings = {};
+  try {
+    if (existsSync(settingsFile)) {
+      settings = JSON.parse(readFileSync(settingsFile, 'utf-8'));
+    }
+  } catch (e) {}
+
+  if (settings.hooks) {
+    // Remove mac-aicheck hooks from SessionStart
+    if (settings.hooks.SessionStart) {
+      settings.hooks.SessionStart = settings.hooks.SessionStart
+        .map(h => ({
+          ...h,
+          hooks: (h.hooks || []).filter(g => !g?.command?.includes('mac-aicheck')),
+        }))
+        .filter(h => (h.hooks || []).length > 0);
+    }
+    // Remove mac-aicheck hooks from PostToolUse
+    if (settings.hooks.PostToolUse) {
+      settings.hooks.PostToolUse = settings.hooks.PostToolUse
+        .map(h => ({
+          ...h,
+          hooks: (h.hooks || []).filter(g => !g?.command?.includes('mac-aicheck')),
+        }))
+        .filter(h => (h.hooks || []).length > 0);
+    }
+  }
+
+  try {
+    writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+  } catch (e) {
+    // Silent fail
+  }
+}
+
 function installLocalAgent() {
   const p = paths(); ensureDir(p.agentDir);
   const selfPath = process.argv[1] || __filename;
@@ -567,7 +710,8 @@ async function main(argv: string[]) {
     process.stdout.write(`mac-aicheck Agent Lite
 
 用法:
-  mac-aicheck agent enable --target claude-code|all  一键启用监控
+  mac-aicheck agent enable --target claude-code|all  一键启用监控（新方式，推荐）
+  mac-aicheck agent migrate                迁移到 SessionStart Hook（新方式，推荐）
   mac-aicheck agent install-hook --target claude-code|all
   mac-aicheck agent uninstall-hook --target all
   mac-aicheck agent capture --agent <name> --message <text>
@@ -577,7 +721,6 @@ async function main(argv: string[]) {
   mac-aicheck agent diagnose          分析失败模式，类比 Evolver 信号诊断
   mac-aicheck agent install-local-agent
   mac-aicheck agent upgrade        一键更新 claude-code / openclaw 到最新版本
-  mac-aicheck agent run --agent <name> --original <cmd>
 `);
     return 0;
   }
@@ -594,23 +737,54 @@ async function main(argv: string[]) {
   if (command === 'install-hook') { const r = installHook(args); process.stdout.write(`已安装 Hook: ${r.agents.map((a: { target: string }) => a.target).join(', ')}\n`); return 0; }
   if (command === 'install-local-agent') { const r = installLocalAgent(); process.stdout.write(JSON.stringify({ ok: true, ...r }) + '\n'); return 0; }
   if (command === 'enable') {
-    // 一键安装：runner + hook + 启用同步
-    const target = String(args.target || 'all');
+    // 一键安装：runner + SessionStart hook + 启用同步（新方式）
     const r = installLocalAgent();
-    const hookResult = installHook({ target });
+    const hookResult = installSettingsHook();
     const cfg = loadConfig();
     cfg.shareData = true;
     cfg.autoSync = true;
     cfg.paused = false;
     saveConfig(cfg);
-    process.stdout.write(`mac-aicheck Agent Lite 已启用\n`);
+    process.stdout.write(`mac-aicheck Agent Lite 已启用 (SessionStart Hook 方式)\n`);
     process.stdout.write(`  Agent Runner: ${r.agentJs}\n`);
-    process.stdout.write(`  Hook: ${hookResult.agents.map((a: { target: string }) => a.target).join(', ')}\n`);
+    process.stdout.write(`  Hook: ${hookResult.hooks.join(', ')}\n`);
     process.stdout.write(`  自动同步: 已启用\n`);
-    process.stdout.write(`\n请运行: source ~/.zshrc  (或重启终端)\n`);
+    process.stdout.write(`\n请重启终端或运行: source ~/.zshrc\n`);
     return 0;
   }
-  if (command === 'uninstall-hook') { uninstallHook(args); process.stdout.write('已卸载 mac-aicheck Agent Hook。\n'); return 0; }
+  if (command === 'uninstall-hook') { uninstallHook(args); uninstallSettingsHook(); process.stdout.write('已卸载 mac-aicheck Agent Hook（shell + settings）。\n'); return 0; }
+  if (command === 'migrate') {
+    // Migrate from shell hook to SessionStart hook (gstack style)
+    process.stderr.write('正在迁移到 SessionStart Hook 方式...\n');
+
+    // Step 1: Remove old shell hooks
+    const p = paths();
+    const hooks = readJson<{ profiles?: string[] }>(p.hooks, { profiles: [] });
+    for (const profile of hooks.profiles || []) {
+      if (existsSync(profile)) {
+        const content = readFileSync(profile, 'utf-8');
+        const cleaned = stripHookBlock(content);
+        writeFileSync(profile, cleaned, 'utf-8');
+      }
+    }
+    process.stderr.write('  ✓ 已移除 zshrc 中的 shell 函数\n');
+
+    // Step 2: Install new SessionStart/PostToolUse hooks
+    const settingsHooks = installSettingsHook();
+    process.stderr.write(`  ✓ 已安装 SessionStart Hook: ${settingsHooks.hooks.join(', ')}\n`);
+
+    // Step 3: Backup and update hooks.json
+    const hooksData = readJson<{ migratedAt?: string; hookType?: string }>(p.hooks, {});
+    hooksData.migratedAt = nowIso();
+    hooksData.hookType = 'settings';
+    writeJson(p.hooks, hooksData);
+
+    process.stdout.write('\n✅ 迁移完成！\n');
+    process.stdout.write('  SessionStart Hook: 版本检查（后台运行，不阻塞启动）\n');
+    process.stdout.write('  PostToolUse Hook: 错误捕获\n');
+    process.stdout.write('\n请重启终端或运行: source ~/.zshrc\n');
+    return 0;
+  }
   if (command === 'run') return await runOriginalAgent(args);
   if (command === 'advice') {
     const p = paths(); const fmt = String(args.format || 'json'); const f = fmt === 'markdown' ? p.adviceMd : p.adviceJson;
