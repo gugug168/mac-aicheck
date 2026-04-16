@@ -1,0 +1,21 @@
+import type { ScanResult, Scanner } from './types';
+import { registerScanner } from './registry';
+import { findProjectDir, hasProjectMarker } from './config-utils';
+
+const PYTHON_PROJECT_MARKERS = ['pyproject.toml', 'requirements.txt', 'requirements-dev.txt', 'setup.py', 'Pipfile', 'poetry.lock', 'uv.lock'];
+const VENV_DIRS = ['.venv', 'venv', 'env'];
+
+const scanner: Scanner = {
+  id: 'python-project-venv',
+  name: 'Python 项目虚拟环境检测',
+  category: 'toolchain',
+
+  async scan(): Promise<ScanResult> {
+    if (!hasProjectMarker(PYTHON_PROJECT_MARKERS)) return { id: this.id, name: this.name, category: this.category, status: 'unknown', message: '当前目录未检测到 Python 项目' };
+    const venvDir = findProjectDir(VENV_DIRS);
+    if (!venvDir) return { id: this.id, name: this.name, category: this.category, status: 'warn', message: '检测到 Python 项目，但未发现项目级虚拟环境', details: '建议在项目根目录创建 .venv，或使用 uv/poetry 管理环境。' };
+    return { id: this.id, name: this.name, category: this.category, status: 'pass', message: '检测到项目级 Python 虚拟环境', details: `目录: ${venvDir}` };
+  },
+};
+
+registerScanner(scanner);
