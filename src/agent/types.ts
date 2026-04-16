@@ -30,6 +30,8 @@ export interface AgentConfig {
   paused: boolean;
   email: string | null;
   authToken: string | null;
+  profileId: string | null;
+  agentType: string | null;
   confirmedAt: string | null;
 }
 

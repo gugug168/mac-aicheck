@@ -5,6 +5,8 @@ import { homedir } from 'os';
 import { execFileSync, spawn } from 'child_process';
 import crypto from 'node:crypto';
 
+const LOCAL_VERSION = process.env.npm_package_version || '1.0.0';
+
 function getHome() { return process.env.HOME || homedir(); }
 function getBaseDir() { return join(getHome(), '.mac-aicheck'); }
 function paths() {
@@ -282,8 +284,10 @@ function loadConfig() {
   if (cfg.shareData === undefined) cfg.shareData = false;
   if (cfg.autoSync === undefined) cfg.autoSync = false;
   if (cfg.paused === undefined) cfg.paused = false;
+  if (!cfg.profileId) cfg.profileId = null;
+  if (!cfg.agentType) cfg.agentType = null;
   writeJson(p.config, cfg);
-  return cfg as { clientId: string; deviceId: string; shareData: boolean; autoSync: boolean; paused: boolean; email?: string; authToken?: string };
+  return cfg as { clientId: string; deviceId: string; shareData: boolean; autoSync: boolean; paused: boolean; email?: string; authToken?: string; profileId?: string; agentType?: string; confirmedAt?: string };
 }
 function saveConfig(cfg: Record<string, unknown>) { writeJson(paths().config, cfg); }
 
@@ -719,8 +723,11 @@ async function main(argv: string[]) {
   mac-aicheck agent pause|resume
   mac-aicheck agent advice --format json|markdown
   mac-aicheck agent diagnose          分析失败模式，类比 Evolver 信号诊断
+  mac-aicheck agent bind [--agent claude-code]  绑定设备到 aicoevo.net 账户
   mac-aicheck agent install-local-agent
-  mac-aicheck agent upgrade        一键更新 claude-code / openclaw 到最新版本
+  mac-aicheck agent upgrade            一键更新 claude-code / openclaw 到最新版本
+  mac-aicheck agent upgrade self       更新 mac-aicheck 自身到最新版本
+  mac-aicheck agent upgrade snooze     暂停更新提醒 (24h/48h/1w 递增)
 `);
     return 0;
   }
@@ -826,19 +833,131 @@ async function main(argv: string[]) {
     process.stdout.write(lines.join('\n') + '\n');
     return 0;
   }
+  if (command === 'bind') {
+    const config = loadConfig();
+    const agentTypeArg = String(args.agent || config.agentType || 'claude-code');
+    const osInfo = `${process.platform} ${process.release}`;
+    const agentVersion = String(process.env.npm_package_version || '0.0.0');
+
+    process.stdout.write('正在连接 aicoevo.net...\n');
+    const initResult = await requestJson(`${apiBase()}/bind/init`, {
+      method: 'POST',
+      body: {
+        device_id: config.deviceId,
+        agent_type: normalizeAgent(agentTypeArg),
+        os_info: osInfo,
+        agent_version: agentVersion,
+      },
+    });
+
+    if (initResult.status !== 200) {
+      process.stderr.write(`绑定初始化失败 (${initResult.status}): ${JSON.stringify(initResult.data)}\n`);
+      return 1;
+    }
+
+    const bindCode = (initResult.data as Record<string, unknown>).code as string;
+    process.stdout.write('\n 绑定码已生成!\n');
+    process.stdout.write(`\n  验证码: ${bindCode}\n`);
+    process.stdout.write('  有效期: 5 分钟\n\n');
+    process.stdout.write('请在浏览器中打开 https://aicoevo.net/settings\n');
+    process.stdout.write('在"设备绑定"中输入上面的验证码完成绑定。\n\n');
+    process.stdout.write('正在等待绑定确认...');
+
+    const maxPolls = 150; // 5 min / 2s
+    for (let i = 0; i < maxPolls; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      const pollResult = await requestJson(`${apiBase()}/bind/verify/${bindCode}`);
+
+      if (pollResult.status === 200 && (pollResult.data as Record<string, unknown>).status === 'completed') {
+        const { api_key, profile_id, agent_name } = pollResult.data as Record<string, unknown>;
+        config.authToken = api_key as string;
+        config.profileId = profile_id as string;
+        config.agentType = normalizeAgent(agentTypeArg);
+        config.shareData = true;
+        config.autoSync = true;
+        config.paused = false;
+        config.confirmedAt = nowIso();
+        saveConfig(config);
+
+        process.stdout.write('\n\n绑定成功!\n');
+        process.stdout.write(`  Agent: ${(agent_name as string) || normalizeAgent(agentTypeArg)}\n`);
+        process.stdout.write(`  Profile ID: ${profile_id}\n`);
+        process.stdout.write('  自动同步: 已启用\n\n');
+        return 0;
+      }
+
+      if (pollResult.status === 200 && (pollResult.data as Record<string, unknown>).status === 'expired') {
+        process.stderr.write('\n绑定码已过期，请重新运行 mac-aicheck agent bind\n');
+        return 1;
+      }
+
+      if (pollResult.status !== 200 || (pollResult.data as Record<string, unknown>).status === 'invalid') {
+        process.stderr.write('\n绑定失败: 无效的绑定码\n');
+        return 1;
+      }
+
+      if (i % 15 === 0) process.stdout.write('.');
+    }
+
+    process.stderr.write('\n绑定超时 (5分钟无响应)，请重新运行 mac-aicheck agent bind\n');
+    return 1;
+  }
   if (command === 'upgrade') {
-    // 一键更新 claude-code 和 openclaw
-    process.stderr.write('🔍 正在检查可用更新...\n');
+    const sub = rest[0];
+    // mac-aicheck self-upgrade
+    if (sub === 'self') {
+      process.stderr.write('正在更新 mac-aicheck...\n');
+      try {
+        execFileSync('npm', ['install', '-g', 'mac-aicheck@latest'], { stdio: 'inherit', timeout: 60000 });
+        // Write just-upgraded marker
+        const stateDir = join(getBaseDir(), 'state');
+        ensureDir(stateDir);
+        writeFileSync(join(stateDir, 'just-upgraded-from'), LOCAL_VERSION);
+        // Clear cache
+        try { writeFileSync(join(stateDir, 'last-update-check'), '{}'); } catch {}
+        try { const sf = join(stateDir, 'update-snoozed'); if (existsSync(sf)) writeFileSync(sf, ''); } catch {}
+        process.stdout.write('mac-aicheck 已更新到最新版本!\n');
+        return 0;
+      } catch (e: unknown) {
+        process.stderr.write(`更新失败: ${(e as Error).message}\n`);
+        process.stderr.write('请手动运行: npm install -g mac-aicheck@latest\n');
+        return 1;
+      }
+    }
+    // snooze: 暂停更新提醒
+    if (sub === 'snooze') {
+      const stateDir = join(getBaseDir(), 'state');
+      ensureDir(stateDir);
+      const snoozeFile = join(stateDir, 'update-snoozed');
+      let level = 0;
+      let version = '';
+      try {
+        const existing = readFileSync(snoozeFile, 'utf8').trim().split(' ');
+        version = existing[0] || '';
+        level = parseInt(existing[1] || '0') + 1;
+      } catch {}
+      // Get the pending version from cache
+      try {
+        const cache = JSON.parse(readFileSync(join(stateDir, 'last-update-check'), 'utf8'));
+        version = cache.remote || version;
+      } catch {}
+      writeFileSync(snoozeFile, `${version} ${level} ${Date.now()}`);
+      const hours = [24, 48, 168][Math.min(level, 2)];
+      process.stdout.write(`更新提醒已暂停 ${hours} 小时。\n`);
+      return 0;
+    }
+    // Default: update claude-code and openclaw (original behavior)
+    process.stderr.write('正在检查可用更新...\n');
     const result = await upgradeCommand();
     for (const r of result.results) {
       if (r.status === 'up to date') {
-        process.stdout.write(`✅ ${r.name}: 已是最新版本 ${r.to}\n`);
+        process.stdout.write(`${r.name}: 已是最新版本 ${r.to}\n`);
       } else if (r.status === 'upgraded') {
-        process.stdout.write(`✅ ${r.name}: ${r.from} → ${r.to} (已更新)\n`);
+        process.stdout.write(`${r.name}: ${r.from} → ${r.to} (已更新)\n`);
       } else if (r.status === 'unknown') {
-        process.stdout.write(`⚠️  ${r.name}: 无法确定最新版本\n`);
+        process.stdout.write(`${r.name}: 无法确定最新版本\n`);
       } else {
-        process.stdout.write(`❌ ${r.name}: 更新失败 (${r.status})\n`);
+        process.stdout.write(`${r.name}: 更新失败 (${r.status})\n`);
       }
     }
     return result.ok ? 0 : 1;
