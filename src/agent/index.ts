@@ -1,7 +1,7 @@
 // Agent Lite CLI - 简洁实现
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, appendFileSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { homedir, hostname } from 'os';
 import { execFileSync, spawn } from 'child_process';
 import crypto from 'node:crypto';
 
@@ -723,7 +723,7 @@ async function main(argv: string[]) {
   mac-aicheck agent pause|resume
   mac-aicheck agent advice --format json|markdown
   mac-aicheck agent diagnose          分析失败模式，类比 Evolver 信号诊断
-  mac-aicheck agent bind --code <验证码>    绑定设备到 aicoevo.net 账户
+  mac-aicheck agent bind [--agent claude-code]  绑定设备（自动打开浏览器确认）
   mac-aicheck agent install-local-agent
   mac-aicheck agent upgrade            一键更新 claude-code / openclaw 到最新版本
   mac-aicheck agent upgrade self       更新 mac-aicheck 自身到最新版本
@@ -837,38 +837,101 @@ async function main(argv: string[]) {
     const config = loadConfig();
     const bindCode = String(args.code || '').trim();
 
-    if (!bindCode || !/^\d{6}$/.test(bindCode)) {
-      process.stdout.write('\nMacAICheck 设备绑定\n\n');
-      process.stdout.write('步骤:\n');
-      process.stdout.write('  1. 在浏览器中打开 https://aicoevo.net/settings\n');
-      process.stdout.write('  2. 点击"设备绑定"中的"生成绑定码"\n');
-      process.stdout.write('  3. 复制 6 位验证码\n');
-      process.stdout.write('  4. 运行: mac-aicheck agent bind --code <验证码>\n');
+    // 兼容旧流程：如果用户提供了 --code，走旧的 6 位码交换
+    if (bindCode && /^\d{6}$/.test(bindCode)) {
+      process.stdout.write('正在绑定设备...\n');
+      const result = await requestJson(`${apiBase()}/bind/${bindCode}`, { method: 'POST' });
+
+      if (result.status !== 200) {
+        const detail = ((result.data as Record<string, unknown>)?.detail as string) || '验证码无效或已过期';
+        process.stderr.write(`绑定失败 (${result.status}): ${detail}\n`);
+        return 1;
+      }
+
+      const { api_key } = result.data as Record<string, unknown>;
+      config.authToken = api_key as string;
+      config.shareData = true;
+      config.autoSync = true;
+      config.paused = false;
+      config.confirmedAt = nowIso();
+      saveConfig(config);
+
+      process.stdout.write('\n绑定成功!\n  自动同步: 已启用\n\n');
       return 0;
     }
 
-    process.stdout.write('正在绑定设备...\n');
-    const result = await requestJson(`${apiBase()}/bind/${bindCode}`, { method: 'POST' });
+    // 新流程：OAuth 设备流（自动打开浏览器）
+    const agentName = String(args.agent || 'unknown').trim();
+    const deviceInfo = `${hostname()}/${process.platform}`;
 
-    if (result.status !== 200) {
-      const detail = ((result.data as Record<string, unknown>)?.detail as string) || '验证码无效或已过期';
-      process.stderr.write(`绑定失败 (${result.status}): ${detail}\n`);
-      process.stderr.write('请在 aicoevo.net/settings 重新生成验证码。\n');
+    process.stdout.write('正在发起设备绑定...\n');
+
+    // Step 1: 创建绑定请求
+    const reqResult = await requestJson(
+      `${apiBase()}/bind/request?agent_type=${encodeURIComponent(agentName)}&device_info=${encodeURIComponent(deviceInfo)}`,
+      { method: 'POST' },
+    );
+
+    if (reqResult.status !== 200) {
+      const detail = ((reqResult.data as Record<string, unknown>)?.detail as string) || '未知错误';
+      process.stderr.write(`绑定请求失败 (${reqResult.status}): ${detail}\n`);
       return 1;
     }
 
-    const { api_key } = result.data as Record<string, unknown>;
-    config.authToken = api_key as string;
-    config.shareData = true;
-    config.autoSync = true;
-    config.paused = false;
-    config.confirmedAt = nowIso();
-    saveConfig(config);
+    const { request_token, confirm_url, expires_in } = reqResult.data as Record<string, unknown>;
+    process.stdout.write(`\n请在浏览器中确认绑定:\n  ${confirm_url}\n\n`);
 
-    process.stdout.write('\n绑定成功!\n');
-    process.stdout.write('  自动同步: 已启用\n\n');
-    process.stdout.write('现在 Claude Code 中的错误会自动记录并同步到 aicoevo.net。\n');
-    return 0;
+    // Step 2: 尝试自动打开浏览器
+    try {
+      const openCmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
+      execFileSync(openCmd, [confirm_url as string], { timeout: 5000 });
+      process.stdout.write('已自动打开浏览器。\n\n');
+    } catch {
+      process.stdout.write('请手动复制上方链接到浏览器中打开。\n\n');
+    }
+
+    // Step 3: 轮询等待确认
+    process.stdout.write('等待确认中');
+    const maxPolls = Math.min(Math.floor((expires_in as number) / 3), 200);
+    for (let i = 0; i < maxPolls; i++) {
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      process.stdout.write('.');
+
+      const pollResult = await requestJson(
+        `${apiBase()}/bind/poll?request_token=${encodeURIComponent(request_token as string)}`,
+        { method: 'GET' },
+      );
+
+      if (pollResult.status !== 200) {
+        process.stderr.write('\n绑定请求已过期，请重新运行 bind 命令。\n');
+        return 1;
+      }
+
+      const pollData = pollResult.data as Record<string, unknown>;
+
+      if (pollData.status === 'confirmed' && pollData.api_key) {
+        process.stdout.write('\n\n');
+        config.authToken = pollData.api_key as string;
+        config.shareData = true;
+        config.autoSync = true;
+        config.paused = false;
+        config.confirmedAt = nowIso();
+        saveConfig(config);
+
+        process.stdout.write('绑定成功!\n  自动同步: 已启用\n\n');
+        process.stdout.write('现在 Claude Code 中的错误会自动记录并同步到 aicoevo.net。\n');
+        return 0;
+      }
+
+      if (pollData.status === 'expired') {
+        process.stdout.write('\n\n');
+        process.stderr.write('绑定请求已过期，请重新运行 bind 命令。\n');
+        return 1;
+      }
+    }
+
+    process.stdout.write('\n\n绑定超时，请重新运行 bind 命令。\n');
+    return 1;
   }
   if (command === 'upgrade') {
     const sub = rest[0];
