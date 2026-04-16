@@ -1,107 +1,149 @@
 #!/usr/bin/env node
-// mac-aicheck-hook-version: 1.0.0
-// SessionStart hook: 后台检查版本更新，不阻塞 Claude Code 启动
-// 参考 gsd-check-update.js 的后台执行模式
+// mac-aicheck-hook-version: 2.0.0
+// SessionStart hook: 后台检查 mac-aicheck 自身版本更新
+// gstack 风格: 检查远程 VERSION 文件（几百字节），有更新时提醒
 
-const { existsSync, mkdirSync, writeFileSync, readFileSync } = require('fs');
+const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
 const { homedir } = require('os');
-const { spawn, execFileSync } = require('child_process');
-const crypto = require('crypto');
+const { spawn } = require('child_process');
 
 function getHome() { return process.env.HOME || homedir(); }
-const CACHE_DIR = join(getHome(), '.cache', 'mac-aicheck');
-const CACHE_FILE = join(CACHE_DIR, 'version-check.json');
-const VERSION_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+const STATE_DIR = join(getHome(), '.mac-aicheck', 'state');
+const CACHE_FILE = join(STATE_DIR, 'last-update-check');
+const SNOOZE_FILE = join(STATE_DIR, 'update-snoozed');
+const MARKER_FILE = join(STATE_DIR, 'just-upgraded-from');
 
-// Ensure cache directory exists
-if (!existsSync(CACHE_DIR)) {
-  mkdirSync(CACHE_DIR, { recursive: true });
-}
+const UP_TO_DATE_TTL = 60 * 60 * 1000;     // 60 min
+const UPGRADE_TTL = 12 * 60 * 60 * 1000;    // 12 hours
+const SNOOZE_LEVELS = [24, 48, 168];         // hours: 1d, 2d, 1w
 
-// Background version check script
+const REMOTE_VERSION_URL = 'https://raw.githubusercontent.com/gugug168/mac-aicheck/main/VERSION';
+
+// Read local version from package.json next to agent-lite.js
+let LOCAL_VERSION = '0.0.0';
+try {
+  const pkgPath = join(getHome(), '.mac-aicheck', 'agent', 'package.json');
+  if (existsSync(pkgPath)) {
+    LOCAL_VERSION = JSON.parse(readFileSync(pkgPath, 'utf8')).version || '0.0.0';
+  }
+} catch {}
+
+// Background check script (detached, non-blocking)
 const checkScript = `
   const fs = require('fs');
-  const { execFileSync, execSync } = require('child_process');
+  const { execSync } = require('child_process');
   const path = require('path');
-  const crypto = require('crypto');
+  const http = require('https');
 
+  const STATE_DIR = ${JSON.stringify(STATE_DIR)};
   const CACHE_FILE = ${JSON.stringify(CACHE_FILE)};
-  const VERSION_CHECK_INTERVAL_MS = ${VERSION_CHECK_INTERVAL_MS};
-  const VERSION_CACHE_FILE = ${JSON.stringify(join(getHome(), '.mac-aicheck', 'version-cache.json'))};
+  const SNOOZE_FILE = ${JSON.stringify(SNOOZE_FILE)};
+  const MARKER_FILE = ${JSON.stringify(MARKER_FILE)};
+  const LOCAL_VERSION = ${JSON.stringify(LOCAL_VERSION)};
+  const REMOTE_URL = ${JSON.stringify(REMOTE_VERSION_URL)};
+  const UP_TO_DATE_TTL = ${UP_TO_DATE_TTL};
+  const UPGRADE_TTL = ${UPGRADE_TTL};
+  const SNOOZE_LEVELS = ${JSON.stringify(SNOOZE_LEVELS)};
 
-  // Read existing cache to respect rate limiting
-  let cache = { lastCheck: null, hasUpdate: false };
-  try {
-    if (fs.existsSync(CACHE_FILE)) {
-      cache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
-    }
-  } catch (e) {}
+  if (!fs.existsSync(STATE_DIR)) fs.mkdirSync(STATE_DIR, { recursive: true });
 
-  // Check rate limit
-  if (cache.lastCheck) {
-    const elapsed = Date.now() - new Date(cache.lastCheck).getTime();
-    if (elapsed < VERSION_CHECK_INTERVAL_MS) {
-      process.exit(0); // Silent exit if checked recently
-    }
+  // Check just-upgraded marker
+  if (fs.existsSync(MARKER_FILE)) {
+    const old = fs.readFileSync(MARKER_FILE, 'utf8').trim();
+    fs.unlinkSync(MARKER_FILE);
+    try { fs.unlinkSync(SNOOZE_FILE); } catch {}
+    process.stderr.write('JUST_UPGRADED ' + old + ' ' + LOCAL_VERSION + '\\n');
   }
 
-  // Get current version
-  function getCommandVersion(cmd) {
+  // Check cache TTL
+  if (fs.existsSync(CACHE_FILE)) {
     try {
-      const result = execFileSync(cmd, ['--version'], { encoding: 'utf8', timeout: 5000 });
-      const match = result.match(/(\\d+\\.\\d+\\.\\d+)/);
-      return match ? match[1] : null;
-    } catch (e) { return null; }
+      const cache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+      const age = Date.now() - (cache.ts || 0);
+      const ttl = cache.result === 'UP_TO_DATE' ? UP_TO_DATE_TTL : UPGRADE_TTL;
+      if (age < ttl) {
+        if (cache.result === 'UPGRADE_AVAILABLE') {
+          // Check snooze
+          if (fs.existsSync(SNOOZE_FILE)) {
+            const parts = fs.readFileSync(SNOOZE_FILE, 'utf8').trim().split(' ');
+            const snoozeVersion = parts[0];
+            const snoozeLevel = parseInt(parts[1] || '0');
+            const snoozeEpoch = parseInt(parts[2] || '0');
+            const snoozeHours = SNOOZE_LEVELS[Math.min(snoozeLevel, SNOOZE_LEVELS.length - 1)];
+            if (snoozeVersion === cache.remote && Date.now() - snoozeEpoch < snoozeHours * 3600000) {
+              process.exit(0); // snoozed
+            }
+          }
+          process.stderr.write('UPGRADE_AVAILABLE ' + LOCAL_VERSION + ' ' + cache.remote + '\\n');
+        }
+        process.exit(0);
+      }
+    } catch {}
   }
 
-  const currentVersion = getCommandVersion('claude');
-
-  // Check GitHub latest
-  let latest = null;
+  // Fetch remote VERSION (tiny file, ~10 bytes)
   try {
-    const data = execSync('curl -s https://api.github.com/repos/anthropics/claude-code/releases/latest --user-agent "mac-aicheck-hook"', { timeout: 10000 });
-    const json = JSON.parse(data.toString());
-    latest = json.tag_name?.replace(/^v/, '') || null;
-  } catch (e) {}
-
-  const hasUpdate = latest && currentVersion && latest !== currentVersion;
-
-  // Write to both cache locations
-  const result = {
-    current: currentVersion,
-    latest: latest,
-    hasUpdate: !!hasUpdate,
-    lastCheck: new Date().toISOString(),
-  };
-
-  fs.writeFileSync(CACHE_FILE, JSON.stringify(result, null, 2));
-
-  // Also update the main version cache (for other tools to read)
-  if (fs.existsSync(VERSION_CACHE_FILE)) {
-    try {
-      const mainCache = JSON.parse(fs.readFileSync(VERSION_CACHE_FILE, 'utf8'));
-      mainCache.current = 'node:' + process.version.replace(/^v/, '') + '|claude:' + (currentVersion || 'unknown') + '|openclaw:unknown';
-      mainCache.latest = hasUpdate ? 'claude-code: ' + currentVersion + ' → ' + latest : 'up to date';
-      mainCache.hasUpdate = !!hasUpdate;
-      mainCache.lastCheck = new Date().toISOString();
-      fs.writeFileSync(VERSION_CACHE_FILE, JSON.stringify(mainCache, null, 2));
-    } catch (e) {}
-  }
-
-  // Show notification if there's an update
-  if (hasUpdate) {
-    console.error('\\n🔔 mac-aicheck 版本更新通知:');
-    console.error('   claude-code: ' + currentVersion + ' → ' + latest);
-    console.error('   运行 \\'mac-aicheck agent upgrade\\' 一键更新');
+    const req = http.request(REMOTE_URL, { timeout: 5000 }, (res) => {
+      let body = '';
+      res.on('data', (d) => body += d);
+      res.on('end', () => {
+        const remote = body.trim();
+        if (!/^\\d+\\.\\d+/.test(remote)) {
+          // Invalid response, cache as up-to-date
+          fs.writeFileSync(CACHE_FILE, JSON.stringify({ result: 'UP_TO_DATE', ts: Date.now() }));
+          process.exit(0);
+        }
+        if (remote !== LOCAL_VERSION) {
+          fs.writeFileSync(CACHE_FILE, JSON.stringify({ result: 'UPGRADE_AVAILABLE', remote, ts: Date.now() }));
+          // Check snooze
+          if (fs.existsSync(SNOOZE_FILE)) {
+            const parts = fs.readFileSync(SNOOZE_FILE, 'utf8').trim().split(' ');
+            if (parts[0] === remote) {
+              const level = parseInt(parts[1] || '0');
+              const epoch = parseInt(parts[2] || '0');
+              const hours = SNOOZE_LEVELS[Math.min(level, SNOOZE_LEVELS.length - 1)];
+              if (Date.now() - epoch < hours * 3600000) process.exit(0);
+            }
+          }
+          process.stderr.write('UPGRADE_AVAILABLE ' + LOCAL_VERSION + ' ' + remote + '\\n');
+        } else {
+          fs.writeFileSync(CACHE_FILE, JSON.stringify({ result: 'UP_TO_DATE', ts: Date.now() }));
+        }
+        process.exit(0);
+      });
+    });
+    req.on('error', () => {
+      fs.writeFileSync(CACHE_FILE, JSON.stringify({ result: 'UP_TO_DATE', ts: Date.now() }));
+      process.exit(0);
+    });
+    req.on('timeout', () => { req.destroy(); process.exit(0); });
+    req.end();
+  } catch {
+    process.exit(0);
   }
 `;
 
-// Spawn background process - detached so it doesn't block hook exit
+// Ensure state dir exists
+if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true });
+
+// Spawn background check
 const child = spawn(process.execPath, ['-e', checkScript], {
-  stdio: 'ignore',
+  stdio: ['ignore', 'ignore', 'pipe'],
   windowsHide: true,
   detached: true,
 });
 
-child.unref(); // Let parent exit immediately
+// Capture stderr output for UPGRADE_AVAILABLE / JUST_UPGRADED signals
+let stderrOutput = '';
+child.stderr.on('data', (data) => {
+  stderrOutput += data.toString();
+});
+
+child.on('close', () => {
+  if (stderrOutput.includes('UPGRADE_AVAILABLE') || stderrOutput.includes('JUST_UPGRADED')) {
+    process.stderr.write(stderrOutput);
+  }
+});
+
+child.unref();
