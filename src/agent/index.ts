@@ -394,7 +394,11 @@ async function syncEvents() {
   const all = readJsonl(p.outbox) as Array<Record<string, unknown>>;
   const pending = all.filter(e => e.syncStatus !== 'synced').slice(0, 50);
   if (!pending.length) return { ok: true, uploaded: 0 };
-  const remote = await requestJson(`${apiBase()}/agent-events/batch`, { method: 'POST', headers: config.authToken ? { Authorization: `Bearer ${config.authToken}` } : {}, body: { clientId: config.clientId, deviceId: config.deviceId, events: pending.map(({ syncStatus, ...e }) => e) } });
+  const authH: Record<string, string> = {};
+  if (config.authToken) {
+    if (config.authToken.startsWith('ak_')) { authH['X-API-Key'] = config.authToken; } else { authH['Authorization'] = `Bearer ${config.authToken}`; }
+  }
+  const remote = await requestJson(`${apiBase()}/agent-events/batch`, { method: 'POST', headers: authH, body: { clientId: config.clientId, deviceId: config.deviceId, events: pending.map(({ syncStatus, ...e }) => e) } });
   if (remote.status < 200 || remote.status >= 300) return { ok: false, uploaded: 0, status: remote.status };
   const pendingIds = new Set(pending.map(e => e.eventId));
   const updated = all.map(e => pendingIds.has(e.eventId) ? { ...e, syncStatus: 'synced', syncedAt: nowIso() } : e);
