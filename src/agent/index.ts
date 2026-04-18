@@ -286,8 +286,9 @@ function loadConfig() {
   if (cfg.paused === undefined) cfg.paused = false;
   if (!cfg.profileId) cfg.profileId = null;
   if (!cfg.agentType) cfg.agentType = null;
+  if (!cfg.deviceName) cfg.deviceName = null;
   writeJson(p.config, cfg);
-  return cfg as { clientId: string; deviceId: string; shareData: boolean; autoSync: boolean; paused: boolean; email?: string; authToken?: string; profileId?: string; agentType?: string; confirmedAt?: string };
+  return cfg as { clientId: string; deviceId: string; shareData: boolean; autoSync: boolean; paused: boolean; email?: string; authToken?: string; profileId?: string; agentType?: string; confirmedAt?: string; deviceName?: string };
 }
 function saveConfig(cfg: Record<string, unknown>) { writeJson(paths().config, cfg); }
 
@@ -306,6 +307,7 @@ function createEvent(input: { agent?: string; message?: string; eventType?: stri
     eventId: input.eventId || `evt_${crypto.randomUUID()}`,
     clientId: config.clientId,
     deviceId: config.deviceId,
+    deviceName: config.deviceName,
     source: 'mac-aicheck-lite',
     agent,
     eventType,
@@ -394,7 +396,7 @@ async function syncEvents() {
   const all = readJsonl(p.outbox) as Array<Record<string, unknown>>;
   const pending = all.filter(e => e.syncStatus !== 'synced').slice(0, 50);
   if (!pending.length) return { ok: true, uploaded: 0 };
-  const remote = await requestJson(`${apiBase()}/agent-events/batch`, { method: 'POST', headers: config.authToken ? { Authorization: `Bearer ${config.authToken}` } : {}, body: { clientId: config.clientId, deviceId: config.deviceId, events: pending.map(({ syncStatus, ...e }) => e) } });
+  const remote = await requestJson(`${apiBase()}/agent-events/batch`, { method: 'POST', headers: config.authToken ? { Authorization: `Bearer ${config.authToken}` } : {}, body: { clientId: config.clientId, deviceId: config.deviceId, deviceName: config.deviceName, events: pending.map(({ syncStatus, ...e }) => e) } });
   if (remote.status < 200 || remote.status >= 300) return { ok: false, uploaded: 0, status: remote.status };
   const pendingIds = new Set(pending.map(e => e.eventId));
   const updated = all.map(e => pendingIds.has(e.eventId) ? { ...e, syncStatus: 'synced', syncedAt: nowIso() } : e);
@@ -724,6 +726,7 @@ async function main(argv: string[]) {
   mac-aicheck agent advice --format json|markdown
   mac-aicheck agent diagnose          分析失败模式，类比 Evolver 信号诊断
   mac-aicheck agent bind [--agent claude-code]  绑定设备（自动打开浏览器确认）
+  mac-aicheck agent rename <name>        给设备重命名（方便在 AICO EVO 中区分）
   mac-aicheck agent install-local-agent
   mac-aicheck agent upgrade            一键更新 claude-code / openclaw 到最新版本
   mac-aicheck agent upgrade self       更新 mac-aicheck 自身到最新版本
@@ -741,6 +744,15 @@ async function main(argv: string[]) {
   }
   if (command === 'sync') { const result = await syncEvents(); process.stdout.write(JSON.stringify(result) + '\n'); return result.ok || result.skipped ? 0 : 1; }
   if (command === 'pause' || command === 'resume') { const cfg = loadConfig(); cfg.paused = command === 'pause'; saveConfig(cfg); process.stdout.write(command === 'pause' ? '已暂停自动上传。\n' : '已恢复自动上传。\n'); return 0; }
+  if (command === 'rename') {
+    const newName = rest[0]?.trim();
+    if (!newName) { process.stderr.write('用法: mac-aicheck agent rename <名称>\n'); return 1; }
+    const cfg = loadConfig();
+    cfg.deviceName = newName;
+    saveConfig(cfg);
+    process.stdout.write(`设备已重命名为: ${newName}\n`);
+    return 0;
+  }
   if (command === 'install-hook') { const r = installHook(args); process.stdout.write(`已安装 Hook: ${r.agents.map((a: { target: string }) => a.target).join(', ')}\n`); return 0; }
   if (command === 'install-local-agent') { const r = installLocalAgent(); process.stdout.write(JSON.stringify({ ok: true, ...r }) + '\n'); return 0; }
   if (command === 'enable') {
