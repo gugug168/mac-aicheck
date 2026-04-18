@@ -289,7 +289,10 @@ async function runScan(serve: boolean) {
         console.log('\n[+] 扫描结果已上传，请在浏览器打开认领你的环境报告:');
         console.log(`    ${claimUrl}\n`);
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.error('\n[-] 上传失败:', err instanceof Error ? err.message : String(err));
+        console.error('    扫描结果已保存在本地，请检查网络后重新运行上传\n');
+      });
   } catch (e) { /* ignore */ }
   const passed = results.filter(r => r.status === 'pass').length;
   const warn = results.filter(r => r.status === 'warn').length;
