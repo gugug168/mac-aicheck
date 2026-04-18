@@ -50,6 +50,8 @@ export interface AICOEVOPayload {
     category: string;
     status: string;
     message: string;
+    details?: string;
+    suggestions?: string[];
   }>;
   systemInfo: SystemInfo;
 }
@@ -136,6 +138,8 @@ export function createPayload(results: ScanResult[], score: ScoreResult): AICOEV
       category: r.category,
       status: r.status,
       message: sanitize(r.message),
+      details: r.details ? sanitize(r.details) : undefined,
+      suggestions: (r.suggestions || []).map(s => sanitize(s)),
     })),
     systemInfo: collectSystemInfo(),
   };
