@@ -104,6 +104,13 @@ function handleToolResult(data) {
 
   const fingerprint = shortHash(`${data.toolName}\n${errorMsg.replace(/\d+/g, '<N>')}`);
 
+  // Build tool context from Claude Code hook input
+  const toolInput = data.toolInput || data.tool_input || {};
+  const toolContext = { toolName: data.toolName || 'unknown' };
+  if (toolInput.command) toolContext.command = String(toolInput.command).slice(0, 500);
+  if (toolInput.file_path) toolContext.filePath = String(toolInput.file_path).slice(0, 300);
+  if (exitCode !== undefined) toolContext.exitCode = exitCode;
+
   // Create event
   const event = {
     schemaVersion: 1,
@@ -123,6 +130,7 @@ function handleToolResult(data) {
       node: process.version,
       cwdHash: shortHash(process.cwd()),
     },
+    toolContext: toolContext,
     syncStatus: 'pending'
   };
 
