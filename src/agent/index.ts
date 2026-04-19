@@ -872,7 +872,7 @@ async function main(argv: string[]) {
 
     // Step 1: 创建绑定请求
     const reqResult = await requestJson(
-      `${apiBase()}/bind/request?agent_type=${encodeURIComponent(agentName)}&device_info=${encodeURIComponent(deviceInfo)}`,
+      `${apiBase()}/bind/request?agent_type=${encodeURIComponent(agentName)}&device_info=${encodeURIComponent(deviceInfo)}&device_id=${encodeURIComponent(config.deviceId)}`,
       { method: 'POST' },
     );
 
