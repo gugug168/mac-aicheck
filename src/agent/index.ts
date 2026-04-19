@@ -997,6 +997,180 @@ async function main(argv: string[]) {
     }
     return result.ok ? 0 : 1;
   }
+
+  // ── Bounty commands: list, recommended ──
+  if (command === 'bounty-list') {
+    const cfg = loadConfig();
+    if (!cfg.authToken) { process.stdout.write('未登录，请先运行 mac-aicheck agent auth\n'); return 1; }
+    const page = String(args.page || '1');
+    const pageSize = String(args.limit || '10');
+    const sortBy = String(args.sort || 'reward');
+    try {
+      const result = await requestJson(`${apiBase()}/agent/bounties?page=${page}&page_size=${pageSize}&sort_by=${sortBy}`, {
+        headers: { 'Authorization': `Bearer ${cfg.authToken}`, 'X-API-Key': cfg.authToken },
+      });
+      process.stdout.write(JSON.stringify(result.data, null, 2) + '\n');
+    } catch (e: unknown) { process.stdout.write(`获取悬赏列表失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  if (command === 'bounty-recommended') {
+    const cfg = loadConfig();
+    if (!cfg.authToken) { process.stdout.write('未登录，请先运行 mac-aicheck agent auth\n'); return 1; }
+    const strategy = String(args.strategy || 'balanced');
+    const limit = String(args.limit || '10');
+    try {
+      const result = await requestJson(`${apiBase()}/agent/bounties/recommended?strategy=${strategy}&limit=${limit}`, {
+        headers: { 'Authorization': `Bearer ${cfg.authToken}`, 'X-API-Key': cfg.authToken },
+      });
+      process.stdout.write(JSON.stringify(result.data, null, 2) + '\n');
+    } catch (e: unknown) { process.stdout.write(`获取推荐悬赏失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  // ── Bounty: solve (KB 匹配获取答案) ──
+  if (command === 'bounty-solve') {
+    const cfg = loadConfig();
+    if (!cfg.authToken) { process.stdout.write('未登录，请先运行 mac-aicheck agent auth\n'); return 1; }
+    const id = (args._ as string[])[0];
+    if (!id) { process.stdout.write('用法: mac-aicheck agent bounty-solve <id>\n'); return 1; }
+    try {
+      const result = await requestJson(`${apiBase()}/agent/bounties/${id}/auto-solve`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${cfg.authToken}`, 'X-API-Key': cfg.authToken },
+      });
+      if (result.status >= 400) { process.stdout.write(`KB 匹配失败: ${JSON.stringify(result.data)}\n`); return 1; }
+      process.stdout.write(JSON.stringify(result.data, null, 2) + '\n');
+    } catch (e: unknown) { process.stdout.write(`KB 匹配失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  // ── Bounty: claim (认领悬赏) ──
+  if (command === 'bounty-claim') {
+    const cfg = loadConfig();
+    if (!cfg.authToken) { process.stdout.write('未登录，请先运行 mac-aicheck agent auth\n'); return 1; }
+    const id = (args._ as string[])[0];
+    if (!id) { process.stdout.write('用法: mac-aicheck agent bounty-claim <id>\n'); return 1; }
+    try {
+      const result = await requestJson(`${apiBase()}/agent/bounties/${id}/claim`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${cfg.authToken}`, 'X-API-Key': cfg.authToken },
+      });
+      if (result.status >= 400) { process.stdout.write(`认领失败: ${JSON.stringify(result.data)}\n`); return 1; }
+      const d = result.data as Record<string, unknown>;
+      process.stdout.write(`✓ 认领成功 ${d.bounty_id} (锁定 ${d.lock_minutes} 分钟)\n`);
+    } catch (e: unknown) { process.stdout.write(`认领失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  // ── Bounty: submit (提交回答) ──
+  if (command === 'bounty-submit') {
+    const cfg = loadConfig();
+    if (!cfg.authToken) { process.stdout.write('未登录，请先运行 mac-aicheck agent auth\n'); return 1; }
+    const id = (args._ as string[])[0];
+    const content = String(args.content || '');
+    if (!id || !content) { process.stdout.write('用法: mac-aicheck agent bounty-submit <id> --content <text>\n'); return 1; }
+    try {
+      const result = await requestJson(`${apiBase()}/agent/bounties/${id}/submit`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${cfg.authToken}`, 'X-API-Key': cfg.authToken },
+        body: { content, source: String(args.source || 'manual') },
+      });
+      if (result.status >= 400) { process.stdout.write(`提交失败: ${JSON.stringify(result.data)}\n`); return 1; }
+      const d = result.data as Record<string, unknown>;
+      process.stdout.write(`✓ 回答已提交 ${d.id}\n`);
+    } catch (e: unknown) { process.stdout.write(`提交失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  // ── Bounty: release (释放认领) ──
+  if (command === 'bounty-release') {
+    const cfg = loadConfig();
+    if (!cfg.authToken) { process.stdout.write('未登录，请先运行 mac-aicheck agent auth\n'); return 1; }
+    const id = (args._ as string[])[0];
+    if (!id) { process.stdout.write('用法: mac-aicheck agent bounty-release <id>\n'); return 1; }
+    try {
+      const result = await requestJson(`${apiBase()}/agent/bounties/${id}/claim`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${cfg.authToken}`, 'X-API-Key': cfg.authToken },
+      });
+      if (result.status >= 400) { process.stdout.write(`释放失败: ${JSON.stringify(result.data)}\n`); return 1; }
+      const d = result.data as Record<string, unknown>;
+      process.stdout.write(`✓ 认领已释放 ${d.bounty_id}\n`);
+    } catch (e: unknown) { process.stdout.write(`释放失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  // ── Bounty: auto (自动循环: 推荐 → KB匹配 → claim+submit) ──
+  if (command === 'bounty-auto') {
+    const cfg = loadConfig();
+    if (!cfg.authToken) { process.stdout.write('未登录，请先运行 mac-aicheck agent auth\n'); return 1; }
+    const interval = parseInt(String(args.interval || '300'), 10);
+    const maxPerCycle = parseInt(String(args.limit || '3'), 10);
+    const strategy = String(args.strategy || 'balanced');
+    const hdr = { 'Authorization': `Bearer ${cfg.authToken}`, 'X-API-Key': cfg.authToken };
+
+    process.stdout.write(`bounty-auto 启动 (间隔 ${interval}s, 每轮最多 ${maxPerCycle})\n`);
+
+    let cycle = 0;
+    while (true) {
+      cycle++;
+      try {
+        // 1. 心跳
+        await requestJson(`${apiBase()}/agent/heartbeat`, {
+          method: 'POST', headers: hdr, body: { status: 'idle', current_tasks: 0 },
+        });
+
+        // 2. 拉取推荐悬赏
+        const recResult = await requestJson(`${apiBase()}/agent/bounties/recommended?strategy=${strategy}&limit=${maxPerCycle}`, { headers: hdr });
+        const recData = recResult.data as { items?: Record<string, unknown>[] };
+        const items = recData.items || [];
+
+        if (items.length === 0) {
+          process.stdout.write(`[${cycle}] 无推荐悬赏\n`);
+        } else {
+          process.stdout.write(`[${cycle}] 发现 ${items.length} 个推荐悬赏\n`);
+          let solved = 0;
+
+          for (const item of items) {
+            // 3. KB 匹配
+            const solveResult = await requestJson(`${apiBase()}/agent/bounties/${item.id}/auto-solve`, {
+              method: 'POST', headers: hdr,
+            });
+            const solveData = solveResult.data as { matched?: boolean; answer?: string; confidence?: number; reason?: string };
+
+            if (!solveData.matched) {
+              process.stdout.write(`  [${item.id}] KB 无匹配，跳过 (${solveData.reason || ''})\n`);
+              continue;
+            }
+
+            // 4. Delayed claim + submit
+            const submitResult = await requestJson(`${apiBase()}/agent/bounties/${item.id}/claim-and-submit`, {
+              method: 'POST',
+              headers: hdr,
+              body: { content: solveData.answer, source: 'kb_auto', confidence: solveData.confidence || 0.8 },
+            });
+
+            if (submitResult.status < 400) {
+              const submitData = submitResult.data as { id?: string };
+              process.stdout.write(`  ✓ [${item.id}] 已提交 KB 匹配回答 (${submitData.id})\n`);
+              solved++;
+            } else {
+              process.stdout.write(`  ✗ [${item.id}] 提交失败: ${JSON.stringify(submitResult.data)}\n`);
+            }
+          }
+
+          process.stdout.write(`[${cycle}] 本轮解决 ${solved}/${items.length}\n`);
+        }
+      } catch (e: unknown) {
+        process.stdout.write(`[${cycle}] 循环错误: ${(e as Error).message}\n`);
+      }
+
+      process.stdout.write(`等待 ${interval}s...\n`);
+      await new Promise(r => setTimeout(r, interval * 1000));
+    }
+  }
+
   throw new Error(`未知 agent 命令: ${command}`);
 }
 
