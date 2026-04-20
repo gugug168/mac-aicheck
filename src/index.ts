@@ -24,6 +24,11 @@ function gc(s: number) { return s>=90?'#22c55e':s>=70?'#3b82f6':s>=50?'#eab308':
 const ALLOWED_COMMANDS: Record<string, { cmd: string }> = getAllowedCommands();
 
 function serveHttp() {
+  function isLocalRequest(req: http.IncomingMessage): boolean {
+    const host = (req.headers.host || '').toLowerCase();
+    return host.startsWith('127.0.0.1:') || host.startsWith('localhost:');
+  }
+
   const server = http.createServer((req, res) => {
     const pathname = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).pathname;
 
@@ -31,7 +36,7 @@ function serveHttp() {
     if (pathname === '/scan-data.json') {
       if (fs.existsSync(DATA_FILE)) {
         const data = fs.readFileSync(DATA_FILE, 'utf-8');
-        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
         res.end(data);
       } else {
         res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -55,7 +60,7 @@ function serveHttp() {
           type: i.type || 'manual',
         };
       });
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
       res.end(JSON.stringify(payload));
       return;
     }
@@ -77,7 +82,7 @@ function serveHttp() {
         // Security: validate ID against whitelist (prevents command injection)
         const entry = ALLOWED_COMMANDS[id || ''];
         if (!entry) {
-          res.writeHead(403, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+          res.writeHead(403, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
           res.end(JSON.stringify({ error: 'Unknown installer ID' }));
           return;
         }
@@ -87,7 +92,7 @@ function serveHttp() {
           'Content-Type': 'text/event-stream; charset=utf-8',
           'Cache-Control': 'no-cache',
           'Connection': 'keep-alive',
-          'Access-Control-Allow-Origin': 'null',
+          'Access-Control-Allow-Origin': 'http://localhost:7890',
           'X-Accel-Buffering': 'no',
         });
 
@@ -141,9 +146,16 @@ function serveHttp() {
       return;
     }
 
+    // Security: agent routes only accessible from localhost (#38)
+    if (pathname.startsWith('/api/agent') && !isLocalRequest(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Agent API only accessible from localhost' }));
+      return;
+    }
+
     // Agent Lite: 本地状态
     if (pathname === '/api/agent/status' && req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
       res.end(JSON.stringify(getAgentLocalStatus()));
       return;
     }
@@ -159,9 +171,11 @@ function serveHttp() {
       });
       req.on('end', () => {
         let payload: { target?: string } = {};
-        try { payload = JSON.parse(body); } catch { /* ignore */ }
-        const result = enableAgentExperience(payload.target || 'all');
-        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+        try { payload = JSON.parse(body); } catch { payload = { target: 'all' }; }
+        const VALID_TARGETS = ['all', 'claude-code', 'openclaw'];
+        const target = VALID_TARGETS.includes(payload.target || '') ? payload.target : 'all';
+        const result = enableAgentExperience(target);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
         res.end(JSON.stringify(result));
       });
       return;
@@ -169,28 +183,28 @@ function serveHttp() {
 
     // Agent Lite: 暂停上传
     if (pathname === '/api/agent/pause' && req.method === 'POST') {
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
       res.end(JSON.stringify(pauseAgentUploads(true)));
       return;
     }
 
     // Agent Lite: 恢复上传
     if (pathname === '/api/agent/resume' && req.method === 'POST') {
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
       res.end(JSON.stringify(pauseAgentUploads(false)));
       return;
     }
 
     // Agent Lite: 手动同步一次
     if (pathname === '/api/agent/sync' && req.method === 'POST') {
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
       res.end(JSON.stringify(syncAgentEvents()));
       return;
     }
 
     // Version check endpoint
     if (pathname === '/api/version-check' && req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
       res.end(JSON.stringify({ current: VERSION, latest: VERSION }));
       return;
     }
@@ -208,7 +222,7 @@ function serveHttp() {
         try {
           const payload = JSON.parse(body);
           const result = await stashData(payload);
-          res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
           res.end(JSON.stringify(result));
         } catch (e: any) {
           let detail = e.message || '未知错误';
@@ -235,7 +249,7 @@ function serveHttp() {
         try {
           const payload = JSON.parse(body);
           const result = await submitFeedback(payload);
-          res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
           res.end(JSON.stringify(result));
         } catch (e: any) {
           let detail = e.message || '未知错误';
@@ -293,7 +307,7 @@ async function runScan(serve: boolean) {
         console.error('\n[-] 上传失败:', err instanceof Error ? err.message : String(err));
         console.error('    扫描结果已保存在本地，请检查网络后重新运行上传\n');
       });
-  } catch (e) { /* ignore */ }
+  } catch (e) { console.error('[MacAICheck] 保存本地报告失败:', e instanceof Error ? e.message : String(e)); }
   const passed = results.filter(r => r.status === 'pass').length;
   const warn = results.filter(r => r.status === 'warn').length;
   const fail = results.filter(r => r.status === 'fail').length;

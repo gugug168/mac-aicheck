@@ -62,10 +62,19 @@ export type { ScanResult, Scanner, ScannerResult } from './types';
 
 export async function scanAll(): Promise<ScanResult[]> {
   const scanners = getScanners();
-  const results = await Promise.all(
+  const settled = await Promise.allSettled(
     scanners.map(s => scanWithTimeout(s, 30_000))
   );
-  return results;
+  return settled.map((result, i) => {
+    if (result.status === 'fulfilled') return result.value;
+    return {
+      id: scanners[i].id,
+      name: scanners[i].name,
+      category: scanners[i].category,
+      status: 'unknown' as const,
+      message: `扫描异常: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+    };
+  });
 }
 
 async function scanWithTimeout(scanner: ReturnType<typeof getScanners>[number], ms: number): Promise<ScanResult> {
@@ -85,7 +94,17 @@ async function scanWithTimeout(scanner: ReturnType<typeof getScanners>[number], 
 
 export async function scanCategory(category: string): Promise<ScanResult[]> {
   const scanners = getScannerByCategory(category);
-  return Promise.all(scanners.map(s => s.scan()));
+  const settled = await Promise.allSettled(scanners.map(s => s.scan()));
+  return settled.map((result, i) => {
+    if (result.status === 'fulfilled') return result.value;
+    return {
+      id: scanners[i].id,
+      name: scanners[i].name,
+      category: scanners[i].category,
+      status: 'unknown' as const,
+      message: `扫描异常: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+    };
+  });
 }
 
 export function calculateScore(results: ScanResult[]): number {

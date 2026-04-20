@@ -19,12 +19,31 @@ import type { ScoreResult } from '../scoring/calculator';
 const DEFAULT_ORIGIN = 'https://aicoevo.net';
 const REPORT_DIR = join(homedir(), '.mac-aicheck', 'reports');
 
+function isBlockedHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  const blocked = ['169.254.169.254', 'metadata.google.internal', '100.100.100.200',
+    '127.0.0.1', '0.0.0.0', '::1', 'localhost'];
+  if (blocked.includes(h)) return true;
+  // Block private IP ranges
+  if (/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(h)) return true;
+  return false;
+}
+
 function getOrigin(): string {
-  const env = process.env.AICO_EVO_URL || process.env.AICO_EVO_BASE_URL || '';
+  const env = process.env.AICO_EVO_URL || process.env.AICOEVO_BASE_URL || '';
   if (!env) return DEFAULT_ORIGIN;
   const trimmed = env.trim().replace(/\/+$/, '');
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  return `https://${trimmed}`;
+  let url: string;
+  if (/^https?:\/\//i.test(trimmed)) url = trimmed;
+  else url = 'https://' + trimmed;
+  try {
+    const parsed = new URL(url);
+    if (isBlockedHost(parsed.hostname)) {
+      console.warn(`[安全] AICO_EVO_URL 指向内网地址 ${parsed.hostname}，已忽略`);
+      return DEFAULT_ORIGIN;
+    }
+  } catch { return DEFAULT_ORIGIN; }
+  return url;
 }
 
 function getApiBase(): string {

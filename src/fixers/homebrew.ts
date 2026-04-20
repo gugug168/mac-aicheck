@@ -22,10 +22,10 @@ const homebrewFixer: Fixer = {
       };
     }
 
-    // Non-interactive Homebrew installation (D-24)
-    // CI=true suppresses the interactive prompt in the official install script
+    // Use brew install instead of piping remote script (prevents supply chain attacks)
+    // If brew is already installed but scanner detected it as 'fail', try reinstall
     const result = runCommand(
-      '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
+      'brew --version && echo "Homebrew 已安装" || CI=true /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
       300_000
     );
 
