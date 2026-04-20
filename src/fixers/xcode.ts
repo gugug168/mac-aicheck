@@ -1,7 +1,6 @@
 import type { Fixer, FixResult, PostFixGuidance } from './types';
 import type { ScanResult } from '../scanners/types';
 import { registerFixer } from './registry';
-import { classifyError, ERROR_MESSAGES } from './errors';
 import { runCommand } from '../executor/index';
 
 const xcodeFixer: Fixer = {
@@ -48,7 +47,7 @@ const xcodeFixer: Fixer = {
     }
 
     // If GUI install didn't complete (user may have cancelled), try xcode-select --switch
-    const switchResult = runCommand('xcode-select --switch /Library/Developer/CommandLineTools 2>&1 || true', 5000);
+    runCommand('xcode-select --switch /Library/Developer/CommandLineTools 2>&1 || true', 5000);
     const verifyAgain = runCommand('xcode-select -p', 3000);
     if (verifyAgain.exitCode === 0) {
       return {
