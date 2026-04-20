@@ -779,6 +779,41 @@ async function main(argv: string[]) {
     process.stdout.write(`  Agent Runner: ${r.agentJs}\n`);
     process.stdout.write(`  Hook: ${hookResult.hooks.join(', ')}\n`);
     process.stdout.write(`  自动同步: 已启用\n`);
+
+    // Auto-detect installed agents and bind (#30)
+    if (!cfg.authToken) {
+      const agents: Array<{ name: string; cmd: string }> = [];
+      for (const { name, cmd } of [{ name: 'Claude Code', cmd: 'claude' }, { name: 'OpenClaw', cmd: 'openclaw' }]) {
+        try {
+          execFileSync('command', ['-v', cmd], { encoding: 'utf-8', timeout: 3000, stdio: 'pipe' });
+          agents.push({ name, cmd });
+        } catch { /* not installed */ }
+      }
+      if (agents.length > 0) {
+        process.stdout.write(`\n检测到 ${agents.map(a => a.name).join(', ')}\n`);
+        for (const agent of agents) {
+          try {
+            const deviceInfo = `${hostname()}/${process.platform}`;
+            const reqResult = await requestJson(
+              `${apiBase()}/bind/request?agent_type=${agent.cmd}&device_info=${encodeURIComponent(deviceInfo)}&device_id=${encodeURIComponent(cfg.deviceId)}`,
+              { method: 'POST', timeoutMs: 15000 },
+            );
+            if (reqResult.status === 200) {
+              const { confirm_url } = reqResult.data as Record<string, unknown>;
+              process.stdout.write(`  ${agent.name}: 请在浏览器确认绑定 ${confirm_url}\n`);
+              // Try opening browser
+              try {
+                const openCmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
+                execFileSync(openCmd, [confirm_url as string], { timeout: 5000 });
+              } catch { /* manual */ }
+            }
+          } catch {
+            process.stdout.write(`  ${agent.name}: 绑定请求失败（跳过，可稍后手动绑定）\n`);
+          }
+        }
+      }
+    }
+
     process.stdout.write(`\n请重启终端或运行: source ~/.zshrc\n`);
     return 0;
   }
