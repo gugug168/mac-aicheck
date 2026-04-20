@@ -782,11 +782,11 @@ async function main(argv: string[]) {
 
     // Auto-detect installed agents and bind (#30)
     if (!cfg.authToken) {
-      const agents: Array<{ name: string; cmd: string }> = [];
-      for (const { name, cmd } of [{ name: 'Claude Code', cmd: 'claude' }, { name: 'OpenClaw', cmd: 'openclaw' }]) {
+      const agents: Array<{ name: string; cmd: string; agentType: string }> = [];
+      for (const { name, cmd, agentType } of [{ name: 'Claude Code', cmd: 'claude', agentType: 'claude-code' }, { name: 'OpenClaw', cmd: 'openclaw', agentType: 'openclaw' }]) {
         try {
           execFileSync('command', ['-v', cmd], { encoding: 'utf-8', timeout: 3000, stdio: 'pipe' });
-          agents.push({ name, cmd });
+          agents.push({ name, cmd, agentType });
         } catch { /* not installed */ }
       }
       if (agents.length > 0) {
@@ -795,7 +795,7 @@ async function main(argv: string[]) {
           try {
             const deviceInfo = `${hostname()}/${process.platform}`;
             const reqResult = await requestJson(
-              `${apiBase()}/bind/request?agent_type=${agent.cmd}&device_info=${encodeURIComponent(deviceInfo)}&device_id=${encodeURIComponent(cfg.deviceId)}`,
+              `${apiBase()}/bind/request?agent_type=${encodeURIComponent(agent.agentType)}&device_info=${encodeURIComponent(deviceInfo)}&device_id=${encodeURIComponent(cfg.deviceId)}`,
               { method: 'POST', timeoutMs: 15000 },
             );
             if (reqResult.status === 200) {
