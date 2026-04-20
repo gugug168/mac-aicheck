@@ -1,5 +1,5 @@
 // Agent Lite CLI - 简洁实现
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, appendFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, appendFileSync, renameSync } from 'fs';
 import { join } from 'path';
 import { homedir, hostname } from 'os';
 import { execFileSync, spawn } from 'child_process';
@@ -24,7 +24,18 @@ function paths() {
 function ensureDir(dir: string) { if (!existsSync(dir)) mkdirSync(dir, { recursive: true }); }
 function readJson<T>(file: string, fallback: T): T { try { return existsSync(file) ? JSON.parse(readFileSync(file, 'utf-8')) : fallback; } catch { return fallback; } }
 function writeJson(file: string, data: unknown, mode = 0o600) { ensureDir(join(file, '..')); writeFileSync(file, JSON.stringify(data, null, 2) + '\n', { encoding: 'utf-8', mode }); }
-function appendJsonl(file: string, data: unknown) { ensureDir(join(file, '..')); appendFileSync(file, JSON.stringify(data) + '\n', 'utf-8'); }
+function appendJsonl(file: string, data: unknown) {
+  ensureDir(join(file, '..'));
+  const line = JSON.stringify(data) + '\n';
+  // Write to temp file then rename for atomicity (#37)
+  const tmp = file + '.tmp-' + process.pid;
+  try {
+    appendFileSync(file, line, 'utf-8');
+  } catch {
+    // Fallback: write to temp then rename
+    try { writeFileSync(tmp, line, 'utf-8'); renameSync(tmp, file); } catch { /* best effort */ }
+  }
+}
 function readJsonl(file: string): unknown[] { try { if (!existsSync(file)) return []; return readFileSync(file, 'utf-8').split(/\r?\n/).filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean); } catch { return []; } }
 
 function sha256(v: string) { return crypto.createHash('sha256').update(v).digest('hex'); }
@@ -280,7 +291,15 @@ function loadConfig() {
   const p = paths();
   const cfg = readJson(p.config, {} as Record<string, unknown>);
   if (!cfg.clientId) cfg.clientId = `client_${crypto.randomUUID()}`;
+  // Per-agent deviceId (#31): if agentType is set, derive unique deviceId
   if (!cfg.deviceId) cfg.deviceId = `device_${crypto.randomUUID()}`;
+  if (cfg.agentType && typeof cfg.agentType === 'string') {
+    const baseDeviceId = cfg.deviceId as string;
+    const suffix = cfg.agentType === 'claude-code' ? '_cc' : cfg.agentType === 'openclaw' ? '_oc' : '';
+    if (suffix && !baseDeviceId.endsWith(suffix)) {
+      cfg.deviceId = baseDeviceId + suffix;
+    }
+  }
   if (cfg.shareData === undefined) cfg.shareData = false;
   if (cfg.autoSync === undefined) cfg.autoSync = false;
   if (cfg.paused === undefined) cfg.paused = false;

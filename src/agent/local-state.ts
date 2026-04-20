@@ -1,8 +1,8 @@
 import { execFileSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import { copyFileSync } from 'fs';
+import { createHash } from 'crypto';
 import type { AgentStatus } from './types';
 
 function getBaseDir(): string {
@@ -87,7 +87,7 @@ function installEmbeddedLocalAgent() {
   // 从 dist/agent/index.js 复制（已编译，可直接运行）
   const src = join(__dirname, '../agent/index.js');
   copyFileSync(src, p.agentJs);
-  const hash = require('crypto').createHash('sha256').update(readFileSync(p.agentJs, 'utf-8')).digest('hex');
+  const hash = createHash('sha256').update(readFileSync(p.agentJs, 'utf-8')).digest('hex');
   writeFileSync(
     join(p.agentDir, 'agent-lite.hash.json'),
     JSON.stringify({ sha256: hash, source: 'cli', installedAt: new Date().toISOString() }, null, 2) + '\n',
