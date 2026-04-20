@@ -422,7 +422,30 @@ async function syncEvents() {
   const pendingIds = new Set(pending.map(e => e.eventId));
   const updated = all.map(e => pendingIds.has(e.eventId) ? { ...e, syncStatus: 'synced', syncedAt: nowIso() } : e);
   writeFileSync(p.outbox, updated.map(e => JSON.stringify(e)).join('\n') + '\n', 'utf-8');
-  if ((remote.data as Record<string, unknown>)?.advice) writeAdvice((remote.data as Record<string, unknown>).advice as Record<string, unknown>);
+  const respData = remote.data as Record<string, unknown>;
+  if (respData?.advice) writeAdvice(respData.advice as Record<string, unknown>);
+  // 展示同步反馈：匹配结果和悬赏草稿
+  if (respData) {
+    const accepted = respData.accepted as number || 0;
+    const advice = respData.advice as Record<string, unknown> | undefined;
+    const drafts = respData.bountyDrafts as Array<Record<string, unknown>> | undefined;
+    if (accepted > 0) {
+      const parts = [`[AICOEVO] 已上传 ${accepted} 条事件`];
+      if (advice) {
+        const conf = typeof advice.confidence === 'number' ? advice.confidence : 0;
+        if (conf >= 0.6) {
+          parts.push(`匹配到已有方案 (置信度 ${Math.round(conf * 100)}%)`);
+        } else if (advice.summary) {
+          parts.push(String(advice.summary).split('\n')[0]);
+        }
+      }
+      if (drafts && drafts.length > 0) {
+        const d = drafts[0];
+        parts.push(`已创建悬赏草稿: ${d.title || d.id}`);
+      }
+      process.stderr.write(parts.join(' | ') + '\n');
+    }
+  }
   return { ok: true, uploaded: pending.length };
 }
 
