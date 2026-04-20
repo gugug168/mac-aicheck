@@ -10,6 +10,9 @@ import './npm-mirror';
 import './rosetta';
 import './node-version';
 import './python-versions';
+import './xcode';
+import './developer-mode';
+import './disk-space';
 
 // Re-export orchestrator (and its types for backward compatibility)
 export {
