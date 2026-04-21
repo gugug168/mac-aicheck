@@ -13,6 +13,7 @@ const scanner: Scanner = {
         id: this.id, name: this.name, category: this.category,
         status: 'warn',
         error_type: 'missing',
+        message: '未检测到 uv 包管理器',
         suggestions: ['curl -LsSf https://astral.sh/uv/install.sh | sh', 'brew install uv', 'pip install uv'],
       };
     }

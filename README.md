@@ -115,7 +115,7 @@ mac-aicheck/
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `AICO_EVO_URL` | `https://aicoevo.com` | AICO EVO API 地址 |
+| `AICO_EVO_URL` | `https://aicoevo.net` | AICO EVO API 地址 |
 | `AICO_EVO_TOKEN` | — | 上报认证 Token |
 | `PORT` | `7890` | Web 服务端口 |
 
