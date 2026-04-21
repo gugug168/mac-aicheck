@@ -18,7 +18,7 @@ const scanner: Scanner = {
       status: enabled ? 'pass' : 'warn',
       error_type: enabled ? undefined : 'permission',
       message: enabled ? 'macOS 应用防火墙已开启' : 'macOS 应用防火墙未开启或无法确认',
-      details: `Application Firewall: ${firewall.stdout || '(无法读取)'}\npf: ${pf.stdout || '(无法读取)'}\n监听中的 AI 常用端口:\n${listening || '(未发现)'}`,
+      detail: `Application Firewall: ${firewall.stdout || '(无法读取)'}\npf: ${pf.stdout || '(无法读取)'}\n监听中的 AI 常用端口:\n${listening || '(未发现)'}`,
     };
   },
 };

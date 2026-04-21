@@ -21,7 +21,7 @@ const scanner: Scanner = {
         status: metal || mpsAvailable ? 'pass' : 'warn',
         error_type: 'incompatible',
         message: metal || mpsAvailable ? 'Apple GPU / Metal 环境可用' : 'Apple Silicon 已检测到，但未确认 Metal CLI 或 PyTorch MPS',
-        details: `CPU: ${cpu || arch}\nMPS: ${mpsAvailable ? 'PyTorch MPS 可用' : '未确认'}\n${profiler}`,
+        detail: `CPU: ${cpu || arch}\nMPS: ${mpsAvailable ? 'PyTorch MPS 可用' : '未确认'}\n${profiler}`,
         suggestions: metal ? undefined : ['xcode-select --install'],
       };
     }
@@ -30,7 +30,7 @@ const scanner: Scanner = {
       id: this.id, name: this.name, category: this.category,
       status: 'unknown',
       message: '未检测到 Apple Silicon 统一 GPU',
-      details: profiler || 'Intel Mac 可使用 CPU、外接 GPU 或远程 GPU；CUDA 不属于 macOS 原生 AI 加速路径。',
+      detail: profiler || 'Intel Mac 可使用 CPU、外接 GPU 或远程 GPU；CUDA 不属于 macOS 原生 AI 加速路径。',
     };
   },
 };

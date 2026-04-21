@@ -31,7 +31,7 @@ const scanner: Scanner = {
         id: this.id, name: this.name, category: this.category,
         status: 'pass',
         message: 'CCSwitch 图形版或配置目录已存在',
-        details: appCandidates.filter(existsSync).join('\n'),
+        detail: appCandidates.filter(existsSync).join('\n'),
       };
     }
 
@@ -39,7 +39,7 @@ const scanner: Scanner = {
       id: this.id, name: this.name, category: this.category,
       status: 'warn',
       error_type: 'missing',
-      details: 'macOS 可优先使用 npm install -g ccswitch；若使用图形版，通常位于 /Applications 或 ~/Applications。',
+      detail: 'macOS 可优先使用 npm install -g ccswitch；若使用图形版，通常位于 /Applications 或 ~/Applications。',
       suggestions: ['npm install -g ccswitch'],
     };
   },

@@ -20,7 +20,7 @@ const scanner: Scanner = {
       id: this.id, name: this.name, category: this.category,
       status: 'fail',
       error_type: 'missing',
-      details: 'macOS 上建议安装 Xcode Command Line Tools。',
+      detail: 'macOS 上建议安装 Xcode Command Line Tools。',
       suggestions: ['xcode-select --install'],
     };
   },
