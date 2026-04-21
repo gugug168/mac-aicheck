@@ -21,6 +21,7 @@ const scanner: Scanner = {
         id: this.id, name: this.name, category: this.category,
         status: 'warn',
         error_type: 'misconfigured',
+        message: '未检测到 Git 凭据链路',
         detail: 'macOS 推荐使用 credential.helper=osxkeychain，或在 ~/.ssh 中配置 SSH Key。',
         suggestions: ['git config --global credential.helper osxkeychain', 'ssh-keygen -t ed25519 -C "you@example.com"'],
       };

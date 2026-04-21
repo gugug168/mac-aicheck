@@ -19,6 +19,7 @@ const scanner: Scanner = {
         id: this.id, name: this.name, category: this.category,
         status: 'fail',
         error_type: 'missing',
+        message: `Git 依赖命令缺失: ${missing.join(', ')}`,
         detail: `git: ${gitPath}`,
       };
     }

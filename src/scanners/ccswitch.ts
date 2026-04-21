@@ -39,6 +39,7 @@ const scanner: Scanner = {
       id: this.id, name: this.name, category: this.category,
       status: 'warn',
       error_type: 'missing',
+      message: '未检测到 CCSwitch',
       detail: 'macOS 可优先使用 npm install -g ccswitch；若使用图形版，通常位于 /Applications 或 ~/Applications。',
       suggestions: ['npm install -g ccswitch'],
     };
