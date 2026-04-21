@@ -397,6 +397,11 @@ function apiBase() {
   return raw.endsWith('/api/v1') ? raw : `${raw}/api/v1`;
 }
 
+function agentApiKeyHeaders(config: { authToken?: string }): Record<string, string> | null {
+  if (!config.authToken || !config.authToken.startsWith('ak_')) return null;
+  return { 'X-API-Key': config.authToken };
+}
+
 async function requestJson(url: string, init: { method?: string; headers?: Record<string, string>; body?: unknown; timeoutMs?: number } = {}) {
   const resp = await fetch(url, { method: init.method || 'GET', headers: { Accept: 'application/json', ...(init.body ? { 'Content-Type': 'application/json' } : {}), ...(init.headers || {}) }, body: init.body ? JSON.stringify(init.body) : undefined, signal: AbortSignal.timeout(init.timeoutMs || 5000) });
   const text = await resp.text();
@@ -1078,13 +1083,14 @@ async function main(argv: string[]) {
   // ── Bounty commands: list, recommended ──
   if (command === 'bounty-list') {
     const cfg = loadConfig();
-    if (!cfg.authToken) { process.stdout.write('未登录，请先运行 mac-aicheck agent auth\n'); return 1; }
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('悬赏命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
     const page = String(args.page || '1');
     const pageSize = String(args.limit || '10');
     const sortBy = String(args.sort || 'reward');
     try {
       const result = await requestJson(`${apiBase()}/agent/bounties?page=${page}&page_size=${pageSize}&sort_by=${sortBy}`, {
-        headers: { 'Authorization': `Bearer ${cfg.authToken}`, 'X-API-Key': cfg.authToken },
+        headers,
       });
       process.stdout.write(JSON.stringify(result.data, null, 2) + '\n');
     } catch (e: unknown) { process.stdout.write(`获取悬赏列表失败: ${(e as Error).message}\n`); return 1; }
@@ -1093,12 +1099,13 @@ async function main(argv: string[]) {
 
   if (command === 'bounty-recommended') {
     const cfg = loadConfig();
-    if (!cfg.authToken) { process.stdout.write('未登录，请先运行 mac-aicheck agent auth\n'); return 1; }
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('悬赏命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
     const strategy = String(args.strategy || 'balanced');
     const limit = String(args.limit || '10');
     try {
       const result = await requestJson(`${apiBase()}/agent/bounties/recommended?strategy=${strategy}&limit=${limit}`, {
-        headers: { 'Authorization': `Bearer ${cfg.authToken}`, 'X-API-Key': cfg.authToken },
+        headers,
       });
       process.stdout.write(JSON.stringify(result.data, null, 2) + '\n');
     } catch (e: unknown) { process.stdout.write(`获取推荐悬赏失败: ${(e as Error).message}\n`); return 1; }
@@ -1108,13 +1115,14 @@ async function main(argv: string[]) {
   // ── Bounty: solve (KB 匹配获取答案) ──
   if (command === 'bounty-solve') {
     const cfg = loadConfig();
-    if (!cfg.authToken) { process.stdout.write('未登录，请先运行 mac-aicheck agent auth\n'); return 1; }
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('悬赏命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
     const id = (args._ as string[])[0];
     if (!id) { process.stdout.write('用法: mac-aicheck agent bounty-solve <id>\n'); return 1; }
     try {
       const result = await requestJson(`${apiBase()}/agent/bounties/${id}/auto-solve`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${cfg.authToken}`, 'X-API-Key': cfg.authToken },
+        headers,
       });
       if (result.status >= 400) { process.stdout.write(`KB 匹配失败: ${JSON.stringify(result.data)}\n`); return 1; }
       process.stdout.write(JSON.stringify(result.data, null, 2) + '\n');
@@ -1125,13 +1133,14 @@ async function main(argv: string[]) {
   // ── Bounty: claim (认领悬赏) ──
   if (command === 'bounty-claim') {
     const cfg = loadConfig();
-    if (!cfg.authToken) { process.stdout.write('未登录，请先运行 mac-aicheck agent auth\n'); return 1; }
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('悬赏命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
     const id = (args._ as string[])[0];
     if (!id) { process.stdout.write('用法: mac-aicheck agent bounty-claim <id>\n'); return 1; }
     try {
       const result = await requestJson(`${apiBase()}/agent/bounties/${id}/claim`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${cfg.authToken}`, 'X-API-Key': cfg.authToken },
+        headers,
       });
       if (result.status >= 400) { process.stdout.write(`认领失败: ${JSON.stringify(result.data)}\n`); return 1; }
       const d = result.data as Record<string, unknown>;
@@ -1143,14 +1152,15 @@ async function main(argv: string[]) {
   // ── Bounty: submit (提交回答) ──
   if (command === 'bounty-submit') {
     const cfg = loadConfig();
-    if (!cfg.authToken) { process.stdout.write('未登录，请先运行 mac-aicheck agent auth\n'); return 1; }
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('悬赏命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
     const id = (args._ as string[])[0];
     const content = String(args.content || '');
     if (!id || !content) { process.stdout.write('用法: mac-aicheck agent bounty-submit <id> --content <text>\n'); return 1; }
     try {
       const result = await requestJson(`${apiBase()}/agent/bounties/${id}/submit`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${cfg.authToken}`, 'X-API-Key': cfg.authToken },
+        headers,
         body: { content, source: String(args.source || 'manual') },
       });
       if (result.status >= 400) { process.stdout.write(`提交失败: ${JSON.stringify(result.data)}\n`); return 1; }
@@ -1163,13 +1173,14 @@ async function main(argv: string[]) {
   // ── Bounty: release (释放认领) ──
   if (command === 'bounty-release') {
     const cfg = loadConfig();
-    if (!cfg.authToken) { process.stdout.write('未登录，请先运行 mac-aicheck agent auth\n'); return 1; }
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('悬赏命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
     const id = (args._ as string[])[0];
     if (!id) { process.stdout.write('用法: mac-aicheck agent bounty-release <id>\n'); return 1; }
     try {
       const result = await requestJson(`${apiBase()}/agent/bounties/${id}/claim`, {
         method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${cfg.authToken}`, 'X-API-Key': cfg.authToken },
+        headers,
       });
       if (result.status >= 400) { process.stdout.write(`释放失败: ${JSON.stringify(result.data)}\n`); return 1; }
       const d = result.data as Record<string, unknown>;
@@ -1181,11 +1192,12 @@ async function main(argv: string[]) {
   // ── Bounty: auto (自动循环: 推荐 → KB匹配 → claim+submit) ──
   if (command === 'bounty-auto') {
     const cfg = loadConfig();
-    if (!cfg.authToken) { process.stdout.write('未登录，请先运行 mac-aicheck agent auth\n'); return 1; }
+    const apiKeyHeaders = agentApiKeyHeaders(cfg);
+    if (!apiKeyHeaders) { process.stdout.write('悬赏命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
     const interval = parseInt(String(args.interval || '300'), 10);
     const maxPerCycle = parseInt(String(args.limit || '3'), 10);
     const strategy = String(args.strategy || 'balanced');
-    const hdr = { 'Authorization': `Bearer ${cfg.authToken}`, 'X-API-Key': cfg.authToken };
+    const hdr = apiKeyHeaders;
 
     process.stdout.write(`bounty-auto 启动 (间隔 ${interval}s, 每轮最多 ${maxPerCycle})\n`);
 
@@ -1251,4 +1263,11 @@ async function main(argv: string[]) {
   throw new Error(`未知 agent 命令: ${command}`);
 }
 
-main(process.argv.slice(2)).then(code => { process.exitCode = typeof code === 'number' ? code : 0; }).catch(e => { console.error(`mac-aicheck Agent 错误: ${e.message}`); process.exitCode = 1; });
+export const _testHelpers = {
+  agentApiKeyHeaders,
+  loadConfig,
+};
+
+if (require.main === module) {
+  main(process.argv.slice(2)).then(code => { process.exitCode = typeof code === 'number' ? code : 0; }).catch(e => { console.error(`mac-aicheck Agent 错误: ${e.message}`); process.exitCode = 1; });
+}
