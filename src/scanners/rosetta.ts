@@ -21,6 +21,7 @@ const scanner: Scanner = {
     const { exitCode: rcheck } = runCommand('pkgutil --pkg-info=com.apple.pkg.RosettaUpdateLegacy 2>/dev/null || echo "not installed"', 3000);
     if (rcheck !== 0) {
       return { id: this.id, name: this.name, category: this.category, status: 'warn',
+        error_type: 'incompatible',
         message: 'Apple Silicon 但 Rosetta 2 未安装，部分 x86 软件无法运行。安装命令: softwareupdate --install-rosetta' };
     }
     return { id: this.id, name: this.name, category: this.category, status: 'pass',

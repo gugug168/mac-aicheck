@@ -11,6 +11,7 @@ const scanner: Scanner = {
     const { stdout, exitCode } = runCommand('brew --version', 5000);
     if (exitCode !== 0) {
       return { id: this.id, name: this.name, category: this.category, status: 'fail',
+        error_type: 'missing',
         message: 'Homebrew 未安装，请运行: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"' };
     }
     const match = stdout.match(/Homebrew (\d+\.\d+\.\d+)/);

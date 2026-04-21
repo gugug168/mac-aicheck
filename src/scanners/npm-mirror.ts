@@ -23,7 +23,8 @@ const scanner: Scanner = {
         message: `npm 使用国内镜像: ${registry}` };
     }
     return { id: this.id, name: this.name, category: this.category, status: 'warn',
-      message: `npm 使用非标准源: ${registry}` };
+      message: `npm 使用非标准源: ${registry}`,
+      error_type: 'misconfigured' };
   },
 };
 registerScanner(scanner);

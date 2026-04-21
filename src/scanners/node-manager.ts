@@ -23,7 +23,8 @@ const scanner: Scanner = {
         message: `${conflicts[0]} 单一版本管理器，无冲突` };
     }
     return { id: this.id, name: this.name, category: this.category, status: 'warn',
-      message: `检测到多个 Node 版本管理器: ${conflicts.join(', ')}，可能导致 node/npm 路径混乱，建议保留一个` };
+      message: `检测到多个 Node 版本管理器: ${conflicts.join(', ')}，可能导致 node/npm 路径混乱，建议保留一个`,
+      error_type: 'conflict' };
   },
 };
 registerScanner(scanner);

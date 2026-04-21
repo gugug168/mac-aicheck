@@ -19,7 +19,7 @@ const scanner: Scanner = {
     return {
       id: this.id, name: this.name, category: this.category,
       status: 'fail',
-      message: '未检测到 C/C++ 编译器',
+      error_type: 'missing',
       details: 'macOS 上建议安装 Xcode Command Line Tools。',
       suggestions: ['xcode-select --install'],
     };

@@ -18,7 +18,7 @@ const scanner: Scanner = {
       return {
         id: this.id, name: this.name, category: this.category,
         status: 'warn',
-        message: `PATH 偏长或存在重复项 (${pathVar.length} 字符，${entries.length} 个条目)`,
+        error_type: 'misconfigured',
         details: duplicates.length ? `重复项:\n${duplicates.map(([p, c]) => `  ${p} (x${c})`).join('\n')}` : `建议低于 ${warnLength} 字符。`,
       };
     }

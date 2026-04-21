@@ -12,7 +12,7 @@ const scanner: Scanner = {
       return {
         id: this.id, name: this.name, category: this.category,
         status: 'warn',
-        message: 'Claude Code CLI 未安装',
+        error_type: 'missing',
         details: 'Claude Code 是 Anthropic 官方命令行 AI 编程助手。',
         suggestions: ['npm install -g @anthropic-ai/claude-code'],
       };

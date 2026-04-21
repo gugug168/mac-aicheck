@@ -153,6 +153,7 @@ export async function checkGpu(): Promise<ScannerResult> {
       message: '未能读取 GPU 信息',
       details: details.join('\n'),
       suggestions,
+      error_type: 'incompatible',
     };
   }
 
@@ -169,14 +170,27 @@ export async function checkGpu(): Promise<ScannerResult> {
     summaryParts.push(`外接显示器已连接: ${externalDisplays.join(', ')}`);
   }
 
+  if (hasMetalCli) {
+    return {
+      id: 'gpu-monitor',
+      name: 'GPU 检测',
+      category: 'system',
+      status: 'pass',
+      message: summaryParts.join('；') || 'GPU 信息已检测',
+      details: details.join('\n'),
+      suggestions,
+    };
+  }
+
   return {
     id: 'gpu-monitor',
     name: 'GPU 检测',
     category: 'system',
-    status: hasMetalCli ? 'pass' : 'warn',
+    status: 'warn',
     message: summaryParts.join('；') || 'GPU 信息已检测',
     details: details.join('\n'),
     suggestions,
+    error_type: 'missing',
   };
 }
 

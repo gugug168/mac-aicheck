@@ -28,6 +28,7 @@ const scanner: Scanner = {
     return {
       id: this.id, name: this.name, category: this.category,
       status: missing.length ? 'warn' : 'pass',
+      error_type: missing.length ? 'missing' : undefined,
       message: missing.length ? `部分 MCP command 不可解析 (${missing.length}/${commands.length})` : 'MCP command 均可解析',
       details: `文件: ${config.path}\n${missing.length ? `不可解析:\n${missing.join('\n')}` : commands.join('\n')}`,
     };

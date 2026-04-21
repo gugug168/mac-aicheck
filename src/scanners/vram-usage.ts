@@ -30,6 +30,7 @@ const scanner: Scanner = {
     return {
       id: this.id, name: this.name, category: this.category,
       status: usedPct > 90 ? 'warn' : 'pass',
+      error_type: usedPct > 90 ? 'resource' : undefined,
       message: usedPct > 90 ? `统一内存使用率偏高 (${usedPct}%)，可能影响本地模型推理` : `统一内存压力正常 (${usedPct}%)`,
       details: `总内存: ${Math.round(totalBytes / 1024 ** 3)} GB\n估算可用: ${Math.round(availableBytes / 1024 ** 3)} GB\n${gpuInfo}`,
     };
