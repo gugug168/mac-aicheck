@@ -19,7 +19,7 @@ const scanner: Scanner = {
         id: this.id, name: this.name, category: this.category,
         status: 'fail',
         error_type: 'missing',
-        details: `git: ${gitPath}`,
+        detail: `git: ${gitPath}`,
       };
     }
 
@@ -27,7 +27,7 @@ const scanner: Scanner = {
       id: this.id, name: this.name, category: this.category,
       status: 'pass',
       message: 'Git 与常用 Unix 配套命令可用',
-      details: `git: ${gitPath}`,
+      detail: `git: ${gitPath}`,
     };
   },
 };

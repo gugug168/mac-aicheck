@@ -13,8 +13,8 @@ const scanner: Scanner = {
   async scan(): Promise<ScanResult> {
     if (!hasProjectMarker(PYTHON_PROJECT_MARKERS)) return { id: this.id, name: this.name, category: this.category, status: 'unknown', message: '当前目录未检测到 Python 项目' };
     const venvDir = findProjectDir(VENV_DIRS);
-    if (!venvDir) return { id: this.id, name: this.name, category: this.category, status: 'warn', error_type: 'misconfigured', message: '检测到 Python 项目，但未发现项目级虚拟环境', details: '建议在项目根目录创建 .venv，或使用 uv/poetry 管理环境。' };
-    return { id: this.id, name: this.name, category: this.category, status: 'pass', message: '检测到项目级 Python 虚拟环境', details: `目录: ${venvDir}` };
+    if (!venvDir) return { id: this.id, name: this.name, category: this.category, status: 'warn', error_type: 'misconfigured', message: '检测到 Python 项目，但未发现项目级虚拟环境', detail: '建议在项目根目录创建 .venv，或使用 uv/poetry 管理环境。' };
+    return { id: this.id, name: this.name, category: this.category, status: 'pass', message: '检测到项目级 Python 虚拟环境', detail: `目录: ${venvDir}` };
   },
 };
 

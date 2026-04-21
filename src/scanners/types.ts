@@ -18,9 +18,17 @@ export interface ScanResult {
   category: ScannerCategory;
   status: 'pass' | 'warn' | 'fail' | 'unknown';
   message: string;
-  details?: string;
+  detail?: string;
   suggestions?: string[];
   error_type?: ErrorType;
+  /** 工具/软件版本 */
+  version?: string | null;
+  /** 安装路径 */
+  path?: string | null;
+  /** 修复命令 */
+  fixCommand?: string | null;
+  /** 严重程度: low / medium / high / critical */
+  severity?: string | null;
 }
 
 export type ScannerResult = ScanResult;

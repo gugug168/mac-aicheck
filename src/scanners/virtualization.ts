@@ -21,14 +21,14 @@ const scanner: Scanner = {
     ].filter(Boolean);
 
     if (!hasHypervisor) {
-      return { id: this.id, name: this.name, category: this.category, status: 'warn', error_type: 'incompatible', message: '未确认硬件虚拟化支持', details: `CPU features: ${cpuFeatures || '(无)'}` };
+      return { id: this.id, name: this.name, category: this.category, status: 'warn', error_type: 'incompatible', message: '未确认硬件虚拟化支持', detail: `CPU features: ${cpuFeatures || '(无)'}` };
     }
 
     return {
       id: this.id, name: this.name, category: this.category,
       status: 'pass',
       message: tools.length ? `虚拟化可用，已检测到 ${tools.join(', ')}` : '硬件虚拟化能力可用',
-      details: isAppleSilicon ? 'Apple Silicon 支持 Virtualization.framework；可使用 UTM、Docker Desktop 或 Parallels。' : `CPU features: ${cpuFeatures}`,
+      detail: isAppleSilicon ? 'Apple Silicon 支持 Virtualization.framework；可使用 UTM、Docker Desktop 或 Parallels。' : `CPU features: ${cpuFeatures}`,
     };
   },
 };

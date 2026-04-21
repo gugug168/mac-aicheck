@@ -19,7 +19,7 @@ const scanner: Scanner = {
     const python = runCommand('python3 -c "import sys; print(sys.executable)"', 8000);
     const pip = runCommand('python3 -m pip --version', 8000);
     if (python.exitCode !== 0) return { id: this.id, name: this.name, category: this.category, status: 'fail', error_type: 'missing', message: 'python3 不可用，无法校验项目环境' };
-    if (pip.exitCode !== 0) return { id: this.id, name: this.name, category: this.category, status: 'warn', error_type: 'misconfigured', message: 'pip 不可用，Python 依赖安装可能失败', details: `python: ${python.stdout.trim()}` };
+    if (pip.exitCode !== 0) return { id: this.id, name: this.name, category: this.category, status: 'warn', error_type: 'misconfigured', message: 'pip 不可用，Python 依赖安装可能失败', detail: `python: ${python.stdout.trim()}` };
 
     const pythonPath = python.stdout.split(/\r?\n/)[0].trim();
     const pipPath = pip.stdout.match(/from\s+(.+?)\s+\(python/i)?.[1]?.trim() || '';
@@ -29,7 +29,7 @@ const scanner: Scanner = {
       status: aligned ? 'pass' : 'warn',
       error_type: aligned ? undefined : 'misconfigured',
       message: aligned ? 'python3 与 pip 环境一致' : 'python3 与 pip 可能来自不同环境',
-      details: `python3: ${pythonPath}\npip: ${pipPath || pip.stdout.trim()}`,
+      detail: `python3: ${pythonPath}\npip: ${pipPath || pip.stdout.trim()}`,
     };
   },
 };

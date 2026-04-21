@@ -21,7 +21,7 @@ const scanner: Scanner = {
         id: this.id, name: this.name, category: this.category,
         status: 'warn',
         error_type: 'misconfigured',
-        details: 'macOS 推荐使用 credential.helper=osxkeychain，或在 ~/.ssh 中配置 SSH Key。',
+        detail: 'macOS 推荐使用 credential.helper=osxkeychain，或在 ~/.ssh 中配置 SSH Key。',
         suggestions: ['git config --global credential.helper osxkeychain', 'ssh-keygen -t ed25519 -C "you@example.com"'],
       };
     }
@@ -30,7 +30,7 @@ const scanner: Scanner = {
       id: this.id, name: this.name, category: this.category,
       status: hasKeychain || keys.length > 0 ? 'pass' : 'warn',
       message: hasKeychain || keys.length > 0 ? 'Git 凭据链路存在' : 'Git credential helper 已配置，但不是 macOS Keychain',
-      details: `credential.helper: ${helper || '(未配置)'}\nSSH Keys: ${keys.length ? keys.join(', ') : '(未检测到)'}`,
+      detail: `credential.helper: ${helper || '(未配置)'}\nSSH Keys: ${keys.length ? keys.join(', ') : '(未检测到)'}`,
     };
   },
 };

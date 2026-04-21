@@ -23,7 +23,7 @@ const scanner: Scanner = {
       status: hasMetalSupport ? 'pass' : 'warn',
       error_type: hasMetalSupport ? undefined : 'incompatible',
       message: hasMetalSupport ? `Metal 支持正常: ${chipsets.join(', ')}` : `未确认 Metal 支持: ${chipsets.join(', ')}`,
-      details: [`GPU: ${chipsets.join(', ')}`, `metal CLI: ${hasMetalCli ? '可用' : '未检测到'}`, ...metalLines].join('\n'),
+      detail: [`GPU: ${chipsets.join(', ')}`, `metal CLI: ${hasMetalCli ? '可用' : '未检测到'}`, ...metalLines].join('\n'),
       suggestions: hasMetalCli ? undefined : ['xcode-select --install'],
     };
   },
