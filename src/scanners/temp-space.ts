@@ -17,6 +17,7 @@ const scanner: Scanner = {
     return {
       id: this.id, name: this.name, category: this.category,
       status: freeGb < 10 ? 'fail' : 'pass',
+      error_type: freeGb < 10 ? 'resource' : undefined,
       message: freeGb < 10 ? `临时目录所在磁盘空间不足 (${freeGb} GB < 10 GB)` : `临时目录所在磁盘空间充足 (${freeGb} GB)`,
       details: `TMPDIR: ${tempDir}\n${output}`,
     };

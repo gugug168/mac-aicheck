@@ -13,10 +13,10 @@ const scanner: Scanner = {
     const available = commands.filter(cmd => !missing.includes(cmd));
 
     if (missing.length === commands.length) {
-      return { id: this.id, name: this.name, category: this.category, status: 'fail', message: '所有常用 Unix 命令均不可用' };
+      return { id: this.id, name: this.name, category: this.category, status: 'fail', error_type: 'missing', message: '所有常用 Unix 命令均不可用' };
     }
     if (missing.length > 0) {
-      return { id: this.id, name: this.name, category: this.category, status: 'warn', message: `缺少命令: ${missing.join(', ')}`, details: `可用: ${available.join(', ')}` };
+      return { id: this.id, name: this.name, category: this.category, status: 'warn', error_type: 'missing', message: `缺少命令: ${missing.join(', ')}`, details: `可用: ${available.join(', ')}` };
     }
     return { id: this.id, name: this.name, category: this.category, status: 'pass', message: `所有 Unix 命令可用 (${available.join(', ')})` };
   },

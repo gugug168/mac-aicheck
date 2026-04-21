@@ -38,7 +38,7 @@ const scanner: Scanner = {
     return {
       id: this.id, name: this.name, category: this.category,
       status: 'warn',
-      message: 'CCSwitch 未安装（可选，多账号管理工具）',
+      error_type: 'missing',
       details: 'macOS 可优先使用 npm install -g ccswitch；若使用图形版，通常位于 /Applications 或 ~/Applications。',
       suggestions: ['npm install -g ccswitch'],
     };

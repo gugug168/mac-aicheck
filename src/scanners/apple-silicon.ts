@@ -26,6 +26,7 @@ const scanner: Scanner = {
     return {
       id: this.id, name: this.name, category: this.category,
       status: hasRosetta ? 'pass' : 'warn',
+      error_type: hasRosetta ? undefined : 'incompatible',
       message: hasRosetta
         ? `Apple Silicon (${chip}) + Rosetta 2 已安装`
         : `Apple Silicon (${chip})，建议安装 Rosetta 2`,

@@ -30,6 +30,7 @@ const scanner: Scanner = {
     return {
       id: this.id, name: this.name, category: this.category,
       status: suspicious.length ? 'warn' : (modernShell ? 'pass' : 'unknown'),
+      error_type: suspicious.length ? 'misconfigured' : undefined,
       message: suspicious.length ? 'Shell 启动配置存在潜在问题' : `默认 Shell 配置正常 (${shell || 'unknown'})`,
       details: `HOME: ${home}\nSHELL: ${shell || '(未设置)'}\n启动文件:\n${startupFiles.join('\n') || '(未发现)'}${suspicious.length ? `\n\n问题:\n${suspicious.join('\n')}` : ''}`,
     };

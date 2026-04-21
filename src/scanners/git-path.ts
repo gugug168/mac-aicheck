@@ -9,7 +9,7 @@ const scanner: Scanner = {
 
   async scan(): Promise<ScanResult> {
     if (!commandExists('git')) {
-      return { id: this.id, name: this.name, category: this.category, status: 'fail', message: '未检测到 Git' };
+      return { id: this.id, name: this.name, category: this.category, status: 'fail', error_type: 'missing', message: '未检测到 Git' };
     }
 
     const gitPath = runCommand('which git', 5000).stdout.trim();
@@ -18,7 +18,7 @@ const scanner: Scanner = {
       return {
         id: this.id, name: this.name, category: this.category,
         status: 'fail',
-        message: `Git 可用，但常用配套命令缺失: ${missing.join(', ')}`,
+        error_type: 'missing',
         details: `git: ${gitPath}`,
       };
     }

@@ -13,6 +13,7 @@ const scanner: Scanner = {
     if (xcodeExit !== 0) {
       return {
         id: this.id, name: this.name, category: this.category, status: 'fail',
+        error_type: 'missing',
         message: 'Xcode Command Line Tools 未安装。安装命令: xcode-select --install',
       };
     }

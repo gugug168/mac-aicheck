@@ -24,6 +24,7 @@ const scanner: Scanner = {
     const failures = results.filter(r => r.includes('FAIL'));
     if (failures.length > 0) {
       return { id: this.id, name: this.name, category: this.category, status: 'fail',
+        error_type: 'network',
         message: `DNS 解析失败: ${failures.join(', ')}` };
     }
 

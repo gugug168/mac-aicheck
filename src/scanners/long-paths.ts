@@ -30,7 +30,7 @@ const scanner: Scanner = {
     const warnLimit = 240;
     const found = scanLongPaths(process.cwd(), warnLimit);
     if (found.length > 0) {
-      return { id: this.id, name: this.name, category: this.category, status: 'warn', message: `发现 ${found.length} 个较长路径`, details: found.join('\n') };
+      return { id: this.id, name: this.name, category: this.category, status: 'warn', error_type: 'misconfigured', message: `发现 ${found.length} 个较长路径`, details: found.join('\n') };
     }
     return { id: this.id, name: this.name, category: this.category, status: 'pass', message: `当前项目未发现超过 ${warnLimit} 字符的路径` };
   },

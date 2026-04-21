@@ -23,10 +23,12 @@ const scanner: Scanner = {
     }
 
     if (unreachable.length === sites.length) {
-      return { id: this.id, name: this.name, category: this.category, status: 'fail', message: '所有 AI 站点不可达', details: '请检查网络连接或代理设置。' };
+      return { id: this.id, name: this.name, category: this.category, status: 'fail',
+        error_type: 'network', message: '所有 AI 站点不可达', details: '请检查网络连接或代理设置。' };
     }
     if (unreachable.length > 0) {
-      return { id: this.id, name: this.name, category: this.category, status: 'warn', message: `不可达: ${unreachable.join(', ')}`, details: `可达: ${reachable.join(', ')}` };
+      return { id: this.id, name: this.name, category: this.category, status: 'warn',
+        error_type: 'network', message: `不可达: ${unreachable.join(', ')}`, details: `可达: ${reachable.join(', ')}` };
     }
     return { id: this.id, name: this.name, category: this.category, status: 'pass', message: '所有 AI 站点可达' };
   },

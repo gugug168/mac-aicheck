@@ -14,6 +14,7 @@ const scanner: Scanner = {
     return {
       id: this.id, name: this.name, category: this.category,
       status: zshNoGlobalRcs ? 'pass' : 'warn',
+      error_type: zshNoGlobalRcs ? undefined : 'misconfigured',
       message: zshNoGlobalRcs ? 'macOS Shell 脚本执行正常' : 'zsh 基础启动异常，可能影响安装脚本',
       details: `SHELL: ${shell || '(未设置)'}\npwsh: ${pwsh ? '已安装' : '未安装，macOS 通常不需要 PowerShell 执行策略'}\nzsh -f: ${zshNoGlobalRcs ? '正常' : '异常'}`,
     };

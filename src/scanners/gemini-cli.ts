@@ -13,6 +13,7 @@ const scanner: Scanner = {
         id: this.id, name: this.name, category: this.category,
         status: 'fail',
         message: 'Gemini CLI 未安装。安装: npm install -g @google/gemini-cli',
+        error_type: 'missing',
       };
     }
     const ver = runCommand('gemini --version 2>/dev/null || echo "unknown"', 5000);

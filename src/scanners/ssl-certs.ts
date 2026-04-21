@@ -19,7 +19,8 @@ const scanner: Scanner = {
         message: `SSL 证书正常（github.com HTTPS 正常, HTTP ${httpCode}）` };
     }
     return { id: this.id, name: this.name, category: this.category, status: 'fail',
-      message: `SSL 证书异常（github.com 返回 ${httpCode}）` };
+      message: `SSL 证书异常（github.com 返回 ${httpCode}）`,
+      error_type: 'network' };
   },
 };
 registerScanner(scanner);

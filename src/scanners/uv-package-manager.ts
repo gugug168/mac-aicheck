@@ -12,7 +12,7 @@ const scanner: Scanner = {
       return {
         id: this.id, name: this.name, category: this.category,
         status: 'warn',
-        message: 'uv 未安装，Python MCP 服务器可能无法运行',
+        error_type: 'missing',
         suggestions: ['curl -LsSf https://astral.sh/uv/install.sh | sh', 'brew install uv', 'pip install uv'],
       };
     }

@@ -19,7 +19,8 @@ const scanner: Scanner = {
     return {
       id: this.id, name: this.name, category: this.category,
       status: details.length ? 'pass' : 'unknown',
-      message: usesMirror ? '检测到国内镜像源配置' : '未检测到显式镜像源配置',
+      message: usesMirror ? '检测到国内镜像源配置' : (details.length ? '未检测到显式镜像源配置（非必需）' : 'npm/pip/brew/uv 均不可用'),
+      error_type: details.length ? undefined : 'misconfigured',
       details: text || 'npm/pip/brew/uv 均不可用，无法检查镜像源。',
     };
   },

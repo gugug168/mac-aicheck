@@ -19,6 +19,7 @@ const scanner: Scanner = {
       return {
         id: this.id, name: this.name, category: this.category,
         status: metal || mpsAvailable ? 'pass' : 'warn',
+        error_type: 'incompatible',
         message: metal || mpsAvailable ? 'Apple GPU / Metal 环境可用' : 'Apple Silicon 已检测到，但未确认 Metal CLI 或 PyTorch MPS',
         details: `CPU: ${cpu || arch}\nMPS: ${mpsAvailable ? 'PyTorch MPS 可用' : '未确认'}\n${profiler}`,
         suggestions: metal ? undefined : ['xcode-select --install'],

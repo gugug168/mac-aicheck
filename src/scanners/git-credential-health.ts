@@ -20,7 +20,7 @@ const scanner: Scanner = {
       return {
         id: this.id, name: this.name, category: this.category,
         status: 'warn',
-        message: '未检测到 Git 凭据助手或 SSH Key',
+        error_type: 'misconfigured',
         details: 'macOS 推荐使用 credential.helper=osxkeychain，或在 ~/.ssh 中配置 SSH Key。',
         suggestions: ['git config --global credential.helper osxkeychain', 'ssh-keygen -t ed25519 -C "you@example.com"'],
       };

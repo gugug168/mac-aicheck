@@ -15,7 +15,8 @@ const scanner: Scanner = {
         message: '屏幕录制权限已授权' };
     }
     return { id: this.id, name: this.name, category: this.category, status: 'fail',
-      message: '屏幕录制权限未授权，请到 系统设置 → 隐私与安全性 → 屏幕录制 添加对应应用' };
+      message: '屏幕录制权限未授权，请到 系统设置 → 隐私与安全性 → 屏幕录制 添加对应应用',
+      error_type: 'permission' };
   },
 };
 registerScanner(scanner);

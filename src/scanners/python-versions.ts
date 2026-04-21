@@ -10,6 +10,7 @@ const scanner: Scanner = {
   async scan(): Promise<ScanResult> {
     if (!commandExists('python3')) {
       return { id: this.id, name: this.name, category: this.category, status: 'fail',
+        error_type: 'missing',
         message: 'Python3 未安装。建议: brew install python@3.12' };
     }
     const { stdout } = runCommand('python3 --version', 5000);
@@ -17,6 +18,7 @@ const scanner: Scanner = {
     const major = parseInt(version.replace('Python ', '').split('.')[0]);
     if (major < 3 || (major === 3 && parseInt(version.split('.')[1]) < 10)) {
       return { id: this.id, name: this.name, category: this.category, status: 'warn',
+        error_type: 'outdated',
         message: `Python ${version} 过旧（建议 3.10+）` };
     }
     return { id: this.id, name: this.name, category: this.category, status: 'pass',

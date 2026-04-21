@@ -16,6 +16,7 @@ const scanner: Scanner = {
       return {
         id: this.id, name: this.name, category: this.category,
         status: installed ? 'warn' : 'unknown',
+        error_type: installed ? 'misconfigured' : undefined,
         message: installed ? 'Claude Code 已安装，但未发现本地配置文件' : '未检测到 Claude Code 配置',
         details: '检查项目 .claude/、~/.claude/ 与 ~/.claude.json。',
       };
@@ -25,7 +26,7 @@ const scanner: Scanner = {
       return {
         id: this.id, name: this.name, category: this.category,
         status: 'fail',
-        message: 'Claude Code 配置文件无法解析',
+        error_type: 'misconfigured',
         details: `文件: ${config.path}\n错误: ${config.error}`,
       };
     }

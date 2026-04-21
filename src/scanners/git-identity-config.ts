@@ -13,7 +13,8 @@ const scanner: Scanner = {
 
     if (!name || !email) {
       return { id: this.id, name: this.name, category: this.category, status: 'warn',
-        message: 'Git 全局身份未配置（git config --global user.name/email）' };
+        message: 'Git 全局身份未配置（git config --global user.name/email）',
+        error_type: 'misconfigured' };
     }
     return { id: this.id, name: this.name, category: this.category, status: 'pass',
       message: `Git 身份: ${name} <${email}>` };

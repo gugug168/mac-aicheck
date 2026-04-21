@@ -15,6 +15,7 @@ const scanner: Scanner = {
     }
     const lines = httpProxy.split('\n').filter(Boolean);
     return { id: this.id, name: this.name, category: this.category, status: 'warn',
+      error_type: 'misconfigured',
       message: `检测到代理: ${lines.join(', ')}` };
   },
 };

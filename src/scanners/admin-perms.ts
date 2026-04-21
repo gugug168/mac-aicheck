@@ -19,6 +19,7 @@ const scanner: Scanner = {
           message: 'sudo 无密码可用' };
       }
       return { id: this.id, name: this.name, category: this.category, status: 'warn',
+        error_type: 'permission',
         message: '非 admin 组用户，部分系统操作可能受限' };
     }
     return { id: this.id, name: this.name, category: this.category, status: 'pass',

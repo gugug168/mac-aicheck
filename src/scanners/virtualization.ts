@@ -21,7 +21,7 @@ const scanner: Scanner = {
     ].filter(Boolean);
 
     if (!hasHypervisor) {
-      return { id: this.id, name: this.name, category: this.category, status: 'warn', message: '未确认硬件虚拟化支持', details: `CPU features: ${cpuFeatures || '(无)'}` };
+      return { id: this.id, name: this.name, category: this.category, status: 'warn', error_type: 'incompatible', message: '未确认硬件虚拟化支持', details: `CPU features: ${cpuFeatures || '(无)'}` };
     }
 
     return {

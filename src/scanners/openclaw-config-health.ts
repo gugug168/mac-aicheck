@@ -15,7 +15,7 @@ const scanner: Scanner = {
       return { id: this.id, name: this.name, category: this.category, status: installed ? 'warn' : 'unknown', message: installed ? 'OpenClaw 已安装，但未发现配置文件' : '未检测到 OpenClaw 配置' };
     }
     if (config.error) {
-      return { id: this.id, name: this.name, category: this.category, status: 'fail', message: 'OpenClaw 配置无法解析', details: `文件: ${config.path}\n错误: ${config.error}` };
+      return { id: this.id, name: this.name, category: this.category, status: 'fail', error_type: 'misconfigured', message: 'OpenClaw 配置无法解析', details: `文件: ${config.path}\n错误: ${config.error}` };
     }
     return { id: this.id, name: this.name, category: this.category, status: 'pass', message: 'OpenClaw 配置文件可解析', details: `文件: ${config.path}` };
   },
