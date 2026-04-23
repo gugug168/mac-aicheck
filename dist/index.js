@@ -326,8 +326,8 @@ async function runScan(serve) {
     try {
         (0, aicoevo_client_1.saveLocal)(payload);
         (0, aicoevo_client_1.stashData)(payload)
-            .then(({ token }) => {
-            const claimUrl = (0, aicoevo_client_1.buildClaimUrl)(token);
+            .then(({ token, claim_url }) => {
+            const claimUrl = claim_url || (0, aicoevo_client_1.buildClaimUrl)(token);
             console.log('\n[+] 扫描结果已上传，请在浏览器打开认领你的环境报告:');
             console.log(`    ${claimUrl}\n`);
         })
