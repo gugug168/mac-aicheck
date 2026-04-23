@@ -4,7 +4,7 @@
  * 基础URL: https://aicoevo.net (环境变量 AICO_EVO_URL 配置)
  *
  * 与 WinAICheck 对齐的流程:
- * 1. stash: POST /api/v1/stash → 获取 token（无需登录）
+ * 1. scan-intake: POST /api/v1/problem-briefs/scan-intake → 获取 token + problem brief（无需登录）
  * 2. claim: 浏览器打开 https://aicoevo.net/claim?t=TOKEN
  * 3. feedback: POST /api/v1/feedback（无需登录）
  */
@@ -208,10 +208,14 @@ export interface StashRequest {
 
 export interface StashResponse {
   token: string;
+  claim_url?: string;
+  ttl_seconds?: number;
+  problem_brief_id?: string;
+  evidence_pack_id?: string;
 }
 
 /**
- * 上传扫描数据到 stash，获取一次性 token（无需登录）
+ * 上传扫描数据到 scan-intake，获取一次性 token 与结构化问题对象（无需登录）
  */
 export async function stashData(payload: AICOEVOPayload): Promise<StashResponse> {
   const fingerprint = JSON.stringify({
@@ -223,7 +227,7 @@ export async function stashData(payload: AICOEVOPayload): Promise<StashResponse>
     failCategories: [...new Set(payload.results.filter(r => r.status === 'fail').map(r => r.category))],
   });
 
-  return apiFetch<StashResponse>(`${getApiBase()}/stash`, {
+  return apiFetch<StashResponse>(`${getApiBase()}/problem-briefs/scan-intake`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
