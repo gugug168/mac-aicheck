@@ -17,7 +17,7 @@ MacAICheck 是三端生态的 macOS 客户端：
 | **MacAICheck** | macOS | Node + TypeScript (CLI) | `gugug168/mac-aicheck` |
 | aicoevo-platform | 服务端 | FastAPI + Next.js + SQLite | `gugug168/aicoevo-platform` |
 
-**API 契约**: 见 aicoevo-platform 的 `docs/API_CONTRACT.md`，包含 scan-intake 请求/响应规范、认证方式、数据类型定义。
+**API 契约**: 见 aicoevo-platform 的 `docs/API_CONTRACT.md`，包含 scan-intake 请求/响应规范、当前共享上传 payload（`timestamp/score/results/systemInfo`）、认证方式和数据类型定义。
 
 **关键同步规则**:
 - 修改 `src/api/aicoevo-client.ts` 中的上传逻辑 → 同步检查 WinAICheck 的 `src/privacy/uploader.ts`
