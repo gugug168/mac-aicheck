@@ -31,3 +31,4 @@ reports/
 
 # TypeScript cache
 *.tsbuildinfo
+.gstack/
