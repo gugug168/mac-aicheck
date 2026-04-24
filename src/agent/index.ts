@@ -516,6 +516,26 @@ function stripHookBlock(text: string) {
   return r.trim() + '\n';
 }
 
+function targetIncludesClaude(target: string) {
+  return !target || target === 'all' || target === 'claude-code' || target === 'claude';
+}
+
+function targetIncludesOpenClaw(target: string) {
+  return !target || target === 'all' || target === 'openclaw' || target === 'open-claw';
+}
+
+function resolveProjectRootForHooks() {
+  const execPath = process.argv[1] || __filename;
+  const candidates = [
+    execPath.includes('/dist/') ? execPath.replace(/\/dist\/.*$/, '') : execPath.replace(/\/src\/.*$/, ''),
+    process.cwd(),
+  ];
+  for (const candidate of candidates) {
+    if (candidate && existsSync(join(candidate, 'hooks-src', 'session-start-hook.js'))) return candidate;
+  }
+  return process.cwd();
+}
+
 function installHook(args: Record<string, unknown>) {
   const p = paths();
   const target = String(args.target || 'all');
@@ -556,11 +576,8 @@ function installSettingsHook(): { hookType: 'settings'; hooks: string[] } {
   const hooksDir = join(getHome(), '.claude', 'hooks');
   ensureDir(hooksDir);
 
-  // Resolve hook source files from hooks-src/ directory
-  const execPath = process.argv[1] || __filename;
-  const projectRoot = execPath.includes('/dist/')
-    ? execPath.replace(/\/dist\/.*$/, '')  // e.g. /path/to/mac-aicheck
-    : execPath.replace(/\/src\/.*$/, ''); // same
+  // Resolve hook source files from hooks-src/ directory.
+  const projectRoot = resolveProjectRootForHooks();
 
   const sessionHookSrc = join(projectRoot, 'hooks-src', 'session-start-hook.js');
   const postToolHookSrc = join(projectRoot, 'hooks-src', 'post-tool-hook.js');
@@ -785,16 +802,16 @@ export async function main(argv: string[]) {
     process.stdout.write(`mac-aicheck Agent Lite
 
 用法:
-  mac-aicheck agent enable --target claude-code|all  一键启用监控（新方式，推荐）
+  mac-aicheck agent enable --target claude-code|openclaw|all  一键启用监控（新方式，推荐）
   mac-aicheck agent migrate                迁移到 SessionStart Hook（新方式，推荐）
-  mac-aicheck agent install-hook --target claude-code|all
+  mac-aicheck agent install-hook --target claude-code|openclaw|all
   mac-aicheck agent uninstall-hook --target all
   mac-aicheck agent capture --agent <name> --message <text>
   mac-aicheck agent sync
   mac-aicheck agent pause|resume
   mac-aicheck agent advice --format json|markdown
   mac-aicheck agent diagnose          分析失败模式，类比 Evolver 信号诊断
-  mac-aicheck agent bind [--agent claude-code]  绑定设备（自动打开浏览器确认）
+  mac-aicheck agent bind [--agent claude-code|openclaw]  绑定设备（自动打开浏览器确认）
   mac-aicheck agent review-list
   mac-aicheck agent review-submit <lease_id> --result success|partial|failed
   mac-aicheck agent install-local-agent
@@ -817,23 +834,33 @@ export async function main(argv: string[]) {
   if (command === 'install-hook') { const r = installHook(args); process.stdout.write(`已安装 Hook: ${r.agents.map((a: { target: string }) => a.target).join(', ')}\n`); return 0; }
   if (command === 'install-local-agent') { const r = installLocalAgent(); process.stdout.write(JSON.stringify({ ok: true, ...r }) + '\n'); return 0; }
   if (command === 'enable') {
-    // 一键安装：runner + SessionStart hook + 启用同步（新方式）
+    // 一键安装：runner + 针对目标 Agent 的 hook + 启用同步
+    const target = String(args.target || 'all');
     const r = installLocalAgent();
-    const hookResult = installSettingsHook();
+    const hookOutputs: string[] = [];
+    if (targetIncludesClaude(target)) {
+      const settingsHook = installSettingsHook();
+      hookOutputs.push(...settingsHook.hooks.map(h => `Claude Code settings: ${h}`));
+    }
+    if (targetIncludesOpenClaw(target)) {
+      const shellHook = installHook({ target: 'openclaw' });
+      hookOutputs.push(`OpenClaw shell: ${shellHook.agents.map((a: { target: string }) => a.target).join(', ')}`);
+    }
     const cfg = loadConfig();
     cfg.shareData = true;
     cfg.autoSync = true;
     cfg.paused = false;
     saveConfig(cfg);
-    process.stdout.write(`mac-aicheck Agent Lite 已启用 (SessionStart Hook 方式)\n`);
+    process.stdout.write(`mac-aicheck Agent Lite 已启用\n`);
     process.stdout.write(`  Agent Runner: ${r.agentJs}\n`);
-    process.stdout.write(`  Hook: ${hookResult.hooks.join(', ')}\n`);
+    if (hookOutputs.length > 0) process.stdout.write(`  Hook: ${hookOutputs.join('; ')}\n`);
     process.stdout.write(`  自动同步: 已启用\n`);
 
     // Auto-detect installed agents and bind (#30)
     if (!cfg.authToken) {
       const agents: Array<{ name: string; cmd: string; agentType: string }> = [];
       for (const { name, cmd, agentType } of [{ name: 'Claude Code', cmd: 'claude', agentType: 'claude-code' }, { name: 'OpenClaw', cmd: 'openclaw', agentType: 'openclaw' }]) {
+        if ((agentType === 'claude-code' && !targetIncludesClaude(target)) || (agentType === 'openclaw' && !targetIncludesOpenClaw(target))) continue;
         try {
           execFileSync('command', ['-v', cmd], { encoding: 'utf-8', timeout: 3000, stdio: 'pipe' });
           agents.push({ name, cmd, agentType });
