@@ -332,7 +332,7 @@ if (args.includes('--serve') || args.includes('--web')) {
 } else if (args.includes('--json')) {
   runScan(false).then(r => { if (r) console.log(JSON.stringify(r, null, 2)); }).catch(console.error);
 } else if (args.includes('--help') || args.length === 0) {
-  console.log('MacAICheck - AI Dev Environment Checker\nUsage:\n  mac-aicheck          Run diagnosis\n  mac-aicheck --serve   Start Web UI\n  mac-aicheck --json    JSON output\n  mac-aicheck agent     Agent Lite commands (install-hook, sync, etc.)');
+  console.log('MacAICheck - AI Dev Environment Checker\nUsage:\n  mac-aicheck          Run diagnosis\n  mac-aicheck --serve   Start Web UI\n  mac-aicheck --json    JSON output\n  mac-aicheck agent     Agent Lite commands (enable/install-hook/sync, etc.)');
 } else if (args.includes('agent')) {
   // Agent Lite CLI 子命令
   const agentArgs = args.slice(args.indexOf('agent') + 1);

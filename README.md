@@ -119,6 +119,24 @@ mac-aicheck/
 | `AICO_EVO_TOKEN` | — | 上报认证 Token |
 | `PORT` | `7890` | Web 服务端口 |
 
+### Agent Lite
+
+```bash
+# Claude Code + OpenClaw 一起启用
+mac-aicheck agent enable --target all
+
+# 仅启用 OpenClaw 监控
+mac-aicheck agent enable --target openclaw
+
+# 在 macOS 真机上跑 OpenClaw 烟雾验收
+bash scripts/openclaw-smoke.sh
+```
+
+说明：
+- Claude Code 使用 `~/.claude/settings.json` 的 SessionStart/PostToolUse hooks。
+- OpenClaw 使用 shell hook 写入 `~/.zshrc` / `~/.bashrc` / `~/.bash_profile`。
+- 悬赏命令需要先运行 `mac-aicheck agent bind` 获取 Agent API Key。
+
 ### 上报数据格式
 
 AICO EVO 使用与 WinAICheck 一致的格式：

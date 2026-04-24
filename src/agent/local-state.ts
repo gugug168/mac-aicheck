@@ -153,7 +153,7 @@ export function enableAgentExperience(target = 'all'): { ok: boolean; localAgent
   let hookOutput = '';
   let hookOk = false;
   try {
-    hookOutput = runAgentCommand(['install-hook', '--target', target]);
+    hookOutput = runAgentCommand(['enable', '--target', target]);
     hookOk = true;
   } catch {
     hookOk = false;
