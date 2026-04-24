@@ -397,6 +397,10 @@ function apiBase() {
   return raw.endsWith('/api/v1') ? raw : `${raw}/api/v1`;
 }
 
+function agentApiBase(version: 'v1' | 'v2' = 'v2') {
+  return apiBase().replace(/\/api\/v1$/, `/api/${version}`) + '/agent';
+}
+
 function agentApiKeyHeaders(config: { authToken?: string }): Record<string, string> | null {
   if (!config.authToken || !config.authToken.startsWith('ak_')) return null;
   return { 'X-API-Key': config.authToken };
@@ -758,7 +762,7 @@ async function runOriginalAgent(args: Record<string, unknown>) {
   return exitCode;
 }
 
-async function main(argv: string[]) {
+export async function main(argv: string[]) {
   const [command, ...rest] = [argv[0], ...argv.slice(1)];
   const args = parseArgs(argv.slice(1));
   if (!command || command === '--help') {
@@ -775,6 +779,8 @@ async function main(argv: string[]) {
   mac-aicheck agent advice --format json|markdown
   mac-aicheck agent diagnose          分析失败模式，类比 Evolver 信号诊断
   mac-aicheck agent bind [--agent claude-code]  绑定设备（自动打开浏览器确认）
+  mac-aicheck agent review-list
+  mac-aicheck agent review-submit <lease_id> --result success|partial|failed
   mac-aicheck agent install-local-agent
   mac-aicheck agent upgrade            一键更新 claude-code / openclaw 到最新版本
   mac-aicheck agent upgrade self       更新 mac-aicheck 自身到最新版本
@@ -1089,7 +1095,7 @@ async function main(argv: string[]) {
     const pageSize = String(args.limit || '10');
     const sortBy = String(args.sort || 'reward');
     try {
-      const result = await requestJson(`${apiBase()}/agent/bounties?page=${page}&page_size=${pageSize}&sort_by=${sortBy}`, {
+      const result = await requestJson(`${agentApiBase('v2')}/bounties?page=${page}&page_size=${pageSize}&sort_by=${sortBy}`, {
         headers,
       });
       process.stdout.write(JSON.stringify(result.data, null, 2) + '\n');
@@ -1104,7 +1110,7 @@ async function main(argv: string[]) {
     const strategy = String(args.strategy || 'balanced');
     const limit = String(args.limit || '10');
     try {
-      const result = await requestJson(`${apiBase()}/agent/bounties/recommended?strategy=${strategy}&limit=${limit}`, {
+      const result = await requestJson(`${agentApiBase('v2')}/bounties/recommended?strategy=${strategy}&limit=${limit}`, {
         headers,
       });
       process.stdout.write(JSON.stringify(result.data, null, 2) + '\n');
@@ -1120,7 +1126,7 @@ async function main(argv: string[]) {
     const id = (args._ as string[])[0];
     if (!id) { process.stdout.write('用法: mac-aicheck agent bounty-solve <id>\n'); return 1; }
     try {
-      const result = await requestJson(`${apiBase()}/agent/bounties/${id}/auto-solve`, {
+      const result = await requestJson(`${agentApiBase('v1')}/bounties/${id}/auto-solve`, {
         method: 'POST',
         headers,
       });
@@ -1137,14 +1143,18 @@ async function main(argv: string[]) {
     if (!headers) { process.stdout.write('悬赏命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
     const id = (args._ as string[])[0];
     if (!id) { process.stdout.write('用法: mac-aicheck agent bounty-claim <id>\n'); return 1; }
+    const envId = String(args.env || '').trim();
     try {
-      const result = await requestJson(`${apiBase()}/agent/bounties/${id}/claim`, {
+      const result = await requestJson(`${agentApiBase('v2')}/bounties/${id}/claim`, {
         method: 'POST',
         headers,
+        body: envId ? { env_id: envId } : {},
       });
       if (result.status >= 400) { process.stdout.write(`认领失败: ${JSON.stringify(result.data)}\n`); return 1; }
       const d = result.data as Record<string, unknown>;
-      process.stdout.write(`✓ 认领成功 ${d.bounty_id} (锁定 ${d.lock_minutes} 分钟)\n`);
+      process.stdout.write(`✓ 认领成功 ${d.bounty_id} (lease ${d.lease_id})\n`);
+      if (d.claimed_until) process.stdout.write(`  截止: ${d.claimed_until}\n`);
+      if (d.slot_limit) process.stdout.write(`  并行槽位: ${d.slot_limit}\n`);
     } catch (e: unknown) { process.stdout.write(`认领失败: ${(e as Error).message}\n`); return 1; }
     return 0;
   }
@@ -1158,10 +1168,15 @@ async function main(argv: string[]) {
     const content = String(args.content || '');
     if (!id || !content) { process.stdout.write('用法: mac-aicheck agent bounty-submit <id> --content <text>\n'); return 1; }
     try {
-      const result = await requestJson(`${apiBase()}/agent/bounties/${id}/submit`, {
+      const result = await requestJson(`${agentApiBase('v2')}/bounties/${id}/submit`, {
         method: 'POST',
         headers,
-        body: { content, source: String(args.source || 'manual') },
+        body: {
+          content,
+          source: String(args.source || 'manual'),
+          confidence: Number(args.confidence || 0),
+          execution_mode: String(args.executionMode || 'agent'),
+        },
       });
       if (result.status >= 400) { process.stdout.write(`提交失败: ${JSON.stringify(result.data)}\n`); return 1; }
       const d = result.data as Record<string, unknown>;
@@ -1178,7 +1193,7 @@ async function main(argv: string[]) {
     const id = (args._ as string[])[0];
     if (!id) { process.stdout.write('用法: mac-aicheck agent bounty-release <id>\n'); return 1; }
     try {
-      const result = await requestJson(`${apiBase()}/agent/bounties/${id}/claim`, {
+      const result = await requestJson(`${agentApiBase('v2')}/bounties/${id}/claim`, {
         method: 'DELETE',
         headers,
       });
@@ -1206,12 +1221,12 @@ async function main(argv: string[]) {
       cycle++;
       try {
         // 1. 心跳
-        await requestJson(`${apiBase()}/agent/heartbeat`, {
+        await requestJson(`${agentApiBase('v2')}/heartbeat`, {
           method: 'POST', headers: hdr, body: { status: 'idle', current_tasks: 0 },
         });
 
         // 2. 拉取推荐悬赏
-        const recResult = await requestJson(`${apiBase()}/agent/bounties/recommended?strategy=${strategy}&limit=${maxPerCycle}`, { headers: hdr });
+        const recResult = await requestJson(`${agentApiBase('v2')}/bounties/recommended?strategy=${strategy}&limit=${maxPerCycle}`, { headers: hdr });
         const recData = recResult.data as { items?: Record<string, unknown>[] };
         const items = recData.items || [];
 
@@ -1223,7 +1238,7 @@ async function main(argv: string[]) {
 
           for (const item of items) {
             // 3. KB 匹配
-            const solveResult = await requestJson(`${apiBase()}/agent/bounties/${item.id}/auto-solve`, {
+            const solveResult = await requestJson(`${agentApiBase('v1')}/bounties/${item.id}/auto-solve`, {
               method: 'POST', headers: hdr,
             });
             const solveData = solveResult.data as { matched?: boolean; answer?: string; confidence?: number; reason?: string };
@@ -1234,10 +1249,15 @@ async function main(argv: string[]) {
             }
 
             // 4. Delayed claim + submit
-            const submitResult = await requestJson(`${apiBase()}/agent/bounties/${item.id}/claim-and-submit`, {
+            const submitResult = await requestJson(`${agentApiBase('v2')}/bounties/${item.id}/claim-and-submit`, {
               method: 'POST',
               headers: hdr,
-              body: { content: solveData.answer, source: 'kb_auto', confidence: solveData.confidence || 0.8 },
+              body: {
+                content: solveData.answer,
+                source: 'kb_auto',
+                confidence: solveData.confidence || 0.8,
+                execution_mode: 'agent',
+              },
             });
 
             if (submitResult.status < 400) {
@@ -1260,11 +1280,55 @@ async function main(argv: string[]) {
     }
   }
 
+  if (command === 'review-list') {
+    const cfg = loadConfig();
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('评审命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+    try {
+      const result = await requestJson(`${agentApiBase('v2')}/reviews/recommended`, {
+        headers,
+      });
+      process.stdout.write(JSON.stringify(result.data, null, 2) + '\n');
+    } catch (e: unknown) { process.stdout.write(`获取评审任务失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  if (command === 'review-submit') {
+    const cfg = loadConfig();
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('评审命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+    const leaseId = (args._ as string[])[0];
+    const resultValue = String(args.result || '');
+    if (!leaseId || !/^(success|partial|failed)$/.test(resultValue)) {
+      process.stdout.write('用法: mac-aicheck agent review-submit <lease_id> --result success|partial|failed\n');
+      return 1;
+    }
+    try {
+      const result = await requestJson(`${agentApiBase('v2')}/reviews/${leaseId}/submit`, {
+        method: 'POST',
+        headers,
+        body: {
+          result: resultValue,
+          method: String(args.method || 'semantic'),
+          notes: String(args.notes || ''),
+          confidence: Number(args.confidence || 0),
+          review_score: Number(args.reviewScore || 0),
+          review_summary: String(args.summary || ''),
+          execution_mode: String(args.executionMode || 'agent'),
+        },
+      });
+      if (result.status >= 400) { process.stdout.write(`提交评审失败: ${JSON.stringify(result.data)}\n`); return 1; }
+      process.stdout.write(`✓ 评审已提交 ${leaseId}\n`);
+    } catch (e: unknown) { process.stdout.write(`提交评审失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
   throw new Error(`未知 agent 命令: ${command}`);
 }
 
 export const _testHelpers = {
   agentApiKeyHeaders,
+  agentApiBase,
   loadConfig,
 };
 
