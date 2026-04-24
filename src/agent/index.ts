@@ -401,6 +401,22 @@ function agentApiBase(version: 'v1' | 'v2' = 'v2') {
   return apiBase().replace(/\/api\/v1$/, `/api/${version}`) + '/agent';
 }
 
+async function heartbeatAgentV2(
+  headers: Record<string, string>,
+  body: Record<string, unknown> = {},
+) {
+  return requestJson(`${agentApiBase('v2')}/heartbeat`, {
+    method: 'POST',
+    headers,
+    body: {
+      status: 'idle',
+      current_tasks: 0,
+      max_parallel_tasks: 1,
+      ...body,
+    },
+  });
+}
+
 function agentApiKeyHeaders(config: { authToken?: string }): Record<string, string> | null {
   if (!config.authToken || !config.authToken.startsWith('ak_')) return null;
   return { 'X-API-Key': config.authToken };
@@ -1095,7 +1111,7 @@ export async function main(argv: string[]) {
     const pageSize = String(args.limit || '10');
     const sortBy = String(args.sort || 'reward');
     try {
-      const result = await requestJson(`${agentApiBase('v2')}/bounties?page=${page}&page_size=${pageSize}&sort_by=${sortBy}`, {
+      const result = await requestJson(`${agentApiBase('v1')}/bounties?page=${page}&page_size=${pageSize}&sort_by=${sortBy}`, {
         headers,
       });
       process.stdout.write(JSON.stringify(result.data, null, 2) + '\n');
@@ -1110,10 +1126,13 @@ export async function main(argv: string[]) {
     const strategy = String(args.strategy || 'balanced');
     const limit = String(args.limit || '10');
     try {
-      const result = await requestJson(`${agentApiBase('v2')}/bounties/recommended?strategy=${strategy}&limit=${limit}`, {
-        headers,
-      });
-      process.stdout.write(JSON.stringify(result.data, null, 2) + '\n');
+      const result = await heartbeatAgentV2(headers, { max_parallel_tasks: Number(args.maxParallelTasks || 1) });
+      const data = result.data as { recommended_bounties?: unknown[] };
+      process.stdout.write(JSON.stringify({
+        items: (data.recommended_bounties || []).slice(0, Number(limit)),
+        total: Array.isArray(data.recommended_bounties) ? data.recommended_bounties.length : 0,
+        strategy,
+      }, null, 2) + '\n');
     } catch (e: unknown) { process.stdout.write(`获取推荐悬赏失败: ${(e as Error).message}\n`); return 1; }
     return 0;
   }
@@ -1145,6 +1164,10 @@ export async function main(argv: string[]) {
     if (!id) { process.stdout.write('用法: mac-aicheck agent bounty-claim <id>\n'); return 1; }
     const envId = String(args.env || '').trim();
     try {
+      const heartbeat = await heartbeatAgentV2(headers, {
+        available_env_ids: envId ? [envId] : [],
+      });
+      if (heartbeat.status >= 400) { process.stdout.write(`心跳失败: ${JSON.stringify(heartbeat.data)}\n`); return 1; }
       const result = await requestJson(`${agentApiBase('v2')}/bounties/${id}/claim`, {
         method: 'POST',
         headers,
@@ -1221,14 +1244,9 @@ export async function main(argv: string[]) {
       cycle++;
       try {
         // 1. 心跳
-        await requestJson(`${agentApiBase('v2')}/heartbeat`, {
-          method: 'POST', headers: hdr, body: { status: 'idle', current_tasks: 0 },
-        });
-
-        // 2. 拉取推荐悬赏
-        const recResult = await requestJson(`${agentApiBase('v2')}/bounties/recommended?strategy=${strategy}&limit=${maxPerCycle}`, { headers: hdr });
-        const recData = recResult.data as { items?: Record<string, unknown>[] };
-        const items = recData.items || [];
+        const recResult = await heartbeatAgentV2(hdr, { max_parallel_tasks: maxPerCycle });
+        const recData = recResult.data as { recommended_bounties?: Record<string, unknown>[] };
+        const items = (recData.recommended_bounties || []).slice(0, maxPerCycle);
 
         if (items.length === 0) {
           process.stdout.write(`[${cycle}] 无推荐悬赏\n`);
