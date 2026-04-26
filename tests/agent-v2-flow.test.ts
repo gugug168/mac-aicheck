@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { main as agentMain } from '../src/agent/index';
@@ -37,6 +37,7 @@ describe('agent v2 flow', () => {
     }), 'utf8');
     process.env.HOME = home;
     process.env.AICOEVO_BASE_URL = 'https://aicoevo.net';
+    return home;
   }
 
   it('reads recommended bounties from the v2 heartbeat response', async () => {
@@ -102,7 +103,7 @@ describe('agent v2 flow', () => {
   // ── TASK-100: Owner reproduction loop ──
 
   it('owner-check lists pending owner verifications from status', async () => {
-    seedConfig();
+    const home = seedConfig();
     const fetchMock = vi.fn().mockResolvedValue({
       status: 200,
       ok: true,
@@ -134,6 +135,11 @@ describe('agent v2 flow', () => {
     expect(output).toContain('a_001');
     expect(output).toContain('npm install fails');
     expect(output).toContain('owner-verify');
+    const guidePath = path.join(home, '.mac-aicheck', 'owner-verify', 'b_001__a_001.md');
+    const snapshotPath = path.join(home, '.mac-aicheck', 'owner-verify', 'b_001__a_001.json');
+    expect(existsSync(guidePath)).toBe(true);
+    expect(existsSync(snapshotPath)).toBe(true);
+    expect(readFileSync(guidePath, 'utf8')).toContain('AICOEVO 发起者复现指南');
   });
 
   it('owner-check shows empty message when no pending', async () => {
@@ -191,6 +197,11 @@ describe('agent v2 flow', () => {
     const body = JSON.parse(request?.body || '{}');
     expect(body.answer_id).toBe('a_001');
     expect(body.result).toBe('success');
+    expect(body.proof_payload.summary).toContain('b_001/a_001');
+    expect(body.proof_payload.before_context.item.answer_id).toBe('a_001');
+    expect(body.proof_payload.after_context.result).toBe('success');
+    expect(body.artifacts.owner_reproduction_guide_path).toContain('b_001__a_001.md');
+    expect(body.artifacts.owner_reproduction_snapshot_path).toContain('b_001__a_001.json');
     expect(output).toContain('60');
     expect(output).toContain('pending_review');
   });
