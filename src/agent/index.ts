@@ -19,6 +19,8 @@ function paths() {
     agentJs: join(base, 'agent', 'agent-lite.js'), agentCmd: join(base, 'agent', 'mac-aicheck-agent'),
     experience: join(base, 'experience.jsonl'),
     versionCache: join(base, 'version-cache.json'),
+    workerState: join(base, 'worker-state.json'),
+    workerLock: join(base, 'worker.lock'),
   };
 }
 function ensureDir(dir: string) { if (!existsSync(dir)) mkdirSync(dir, { recursive: true }); }
@@ -57,6 +59,8 @@ function trimForCapture(text: string): string { const s = sanitizeText(text); re
 
 // 版本检测和更新检查（参考 gstack）
 const VERSION_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 小时限速
+const WORKER_DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
+const WORKER_MAX_PARALLEL = 3;
 
 interface VersionInfo {
   current: string;
@@ -303,12 +307,35 @@ function loadConfig() {
   if (cfg.shareData === undefined) cfg.shareData = false;
   if (cfg.autoSync === undefined) cfg.autoSync = false;
   if (cfg.paused === undefined) cfg.paused = false;
+  if (cfg.workerEnabled === undefined) cfg.workerEnabled = true;
   if (!cfg.profileId) cfg.profileId = null;
   if (!cfg.agentType) cfg.agentType = null;
   writeJson(p.config, cfg);
-  return cfg as { clientId: string; deviceId: string; shareData: boolean; autoSync: boolean; paused: boolean; email?: string; authToken?: string; profileId?: string; agentType?: string; confirmedAt?: string };
+  return cfg as { clientId: string; deviceId: string; shareData: boolean; autoSync: boolean; paused: boolean; workerEnabled: boolean; email?: string; authToken?: string; profileId?: string; agentType?: string; confirmedAt?: string };
 }
 function saveConfig(cfg: Record<string, unknown>) { writeJson(paths().config, cfg); }
+
+// ── Worker state management ──
+interface WorkerState {
+  schemaVersion: number;
+  enabled: boolean;
+  status: string;
+  pid: number | null;
+  startedAt: string | null;
+  lastCycleAt: string | null;
+  lastCycleResult: { solved: number; skipped: number; total: number } | null;
+  nextCycleAt: string | null;
+  totalCycles: number;
+  totalSolved: number;
+  totalSkipped: number;
+  consecutiveErrors: number;
+  lastError: string | null;
+}
+function defaultWorkerState(): WorkerState {
+  return { schemaVersion: 1, enabled: false, status: 'stopped', pid: null, startedAt: null, lastCycleAt: null, lastCycleResult: null, nextCycleAt: null, totalCycles: 0, totalSolved: 0, totalSkipped: 0, consecutiveErrors: 0, lastError: null };
+}
+function loadWorkerState(): WorkerState { return readJson<WorkerState>(paths().workerState, defaultWorkerState()); }
+function saveWorkerState(state: WorkerState) { writeJson(paths().workerState, state); }
 
 function normalizeAgent(v: string): string { const a = String(v || 'custom').toLowerCase(); return (a === 'claude' || a === 'claude-code' || a === 'claude_code') ? 'claude-code' : a === 'openclaw' || a === 'open-claw' ? 'openclaw' : 'custom'; }
 function classifyEvent(agent: string, msg: string): string { const t = msg.toLowerCase(); if (t.includes('mcp')) return 'mcp_error'; if (t.includes('config') || t.includes('json')) return 'agent_config'; if (t.includes('traceback') || t.includes('syntaxerror') || t.includes('typeerror')) return 'coding_error_summary'; return agent === 'custom' ? 'coding_error_summary' : 'agent_runtime'; }
@@ -795,6 +822,79 @@ async function runOriginalAgent(args: Record<string, unknown>) {
   return exitCode;
 }
 
+async function runWorkerDaemon(args: Record<string, unknown>): Promise<number> {
+  const cfg = loadConfig();
+  const apiKey = agentApiKeyHeaders(cfg);
+  if (!apiKey) { process.stdout.write('Worker 需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+  const interval = Number(args.workerInterval || args.interval || WORKER_DEFAULT_INTERVAL_MS);
+  const maxPerCycle = Number(args.maxParallelTasks || args.limit || WORKER_MAX_PARALLEL);
+  const headers = { ...apiKey, 'Content-Type': 'application/json' };
+
+  const state = loadWorkerState();
+  state.enabled = true;
+  state.status = 'running';
+  state.pid = process.pid;
+  state.startedAt = state.startedAt || nowIso();
+  saveWorkerState(state);
+  process.stdout.write(`[Worker] 启动 (间隔 ${Math.round(interval / 1000)}s, 每轮最多 ${maxPerCycle})\n`);
+
+  try {
+    while (true) {
+      const currentCfg = loadConfig();
+      const currentState = loadWorkerState();
+      if (!currentCfg.workerEnabled || currentState.enabled === false) { process.stdout.write('[Worker] 已禁用，退出\n'); break; }
+      if (currentCfg.paused) {
+        process.stdout.write('[Worker] 已暂停，等待恢复...\n');
+        await new Promise(r => setTimeout(r, Math.min(interval, 10 * 1000)));
+        continue;
+      }
+      try {
+        const heartbeat = await heartbeatAgentV2(headers, { max_parallel_tasks: maxPerCycle, worker_status: 'active' });
+        const recData = heartbeat.data as { recommended_bounties?: Array<{ id: string }> };
+        const items = (recData.recommended_bounties || []).slice(0, maxPerCycle);
+        let solved = 0, skipped = 0;
+        if (items.length > 0) {
+          process.stdout.write(`[Worker] 发现 ${items.length} 个推荐任务\n`);
+          for (const item of items) {
+            const solveResult = await requestJson(`${agentApiBase('v1')}/bounties/${item.id}/auto-solve`, { method: 'POST', headers });
+            const solveData = solveResult.data as { matched?: boolean; answer?: string; confidence?: number };
+            if (!solveData.matched) { skipped++; continue; }
+            const submitResult = await requestJson(`${agentApiBase('v2')}/bounties/${item.id}/claim-and-submit`, {
+              method: 'POST', headers, body: { content: solveData.answer, source: 'kb_auto', confidence: solveData.confidence || 0.8, execution_mode: 'agent' },
+            });
+            if (submitResult.status < 400) solved++;
+          }
+        }
+        const updated = loadWorkerState();
+        updated.lastCycleAt = nowIso();
+        updated.lastCycleResult = { solved, skipped, total: items.length };
+        updated.totalCycles = (updated.totalCycles || 0) + 1;
+        updated.totalSolved = (updated.totalSolved || 0) + solved;
+        updated.totalSkipped = (updated.totalSkipped || 0) + skipped;
+        updated.consecutiveErrors = 0;
+        updated.lastError = null;
+        updated.nextCycleAt = new Date(Date.now() + interval).toISOString();
+        saveWorkerState(updated);
+      } catch (e: unknown) {
+        const failed = loadWorkerState();
+        failed.consecutiveErrors = (failed.consecutiveErrors || 0) + 1;
+        failed.lastError = e instanceof Error ? e.message : String(e);
+        failed.nextCycleAt = new Date(Date.now() + interval).toISOString();
+        saveWorkerState(failed);
+        process.stdout.write(`[Worker] 循环错误: ${failed.lastError}\n`);
+      }
+      await new Promise(r => setTimeout(r, interval));
+    }
+  } finally {
+    const finalState = loadWorkerState();
+    finalState.status = 'stopped';
+    finalState.pid = null;
+    finalState.nextCycleAt = null;
+    saveWorkerState(finalState);
+  }
+  return 0;
+}
+
 export async function main(argv: string[]) {
   const [command, ...rest] = [argv[0], ...argv.slice(1)];
   const args = parseArgs(argv.slice(1));
@@ -809,6 +909,9 @@ export async function main(argv: string[]) {
   mac-aicheck agent capture --agent <name> --message <text>
   mac-aicheck agent sync
   mac-aicheck agent pause|resume
+  mac-aicheck agent disable                       — 彻底禁用 Worker 互助循环
+  mac-aicheck agent worker-enable                 — 重新启用 Worker 互助循环
+  mac-aicheck agent worker start|stop|status      — Worker 后台循环控制
   mac-aicheck agent advice --format json|markdown
   mac-aicheck agent diagnose          分析失败模式，类比 Evolver 信号诊断
   mac-aicheck agent bind [--agent claude-code|openclaw]  绑定设备（自动打开浏览器确认）
@@ -830,7 +933,32 @@ export async function main(argv: string[]) {
     return 0;
   }
   if (command === 'sync') { const result = await syncEvents(); process.stdout.write(JSON.stringify(result) + '\n'); return result.ok || result.skipped ? 0 : 1; }
-  if (command === 'pause' || command === 'resume') { const cfg = loadConfig(); cfg.paused = command === 'pause'; saveConfig(cfg); process.stdout.write(command === 'pause' ? '已暂停自动上传。\n' : '已恢复自动上传。\n'); return 0; }
+  if (command === 'pause' || command === 'resume') { const cfg = loadConfig(); cfg.paused = command === 'pause'; saveConfig(cfg); process.stdout.write(command === 'pause' ? '已暂停自动上传和 Worker 互助循环。\n' : '已恢复自动上传和 Worker 互助循环。\n'); return 0; }
+
+  if (command === 'disable') {
+    const cfg = loadConfig();
+    cfg.workerEnabled = false;
+    cfg.paused = true;
+    saveConfig(cfg);
+    const wState = loadWorkerState();
+    if (wState.pid) { try { process.kill(wState.pid); } catch {} }
+    wState.enabled = false;
+    wState.status = 'stopped';
+    wState.pid = null;
+    wState.nextCycleAt = null;
+    saveWorkerState(wState);
+    process.stdout.write('已彻底禁用 Worker 互助循环。使用 worker-enable 可重新开启。\n');
+    return 0;
+  }
+
+  if (command === 'worker-enable') {
+    const cfg = loadConfig();
+    cfg.workerEnabled = true;
+    cfg.paused = false;
+    saveConfig(cfg);
+    process.stdout.write('Worker 互助循环已重新启用。运行 worker start 启动后台循环。\n');
+    return 0;
+  }
   if (command === 'install-hook') { const r = installHook(args); process.stdout.write(`已安装 Hook: ${r.agents.map((a: { target: string }) => a.target).join(', ')}\n`); return 0; }
   if (command === 'install-local-agent') { const r = installLocalAgent(); process.stdout.write(JSON.stringify({ ok: true, ...r }) + '\n'); return 0; }
   if (command === 'enable') {
@@ -850,11 +978,22 @@ export async function main(argv: string[]) {
     cfg.shareData = true;
     cfg.autoSync = true;
     cfg.paused = false;
+    if (cfg.workerEnabled === undefined) cfg.workerEnabled = true;
     saveConfig(cfg);
     process.stdout.write(`mac-aicheck Agent Lite 已启用\n`);
     process.stdout.write(`  Agent Runner: ${r.agentJs}\n`);
     if (hookOutputs.length > 0) process.stdout.write(`  Hook: ${hookOutputs.join('; ')}\n`);
     process.stdout.write(`  自动同步: 已启用\n`);
+    if (cfg.workerEnabled) {
+      const wState = loadWorkerState();
+      if (!wState.pid) {
+        process.stdout.write(`  Worker 互助循环: 请运行 mac-aicheck agent worker start 启动\n`);
+      } else {
+        process.stdout.write(`  Worker 互助循环: 已运行中\n`);
+      }
+    } else {
+      process.stdout.write(`  Worker 互助循环: 已禁用\n`);
+    }
 
     // Auto-detect installed agents and bind (#30)
     if (!cfg.authToken) {
@@ -1146,6 +1285,48 @@ export async function main(argv: string[]) {
     return 0;
   }
 
+  // ── Worker commands ──
+  if (command === 'worker') {
+    const [subcommand] = rest;
+    if (subcommand === 'status') {
+      const cfg = loadConfig();
+      const wState = loadWorkerState();
+      process.stdout.write(JSON.stringify({ ok: true, workerEnabled: cfg.workerEnabled, paused: cfg.paused, worker: wState }, null, 2) + '\n');
+      return 0;
+    }
+    if (subcommand === 'start') {
+      const cfg = loadConfig();
+      if (!cfg.workerEnabled) { process.stdout.write('Worker 已被禁用。使用 worker-enable 重新启用。\n'); return 1; }
+      const local = installLocalAgent();
+      const wState = loadWorkerState();
+      if (wState.pid) { try { process.kill(wState.pid, 0); process.stdout.write(JSON.stringify({ ok: true, alreadyRunning: true, worker: loadWorkerState() }, null, 2) + '\n'); return 0; } catch {} }
+      wState.enabled = true;
+      wState.status = 'starting';
+      wState.startedAt = wState.startedAt || nowIso();
+      saveWorkerState(wState);
+      const child = spawn('node', [local.agentJs, 'worker', 'daemon'], { detached: true, stdio: 'ignore' });
+      child.unref();
+      process.stdout.write(JSON.stringify({ ok: true, started: true, pid: child.pid, worker: loadWorkerState() }, null, 2) + '\n');
+      return 0;
+    }
+    if (subcommand === 'stop') {
+      const wState = loadWorkerState();
+      wState.enabled = false;
+      if (wState.pid) { try { process.kill(wState.pid); } catch {} }
+      wState.status = 'stopped';
+      wState.pid = null;
+      wState.nextCycleAt = null;
+      saveWorkerState(wState);
+      process.stdout.write(JSON.stringify({ ok: true, stopped: true, worker: loadWorkerState() }, null, 2) + '\n');
+      return 0;
+    }
+    if (subcommand === 'daemon') {
+      return runWorkerDaemon(args);
+    }
+    process.stdout.write('用法: mac-aicheck agent worker start|stop|status|daemon\n');
+    return 1;
+  }
+
   if (command === 'bounty-recommended') {
     const cfg = loadConfig();
     const headers = agentApiKeyHeaders(cfg);
@@ -1375,6 +1556,9 @@ export const _testHelpers = {
   agentApiKeyHeaders,
   agentApiBase,
   loadConfig,
+  saveConfig,
+  loadWorkerState,
+  saveWorkerState,
 };
 
 if (require.main === module) {
