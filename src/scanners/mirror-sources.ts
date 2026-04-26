@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'mirror-sources',
   name: '镜像源配置检测',
   category: 'network',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const detail: string[] = [];

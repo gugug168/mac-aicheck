@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'git-path',
   name: 'Git PATH 完整性检测',
   category: 'toolchain',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     if (!commandExists('git')) {

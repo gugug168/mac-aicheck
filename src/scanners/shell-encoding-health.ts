@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'shell-encoding-health',
   name: '终端编码兼容检测',
   category: 'permission',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const locale = runCommand('locale', 5000).stdout;

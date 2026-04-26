@@ -11,7 +11,8 @@ const gitFixer: Fixer = {
   scannerIds: ['git', 'git-identity'],
 
   canFix(scanResult: ScanResult): boolean {
-    return (scanResult.id === 'git' || scanResult.id === 'git-identity') && scanResult.status === 'fail';
+    return (scanResult.id === 'git' || scanResult.id === 'git-identity')
+      && (scanResult.status === 'fail' || scanResult.status === 'warn');
   },
 
   async execute(scanResult: ScanResult, dryRun?: boolean): Promise<FixResult> {

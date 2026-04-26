@@ -1,4 +1,4 @@
-import { getScanners, getScannerByCategory, SCANNER_CATEGORIES } from './registry';
+import { getScanners, getScannerByCategory, getScannerById, SCANNER_CATEGORIES } from './registry';
 import type { ScanResult } from './types';
 
 import './git';
@@ -56,7 +56,7 @@ import './virtualization';
 import './vram-usage';
 import './wsl-version';
 
-export { getScanners, getScannerByCategory, SCANNER_CATEGORIES } from './registry';
+export { getScanners, getScannerByCategory, getScannerById, SCANNER_CATEGORIES } from './registry';
 export { checkGpu } from './gpu-monitor';
 export type { ScanResult, Scanner, ScannerResult } from './types';
 

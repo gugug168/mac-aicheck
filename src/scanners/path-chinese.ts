@@ -5,6 +5,8 @@ const scanner: Scanner = {
   id: 'path-chinese',
   name: '路径中文字符检测',
   category: 'system',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const targets = [process.cwd(), process.env.HOME || '', process.env.SHELL || ''].filter(Boolean);

@@ -5,6 +5,8 @@ const scanner: Scanner = {
   id: 'path-spaces',
   name: '路径空格检测',
   category: 'system',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const paths = [process.cwd(), ...(process.env.PATH || '').split(':')].filter(Boolean);

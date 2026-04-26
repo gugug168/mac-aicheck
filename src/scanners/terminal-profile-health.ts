@@ -9,6 +9,8 @@ const scanner: Scanner = {
   id: 'terminal-profile-health',
   name: 'macOS 终端配置检测',
   category: 'permission',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const shell = process.env.SHELL || '';

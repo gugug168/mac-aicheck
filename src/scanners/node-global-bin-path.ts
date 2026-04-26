@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'node-global-bin-path',
   name: 'Node 全局 bin 路径检测',
   category: 'toolchain',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     if (!commandExists('npm')) return { id: this.id, name: this.name, category: this.category, status: 'unknown', message: 'npm 不可用，跳过全局 bin 检测' };

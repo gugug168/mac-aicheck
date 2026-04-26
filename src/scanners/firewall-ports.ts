@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'firewall-ports',
   name: '防火墙端口检测',
   category: 'permission',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const firewall = runCommand('/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>/dev/null', 5000);

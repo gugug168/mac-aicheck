@@ -10,11 +10,22 @@
  */
 
 import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'fs';
-import { join } from 'path';
-import { homedir } from 'os';
+import { join, dirname } from 'path';
+import { homedir, hostname as osHostname, arch as osArch, release as osRelease } from 'os';
 import { execSync } from 'child_process';
+import { fileURLToPath } from 'url';
 import type { ScanResult } from '../scanners/types';
 import type { ScoreResult } from '../scoring/calculator';
+
+function getAppVersion(): string {
+  try {
+    const __dirname = dirname(fileURLToPath(import.meta.url));
+    const pkg = JSON.parse(readFileSync(join(__dirname, '../../package.json'), 'utf-8')) as { version?: string };
+    return pkg.version || '1.0.0';
+  } catch {
+    return '1.0.0';
+  }
+}
 
 const DEFAULT_ORIGIN = 'https://aicoevo.net';
 const REPORT_DIR = join(homedir(), '.mac-aicheck', 'reports');
@@ -93,12 +104,32 @@ function sanitize(message: string): string {
 // ===== System Info Collector =====
 
 function collectSystemInfo(): SystemInfo {
-  let hostname = 'unknown';
-  try { hostname = execSync('hostname', { timeout: 2000 }).toString().trim(); } catch {}
+  const hostname = osHostname() || 'unknown';
+  if (process.platform !== 'darwin') {
+    return {
+      os: process.platform,
+      version: osRelease() || 'unknown',
+      arch: osArch() || 'unknown',
+      hostname,
+    };
+  }
+
   let version = 'unknown';
-  try { version = execSync('sw_vers -productVersion', { timeout: 2000 }).toString().trim(); } catch {}
+  try {
+    version = execSync('sw_vers -productVersion', {
+      timeout: 2000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).toString().trim();
+  } catch {}
+
   let arch = 'unknown';
-  try { arch = execSync('uname -m', { timeout: 2000 }).toString().trim(); } catch {}
+  try {
+    arch = execSync('uname -m', {
+      timeout: 2000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).toString().trim();
+  } catch {}
+
   return { os: 'darwin', version, arch, hostname };
 }
 
@@ -220,7 +251,7 @@ export interface StashResponse {
 export async function stashData(payload: AICOEVOPayload): Promise<StashResponse> {
   const fingerprint = JSON.stringify({
     platform: 'Mac',
-    userAgent: `MacAICheck/${process.version}`,
+    userAgent: `MacAICheck/${getAppVersion()}`,
     system: payload.systemInfo,
     score: payload.score,
     failCount: payload.results.filter(r => r.status === 'fail').length,

@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'package-managers',
   name: '包管理器检测',
   category: 'toolchain',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const managers = ['brew', 'npm', 'pnpm', 'yarn', 'pip', 'pipx', 'uv'].filter(commandExists);

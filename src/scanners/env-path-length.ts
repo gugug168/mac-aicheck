@@ -5,6 +5,8 @@ const scanner: Scanner = {
   id: 'env-path-length',
   name: 'PATH 长度检测',
   category: 'system',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const pathVar = process.env.PATH || '';

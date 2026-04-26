@@ -4,6 +4,7 @@
  */
 
 import type { ScanResult } from '../scanners/types';
+import { getScannerById } from '../scanners/registry';
 
 export type ScoreGrade = 'excellent' | 'good' | 'fair' | 'poor';
 export type ScannerCategory = 'brew' | 'apple' | 'toolchain' | 'ai-tools' | 'network' | 'permission' | 'system';
@@ -67,8 +68,11 @@ export function calculateScore(results: ScanResult[], prevScore?: number): Score
 
   for (const [category, items] of grouped) {
     const weight = CATEGORY_WEIGHTS[category] ?? 1.0;
-    // unknown 不计入分母
-    const scorable = items.filter(r => r.status !== 'unknown');
+    // unknown 与显式非计分项都不计入分母
+    const scorable = items.filter(r => {
+      if (r.status === 'unknown') return false;
+      return getScannerById(r.id)?.affectsScore !== false;
+    });
     const passed = scorable.filter(r => r.status === 'pass').length;
     const total = scorable.length;
 

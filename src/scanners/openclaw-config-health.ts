@@ -7,6 +7,8 @@ const scanner: Scanner = {
   id: 'openclaw-config-health',
   name: 'OpenClaw 配置检测',
   category: 'ai-tools',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const config = readJsonCandidate(getOpenClawConfigCandidates());

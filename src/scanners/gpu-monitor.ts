@@ -198,6 +198,8 @@ const scanner: Scanner = {
   id: 'gpu-monitor',
   name: 'GPU 检测',
   category: 'system',
+  affectsScore: false,
+  defaultEnabled: false,
   scan: checkGpu,
 };
 

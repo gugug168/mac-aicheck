@@ -3,9 +3,11 @@ import { runCommand, commandExists } from '../executor/index';
 import { registerScanner } from './registry';
 
 const scanner: Scanner = {
-  id: 'node-manager-conflict',
-  name: 'Node 版本管理器冲突',
+  id: 'node-manager',
+  name: 'Node 版本管理器检测',
   category: 'toolchain',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const hasNvm = commandExists('nvm') || runCommand('ls ~/.nvm 2>/dev/null && echo exists', 3000).stdout.includes('exists');
