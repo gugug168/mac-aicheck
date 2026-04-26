@@ -814,6 +814,9 @@ export async function main(argv: string[]) {
   mac-aicheck agent bind [--agent claude-code|openclaw]  绑定设备（自动打开浏览器确认）
   mac-aicheck agent review-list
   mac-aicheck agent review-submit <lease_id> --result success|partial|failed
+  mac-aicheck agent owner-check                            查看待复现确认的方案列表
+  mac-aicheck agent owner-verify <bounty_id> --answer <id> --result success|partial|failed
+                                                           提交复现验证结果
   mac-aicheck agent install-local-agent
   mac-aicheck agent upgrade            一键更新 claude-code / openclaw 到最新版本
   mac-aicheck agent upgrade self       更新 mac-aicheck 自身到最新版本
@@ -1365,6 +1368,93 @@ export async function main(argv: string[]) {
       if (result.status >= 400) { process.stdout.write(`提交评审失败: ${JSON.stringify(result.data)}\n`); return 1; }
       process.stdout.write(`✓ 评审已提交 ${leaseId}\n`);
     } catch (e: unknown) { process.stdout.write(`提交评审失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  // ── TASK-100: 发起者复现循环 ──
+
+  if (command === 'owner-check') {
+    const cfg = loadConfig();
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+    try {
+      const result = await requestJson(`${agentApiBase('v2')}/status`, { headers });
+      if (result.status !== 200) { process.stdout.write(`获取状态失败: ${result.status}\n`); return 1; }
+      const pending = (result.data as Record<string, unknown>).pending_owner_verifications as Array<Record<string, string>> || [];
+      if (pending.length === 0) {
+        process.stdout.write('没有待复现确认的方案。\n');
+        return 0;
+      }
+      process.stdout.write(`待复现确认 (${pending.length}):\n\n`);
+      for (const item of pending) {
+        process.stdout.write(`## ${item.title || '(无标题)'}\n`);
+        process.stdout.write(`  Bounty:   ${item.bounty_id}\n`);
+        process.stdout.write(`  Answer:   ${item.answer_id}\n`);
+        process.stdout.write(`  方案摘要: ${item.solution_summary}\n`);
+        process.stdout.write(`  提交时间: ${item.submitted_at}\n`);
+        process.stdout.write(`  截止时间: ${item.deadline_at}\n\n`);
+        process.stdout.write(`  → mac-aicheck agent owner-verify ${item.bounty_id} --answer ${item.answer_id} --result success|partial|failed\n\n`);
+      }
+    } catch (e: unknown) { process.stdout.write(`获取待复现列表失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  if (command === 'owner-verify') {
+    const cfg = loadConfig();
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+    const bountyId = (args._ as string[])[0];
+    const answerId = String(args.answer || '');
+    const resultValue = String(args.result || '');
+    if (!bountyId || !answerId || !/^(success|partial|failed)$/.test(resultValue)) {
+      process.stdout.write('用法: mac-aicheck agent owner-verify <bounty_id> --answer <id> --result success|partial|failed\n');
+      process.stdout.write('       [--notes <text>] [--cmd <cmd1,cmd2>]\n');
+      return 1;
+    }
+    const notes = String(args.notes || '');
+    const commandsRun = args.cmd ? String(args.cmd).split(',').map((s: string) => s.trim()).filter(Boolean) : [];
+
+    // prompt 策略: 默认必须提示用户确认
+    const skipPrompt = args.yes === true || args.yes === 'true';
+    if (!skipPrompt) {
+      process.stdout.write(`\n即将提交复现验证:\n`);
+      process.stdout.write(`  Bounty: ${bountyId}\n`);
+      process.stdout.write(`  Answer: ${answerId}\n`);
+      process.stdout.write(`  Result: ${resultValue}\n`);
+      process.stdout.write(`\n请确认您已在本地环境验证该方案。输入 yes 继续: `);
+      const readline = await import('readline');
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const confirm = await new Promise<string>(resolve => rl.question('', (ans: string) => { rl.close(); resolve(ans.trim().toLowerCase()); }));
+      if (confirm !== 'yes' && confirm !== 'y') {
+        process.stdout.write('已取消。\n');
+        return 0;
+      }
+    }
+
+    try {
+      const result = await requestJson(`${agentApiBase('v2')}/bounties/${bountyId}/owner-verify`, {
+        method: 'POST',
+        headers,
+        body: {
+          answer_id: answerId,
+          result: resultValue,
+          notes,
+          commands_run: commandsRun,
+          proof_payload: {},
+          artifacts: {},
+        },
+      });
+      if (result.status !== 200) {
+        process.stdout.write(`提交失败 (${result.status}): ${JSON.stringify(result.data)}\n`);
+        return 1;
+      }
+      const data = result.data as Record<string, unknown>;
+      process.stdout.write(`复现验证已提交:\n`);
+      process.stdout.write(`  状态: ${data.review_status || 'unknown'}\n`);
+      process.stdout.write(`  Owner 分数: ${data.owner_score ?? '-'}\n`);
+      process.stdout.write(`  社区分数: ${data.community_score ?? '-'}\n`);
+      process.stdout.write(`  总分: ${data.total_score ?? '-'} / ${data.threshold ?? 70}\n`);
+    } catch (e: unknown) { process.stdout.write(`提交复现验证失败: ${(e as Error).message}\n`); return 1; }
     return 0;
   }
 
