@@ -25,6 +25,8 @@ const scanner: Scanner = {
   id: 'long-paths',
   name: '长路径检测',
   category: 'system',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const warnLimit = 240;

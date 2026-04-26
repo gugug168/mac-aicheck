@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'powershell-version',
   name: 'PowerShell/macOS Shell 版本检测',
   category: 'toolchain',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const zshVersion = runCommand('zsh --version', 3000).stdout.trim();

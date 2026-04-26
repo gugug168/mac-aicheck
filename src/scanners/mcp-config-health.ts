@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'mcp-config-health',
   name: 'MCP 配置健康检测',
   category: 'ai-tools',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const config = readJsonCandidate([...getClaudeMcpConfigCandidates(), ...getMcpConfigCandidates()]);

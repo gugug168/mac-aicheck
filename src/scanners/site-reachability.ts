@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'site-reachability',
   name: 'AI 站点连通性检测',
   category: 'network',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const sites = [

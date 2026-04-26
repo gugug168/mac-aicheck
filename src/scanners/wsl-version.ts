@@ -7,6 +7,8 @@ const scanner: Scanner = {
   id: 'wsl-version',
   name: 'Rosetta/虚拟 Linux 环境检测',
   category: 'apple',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const arch = runCommand('uname -m', 3000).stdout.trim();

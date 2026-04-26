@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'powershell-policy',
   name: 'Shell 脚本执行策略检测',
   category: 'permission',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const shell = process.env.SHELL || '';

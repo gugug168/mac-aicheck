@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'time-sync',
   name: '时间同步检测',
   category: 'permission',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const setup = runCommand('systemsetup -getusingnetworktime 2>/dev/null', 5000);

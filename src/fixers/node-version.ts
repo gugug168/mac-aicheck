@@ -2,7 +2,7 @@ import type { Fixer, FixResult, PostFixGuidance } from './types';
 import type { ScanResult } from '../scanners/types';
 import { registerFixer } from './registry';
 import { classifyError, ERROR_MESSAGES } from './errors';
-import { runCommand } from '../executor/index';
+import { commandExists, runCommand } from '../executor/index';
 
 const NODE_VERSION = '20.10.0';
 const NODE_PKG_URL = `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}.pkg`;
@@ -44,12 +44,22 @@ const nodeVersionFixer: Fixer = {
     }
 
     try {
+      let brewFailure: string | null = null;
+      if (commandExists('brew')) {
+        const brewInstall = runCommand('brew list node >/dev/null 2>&1 && brew upgrade node || brew install node', INSTALL_TIMEOUT);
+        if (brewInstall.exitCode === 0) {
+          return { success: true, message: 'Node.js 已通过 Homebrew 安装/升级', verified: false };
+        }
+        brewFailure = brewInstall.stderr || brewInstall.stdout || 'Homebrew 安装失败';
+      }
+
       // Download official Node.js LTS .pkg installer (with retry)
       const download = downloadWithRetry(NODE_PKG_URL, '/tmp/node-installer.pkg', DOWNLOAD_TIMEOUT);
       if (download.exitCode !== 0) {
         const classified = classifyError(download.exitCode, download.stderr, 'Node.js 下载失败');
         const errMsg = ERROR_MESSAGES[classified.category];
-        return { success: false, partial: true, message: `Node.js 安装失败: ${errMsg.title}，${errMsg.suggestion}`, verified: false };
+        const prefix = brewFailure ? `Homebrew 安装失败: ${brewFailure}\n` : '';
+        return { success: false, partial: true, message: `${prefix}Node.js 安装失败: ${errMsg.title}，${errMsg.suggestion}`, verified: false };
       }
 
       // Install via official installer
@@ -57,7 +67,8 @@ const nodeVersionFixer: Fixer = {
       if (install.exitCode !== 0) {
         const classified = classifyError(install.exitCode, install.stderr, 'Node.js 安装失败');
         const errMsg = ERROR_MESSAGES[classified.category];
-        return { success: false, partial: true, message: `Node.js 安装失败: ${errMsg.title}，${errMsg.suggestion}`, verified: false };
+        const prefix = brewFailure ? `Homebrew 安装失败: ${brewFailure}\n` : '';
+        return { success: false, partial: true, message: `${prefix}Node.js 安装失败: ${errMsg.title}，${errMsg.suggestion}`, verified: false };
       }
 
       // Clean up

@@ -7,6 +7,8 @@ const scanner: Scanner = {
   id: 'virtualization',
   name: '虚拟化支持检测',
   category: 'apple',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const cpuFeatures = runCommand('sysctl -n machdep.cpu.features 2>/dev/null', 3000).stdout;

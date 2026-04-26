@@ -9,6 +9,7 @@ const scanner: Scanner = {
   id: 'ccswitch',
   name: 'CCSwitch 检测',
   category: 'ai-tools',
+  affectsScore: false,
 
   async scan(): Promise<ScanResult> {
     if (commandExists('ccswitch')) {

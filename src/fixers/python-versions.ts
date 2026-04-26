@@ -2,7 +2,7 @@ import type { Fixer, FixResult, PostFixGuidance } from './types';
 import type { ScanResult } from '../scanners/types';
 import { registerFixer } from './registry';
 import { classifyError, ERROR_MESSAGES } from './errors';
-import { runCommand } from '../executor/index';
+import { commandExists, runCommand } from '../executor/index';
 
 const PYTHON_VERSION = '3.12.0';
 const PYTHON_PKG_URL = `https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-macos11.pkg`;
@@ -44,12 +44,22 @@ const pythonVersionsFixer: Fixer = {
     }
 
     try {
+      let brewFailure: string | null = null;
+      if (commandExists('brew')) {
+        const brewInstall = runCommand('brew list python@3.12 >/dev/null 2>&1 && brew upgrade python@3.12 || brew install python@3.12', INSTALL_TIMEOUT);
+        if (brewInstall.exitCode === 0) {
+          return { success: true, message: 'Python 已通过 Homebrew 安装/升级', verified: false };
+        }
+        brewFailure = brewInstall.stderr || brewInstall.stdout || 'Homebrew 安装失败';
+      }
+
       // Download official Python 3.12 .pkg installer (with retry)
       const download = downloadWithRetry(PYTHON_PKG_URL, '/tmp/python-installer.pkg', DOWNLOAD_TIMEOUT);
       if (download.exitCode !== 0) {
         const classified = classifyError(download.exitCode, download.stderr, 'Python 下载失败');
         const errMsg = ERROR_MESSAGES[classified.category];
-        return { success: false, partial: true, message: `Python 安装失败: ${errMsg.title}，${errMsg.suggestion}`, verified: false };
+        const prefix = brewFailure ? `Homebrew 安装失败: ${brewFailure}\n` : '';
+        return { success: false, partial: true, message: `${prefix}Python 安装失败: ${errMsg.title}，${errMsg.suggestion}`, verified: false };
       }
 
       // Install via official installer
@@ -57,7 +67,8 @@ const pythonVersionsFixer: Fixer = {
       if (install.exitCode !== 0) {
         const classified = classifyError(install.exitCode, install.stderr, 'Python 安装失败');
         const errMsg = ERROR_MESSAGES[classified.category];
-        return { success: false, partial: true, message: `Python 安装失败: ${errMsg.title}，${errMsg.suggestion}`, verified: false };
+        const prefix = brewFailure ? `Homebrew 安装失败: ${brewFailure}\n` : '';
+        return { success: false, partial: true, message: `${prefix}Python 安装失败: ${errMsg.title}，${errMsg.suggestion}`, verified: false };
       }
 
       // Clean up

@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'gpu-driver',
   name: 'GPU/Metal 驱动检测',
   category: 'apple',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const output = runCommand('system_profiler SPDisplaysDataType 2>/dev/null', 10000).stdout;

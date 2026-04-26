@@ -13,6 +13,8 @@ const scanner: Scanner = {
   id: 'mcp-command-availability',
   name: 'MCP 命令可用性检测',
   category: 'ai-tools',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const config = readJsonCandidate([...getClaudeMcpConfigCandidates(), ...getMcpConfigCandidates()]);

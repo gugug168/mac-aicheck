@@ -13,6 +13,8 @@ const scanner: Scanner = {
   id: 'python-env-alignment',
   name: 'Python 环境一致性检测',
   category: 'toolchain',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     if (!hasProjectMarker(PYTHON_PROJECT_MARKERS)) return { id: this.id, name: this.name, category: this.category, status: 'unknown', message: '当前目录未检测到 Python 项目，跳过环境一致性检查' };

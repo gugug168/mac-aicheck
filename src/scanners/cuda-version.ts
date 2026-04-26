@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'cuda-version',
   name: 'Apple GPU/MPS 检测',
   category: 'apple',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const cpu = runCommand('sysctl -n machdep.cpu.brand_string', 3000).stdout.trim();

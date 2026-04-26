@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'node-manager-conflict',
   name: 'Node 版本管理器冲突检测',
   category: 'toolchain',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const managers = ['nvm', 'fnm', 'volta', 'asdf', 'mise'].filter(commandExists);

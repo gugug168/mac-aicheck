@@ -10,6 +10,8 @@ const scanner: Scanner = {
   id: 'vram-usage',
   name: '统一内存/GPU 内存压力检测',
   category: 'system',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const vm = runCommand('vm_stat', 5000).stdout;

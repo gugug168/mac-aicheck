@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'temp-space',
   name: '临时目录磁盘空间检测',
   category: 'system',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const tempDir = process.env.TMPDIR || '/tmp';

@@ -9,6 +9,8 @@ const scanner: Scanner = {
   id: 'python-project-venv',
   name: 'Python 项目虚拟环境检测',
   category: 'toolchain',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     if (!hasProjectMarker(PYTHON_PROJECT_MARKERS)) return { id: this.id, name: this.name, category: this.category, status: 'unknown', message: '当前目录未检测到 Python 项目' };

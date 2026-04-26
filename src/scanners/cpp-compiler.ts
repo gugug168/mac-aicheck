@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'cpp-compiler',
   name: 'C/C++ 编译器检测',
   category: 'toolchain',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     if (commandExists('clang')) {

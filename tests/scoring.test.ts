@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { calculateScore } from '../src/scanners/index';
+import { calculateScore as calculateWeightedScore } from '../src/scoring/calculator';
 import type { ScanResult } from '../src/scanners/types';
+import '../src/scanners/index';
 
 describe('calculateScore', () => {
   it('returns 0 for empty results', () => {
@@ -38,5 +40,14 @@ describe('calculateScore', () => {
     ];
     // (100 + 60) / 2 = 80
     expect(calculateScore(results)).toBe(80);
+  });
+
+  it('weighted score ignores optional non-scoring scanners', () => {
+    const results: ScanResult[] = [
+      { id: 'git', name: 'Git', category: 'toolchain', status: 'pass', message: '' },
+      { id: 'claude-code', name: 'Claude Code', category: 'ai-tools', status: 'warn', message: 'optional' },
+    ];
+
+    expect(calculateWeightedScore(results).score).toBe(100);
   });
 });

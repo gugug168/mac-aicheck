@@ -9,6 +9,7 @@ const scanner: Scanner = {
   id: 'git-credential-health',
   name: 'Git 凭据链路检测',
   category: 'toolchain',
+  affectsScore: false,
 
   async scan(): Promise<ScanResult> {
     const helper = runCommand('git config --global credential.helper', 5000).stdout.trim();
