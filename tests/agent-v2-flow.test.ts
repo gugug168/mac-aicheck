@@ -13,6 +13,20 @@ function mockResponse(data: unknown, status = 200) {
   return { status, ok: status >= 200 && status < 300, json: async () => data, text: async () => body };
 }
 
+function createSpawnStub() {
+  const calls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
+  return {
+    calls,
+    spawnImpl(command: string, args: string[], options: Record<string, unknown>) {
+      calls.push({ command, args, options });
+      return {
+        pid: 50000 + calls.length,
+        unref() {},
+      };
+    },
+  };
+}
+
 describe('agent v2 flow', () => {
   const homes: string[] = [];
   const originalHome = process.env.HOME;
@@ -20,6 +34,7 @@ describe('agent v2 flow', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    delete (globalThis as { __MAC_AICHECK_TEST_SPAWN__?: unknown }).__MAC_AICHECK_TEST_SPAWN__;
     process.env.HOME = originalHome;
     process.env.AICOEVO_BASE_URL = originalBaseUrl;
     for (const home of homes.splice(0)) {
@@ -183,7 +198,7 @@ describe('worker-on (TASK-091)', () => {
         cfg.workerEnabled = false;
         _testHelpers.saveConfig(cfg);
       }
-      if (url.includes('/heartbeat')) return mockResponse({ recommended_bounties: [{ id: 'bounty_m1' }] });
+      if (url.includes('/heartbeat')) return mockResponse({ recommended_bounties: [{ id: 'bounty_m1', recommended_env_id: 'mac-py311' }] });
       if (url.includes('/auto-solve')) return mockResponse({ matched: true, answer: 'KB solution', confidence: 0.9 });
       if (url.includes('/claim-and-submit')) return mockResponse({ id: 'ans_m1', bounty_id: 'bounty_m1' });
       return mockResponse({});
@@ -199,6 +214,7 @@ describe('worker-on (TASK-091)', () => {
     expect(requests[0].body).toContain('"worker_status":"active"');
     expect(requests[1].url).toContain('/auto-solve');
     expect(requests[2].url).toContain('/claim-and-submit');
+    expect(requests[2].body).toContain('"env_id":"mac-py311"');
 
     const wState = _testHelpers.loadWorkerState();
     expect(wState.totalCycles).toBeGreaterThanOrEqual(1);
@@ -217,11 +233,11 @@ describe('worker-on (TASK-091)', () => {
     expect(output).toContain('已彻底禁用');
     const cfg = _testHelpers.loadConfig();
     expect(cfg.workerEnabled).toBe(false);
-    expect(cfg.paused).toBe(true);
+    expect(cfg.paused).toBe(false);
   });
 
-  it('worker-enable re-enables worker', async () => {
-    seedConfig({ workerEnabled: false });
+  it('worker-enable re-enables worker without changing upload pause state', async () => {
+    seedConfig({ workerEnabled: false, paused: true });
     vi.stubGlobal('fetch', vi.fn());
     const chunks: string[] = [];
     const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => { chunks.push(String(chunk)); return true; });
@@ -232,7 +248,7 @@ describe('worker-on (TASK-091)', () => {
     expect(output).toContain('已重新启用');
     const cfg = _testHelpers.loadConfig();
     expect(cfg.workerEnabled).toBe(true);
-    expect(cfg.paused).toBe(false);
+    expect(cfg.paused).toBe(true);
   });
 
   it('worker daemon skips unmatched bounties', async () => {
@@ -257,5 +273,53 @@ describe('worker-on (TASK-091)', () => {
     const wState = _testHelpers.loadWorkerState();
     expect(wState.totalSolved).toBe(0);
     expect(wState.totalSkipped).toBeGreaterThanOrEqual(2);
+  });
+
+  it('enable waits for binding before auto-starting worker', async () => {
+    seedConfig({ authToken: undefined });
+    const spawn = createSpawnStub();
+    (globalThis as { __MAC_AICHECK_TEST_SPAWN__?: unknown }).__MAC_AICHECK_TEST_SPAWN__ = spawn.spawnImpl;
+    vi.stubGlobal('fetch', vi.fn());
+    const capture = captureOutput();
+    const { spy } = capture;
+    const code = await agentMain(['enable', '--target', 'claude-code']);
+    spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(capture.output).toContain('等待绑定完成后自动启动');
+    expect(spawn.calls).toHaveLength(0);
+  });
+
+  it('enable auto-starts worker when auth token already exists', async () => {
+    seedConfig();
+    const spawn = createSpawnStub();
+    (globalThis as { __MAC_AICHECK_TEST_SPAWN__?: unknown }).__MAC_AICHECK_TEST_SPAWN__ = spawn.spawnImpl;
+    vi.stubGlobal('fetch', vi.fn());
+    const capture = captureOutput();
+    const { spy } = capture;
+    const code = await agentMain(['enable', '--target', 'claude-code']);
+    spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(capture.output).toContain('Worker 互助循环: 已启动');
+    expect(spawn.calls).toHaveLength(1);
+    expect(spawn.calls[0]?.args.join(' ')).toContain('worker daemon');
+  });
+
+  it('bind auto-starts worker after token is granted', async () => {
+    seedConfig({ authToken: undefined });
+    const spawn = createSpawnStub();
+    (globalThis as { __MAC_AICHECK_TEST_SPAWN__?: unknown }).__MAC_AICHECK_TEST_SPAWN__ = spawn.spawnImpl;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse({ api_key: 'ak_test_123' })));
+    const capture = captureOutput();
+    const { spy } = capture;
+    const code = await agentMain(['bind', '--code', '123456']);
+    spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(capture.output).toContain('绑定成功');
+    expect(capture.output).toContain('Worker 互助循环: 已启动');
+    expect(spawn.calls).toHaveLength(1);
+    expect(spawn.calls[0]?.args.join(' ')).toContain('worker daemon');
   });
 });

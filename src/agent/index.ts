@@ -357,6 +357,42 @@ function releaseWorkerLock() {
   } catch {}
 }
 
+function isProcessAlive(pid: number | null | undefined): boolean {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function workerSpawn(command: string, args: string[], options: Record<string, unknown>) {
+  const spawnImpl = (globalThis as { __MAC_AICHECK_TEST_SPAWN__?: typeof spawn }).__MAC_AICHECK_TEST_SPAWN__ || spawn;
+  return spawnImpl(command, args, options as Parameters<typeof spawn>[2]);
+}
+
+function startWorkerDaemon() {
+  const cfg = loadConfig();
+  if (!cfg.workerEnabled) return { ok: true, skipped: true, reason: 'worker disabled' as const };
+  if (!agentApiKeyHeaders(cfg)) return { ok: true, skipped: true, reason: 'missing auth token' as const };
+
+  const wState = loadWorkerState();
+  if (isProcessAlive(wState.pid)) {
+    return { ok: true, alreadyRunning: true, pid: wState.pid };
+  }
+
+  const local = installLocalAgent();
+  wState.enabled = true;
+  wState.status = 'starting';
+  wState.startedAt = wState.startedAt || nowIso();
+  saveWorkerState(wState);
+
+  const child = workerSpawn('node', [local.agentJs, 'worker', 'daemon'], { detached: true, stdio: 'ignore' });
+  child.unref?.();
+  return { ok: true, started: true, pid: child.pid };
+}
+
 function normalizeAgent(v: string): string { const a = String(v || 'custom').toLowerCase(); return (a === 'claude' || a === 'claude-code' || a === 'claude_code') ? 'claude-code' : a === 'openclaw' || a === 'open-claw' ? 'openclaw' : 'custom'; }
 function classifyEvent(agent: string, msg: string): string { const t = msg.toLowerCase(); if (t.includes('mcp')) return 'mcp_error'; if (t.includes('config') || t.includes('json')) return 'agent_config'; if (t.includes('traceback') || t.includes('syntaxerror') || t.includes('typeerror')) return 'coding_error_summary'; return agent === 'custom' ? 'coding_error_summary' : 'agent_runtime'; }
 function severityFromMsg(msg: string, fallback = 'error'): string { const t = msg.toLowerCase(); return t.includes('warn') ? 'warn' : t.includes('info') ? 'info' : fallback; }
@@ -875,7 +911,7 @@ async function runWorkerDaemon(args: Record<string, unknown>): Promise<number> {
       }
       try {
         const heartbeat = await heartbeatAgentV2(headers, { max_parallel_tasks: maxPerCycle, worker_status: 'active' });
-        const recData = heartbeat.data as { recommended_bounties?: Array<{ id: string }> };
+        const recData = heartbeat.data as { recommended_bounties?: Array<{ id: string; recommended_env_id?: string }> };
         const items = (recData.recommended_bounties || []).slice(0, maxPerCycle);
         let solved = 0, skipped = 0;
         if (items.length > 0) {
@@ -888,7 +924,7 @@ async function runWorkerDaemon(args: Record<string, unknown>): Promise<number> {
             if (!solveData.matched) { skipped++; continue; }
             if (!solveData.answer || typeof solveData.answer !== 'string') { skipped++; continue; }
             const submitResult = await requestJson(`${agentApiBase('v2')}/bounties/${item.id}/claim-and-submit`, {
-              method: 'POST', headers, body: { content: solveData.answer, source: 'kb_auto', confidence: solveData.confidence || 0.8, execution_mode: 'agent' },
+              method: 'POST', headers, body: { ...(item.recommended_env_id ? { env_id: item.recommended_env_id } : {}), content: solveData.answer, source: 'kb_auto', confidence: solveData.confidence || 0.8, execution_mode: 'agent' },
             });
             if (submitResult.status >= 200 && submitResult.status < 300) solved++;
           }
@@ -973,7 +1009,6 @@ export async function main(argv: string[]) {
   if (command === 'disable') {
     const cfg = loadConfig();
     cfg.workerEnabled = false;
-    cfg.paused = true;
     saveConfig(cfg);
     const wState = loadWorkerState();
     if (wState.pid) { try { process.kill(wState.pid); } catch {} }
@@ -990,7 +1025,6 @@ export async function main(argv: string[]) {
   if (command === 'worker-enable') {
     const cfg = loadConfig();
     cfg.workerEnabled = true;
-    cfg.paused = false;
     saveConfig(cfg);
     process.stdout.write('Worker 互助循环已重新启用。运行 worker start 启动后台循环。\n');
     return 0;
@@ -1021,11 +1055,19 @@ export async function main(argv: string[]) {
     if (hookOutputs.length > 0) process.stdout.write(`  Hook: ${hookOutputs.join('; ')}\n`);
     process.stdout.write(`  自动同步: 已启用\n`);
     if (cfg.workerEnabled) {
-      const wState = loadWorkerState();
-      if (!wState.pid) {
-        process.stdout.write(`  Worker 互助循环: 请运行 mac-aicheck agent worker start 启动\n`);
-      } else {
-        process.stdout.write(`  Worker 互助循环: 已运行中\n`);
+      try {
+        const workerStart = startWorkerDaemon();
+        if (workerStart.started) {
+          process.stdout.write(`  Worker 互助循环: 已启动 (pid ${workerStart.pid})\n`);
+        } else if (workerStart.alreadyRunning) {
+          process.stdout.write(`  Worker 互助循环: 已运行中\n`);
+        } else if (workerStart.reason === 'missing auth token') {
+          process.stdout.write(`  Worker 互助循环: 等待绑定完成后自动启动\n`);
+        } else {
+          process.stdout.write(`  Worker 互助循环: 已禁用\n`);
+        }
+      } catch (e: unknown) {
+        process.stdout.write(`  Worker 互助循环: 启动失败 (${(e as Error).message})\n`);
       }
     } else {
       process.stdout.write(`  Worker 互助循环: 已禁用\n`);
@@ -1167,6 +1209,14 @@ export async function main(argv: string[]) {
       saveConfig(config);
 
       process.stdout.write('\n绑定成功!\n  自动同步: 已启用\n\n');
+      if (config.workerEnabled) {
+        try {
+          const workerStart = startWorkerDaemon();
+          if (workerStart.started) process.stdout.write(`  Worker 互助循环: 已启动 (pid ${workerStart.pid})\n\n`);
+        } catch (e: unknown) {
+          process.stdout.write(`  Worker 互助循环: 启动失败 (${(e as Error).message})\n\n`);
+        }
+      }
       return 0;
     }
 
@@ -1229,6 +1279,14 @@ export async function main(argv: string[]) {
         saveConfig(config);
 
         process.stdout.write('绑定成功!\n  自动同步: 已启用\n\n');
+        if (config.workerEnabled) {
+          try {
+            const workerStart = startWorkerDaemon();
+            if (workerStart.started) process.stdout.write(`  Worker 互助循环: 已启动 (pid ${workerStart.pid})\n\n`);
+          } catch (e: unknown) {
+            process.stdout.write(`  Worker 互助循环: 启动失败 (${(e as Error).message})\n\n`);
+          }
+        }
         process.stdout.write('现在 Claude Code 中的错误会自动记录并同步到 aicoevo.net。\n');
         return 0;
       }
@@ -1333,17 +1391,22 @@ export async function main(argv: string[]) {
     if (subcommand === 'start') {
       const cfg = loadConfig();
       if (!cfg.workerEnabled) { process.stdout.write('Worker 已被禁用。使用 worker-enable 重新启用。\n'); return 1; }
-      const local = installLocalAgent();
-      const wState = loadWorkerState();
-      if (wState.pid) { try { process.kill(wState.pid, 0); process.stdout.write(JSON.stringify({ ok: true, alreadyRunning: true, worker: loadWorkerState() }, null, 2) + '\n'); return 0; } catch {} }
-      wState.enabled = true;
-      wState.status = 'starting';
-      wState.startedAt = wState.startedAt || nowIso();
-      saveWorkerState(wState);
-      const child = spawn('node', [local.agentJs, 'worker', 'daemon'], { detached: true, stdio: 'ignore' });
-      child.unref();
-      process.stdout.write(JSON.stringify({ ok: true, started: true, pid: child.pid, worker: loadWorkerState() }, null, 2) + '\n');
-      return 0;
+      try {
+        const result = startWorkerDaemon();
+        if (result.alreadyRunning) {
+          process.stdout.write(JSON.stringify({ ok: true, alreadyRunning: true, worker: loadWorkerState() }, null, 2) + '\n');
+          return 0;
+        }
+        if (result.started) {
+          process.stdout.write(JSON.stringify({ ok: true, started: true, pid: result.pid, worker: loadWorkerState() }, null, 2) + '\n');
+          return 0;
+        }
+        process.stdout.write(JSON.stringify({ ok: false, reason: result.reason, worker: loadWorkerState() }, null, 2) + '\n');
+        return 1;
+      } catch (e: unknown) {
+        process.stdout.write(`Worker 启动失败: ${(e as Error).message}\n`);
+        return 1;
+      }
     }
     if (subcommand === 'stop') {
       const wState = loadWorkerState();
@@ -1490,7 +1553,7 @@ export async function main(argv: string[]) {
       try {
         // 1. 心跳
         const recResult = await heartbeatAgentV2(hdr, { max_parallel_tasks: maxPerCycle });
-        const recData = recResult.data as { recommended_bounties?: Record<string, unknown>[] };
+        const recData = recResult.data as { recommended_bounties?: Array<Record<string, unknown> & { recommended_env_id?: string }> };
         const items = (recData.recommended_bounties || []).slice(0, maxPerCycle);
 
         if (items.length === 0) {
@@ -1516,6 +1579,7 @@ export async function main(argv: string[]) {
               method: 'POST',
               headers: hdr,
               body: {
+                ...(item.recommended_env_id ? { env_id: item.recommended_env_id } : {}),
                 content: solveData.answer,
                 source: 'kb_auto',
                 confidence: solveData.confidence || 0.8,
