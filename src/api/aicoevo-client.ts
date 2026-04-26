@@ -10,16 +10,14 @@
  */
 
 import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'fs';
-import { join, dirname } from 'path';
+import { join } from 'path';
 import { homedir, hostname as osHostname, arch as osArch, release as osRelease } from 'os';
 import { execSync } from 'child_process';
-import { fileURLToPath } from 'url';
 import type { ScanResult } from '../scanners/types';
 import type { ScoreResult } from '../scoring/calculator';
 
 function getAppVersion(): string {
   try {
-    const __dirname = dirname(fileURLToPath(import.meta.url));
     const pkg = JSON.parse(readFileSync(join(__dirname, '../../package.json'), 'utf-8')) as { version?: string };
     return pkg.version || '1.0.0';
   } catch {
