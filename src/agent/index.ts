@@ -1,5 +1,5 @@
 // Agent Lite CLI - 简洁实现
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, appendFileSync, renameSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, appendFileSync, renameSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { homedir, hostname } from 'os';
 import { execFileSync, spawn } from 'child_process';
@@ -336,6 +336,26 @@ function defaultWorkerState(): WorkerState {
 }
 function loadWorkerState(): WorkerState { return readJson<WorkerState>(paths().workerState, defaultWorkerState()); }
 function saveWorkerState(state: WorkerState) { writeJson(paths().workerState, state); }
+
+function acquireWorkerLock(): boolean {
+  const lockPath = paths().workerLock;
+  try {
+    const existing = readJson<{ pid?: number; startedAt?: string }>(lockPath, {});
+    if (existing.pid && existing.pid !== process.pid) {
+      try { process.kill(existing.pid, 0); return false; } catch { unlinkSync(lockPath); }
+    }
+    if (existing.pid === process.pid) return true;
+  } catch {}
+  writeJson(lockPath, { pid: process.pid, startedAt: nowIso() });
+  return true;
+}
+function releaseWorkerLock() {
+  try {
+    const lockPath = paths().workerLock;
+    const existing = readJson<{ pid?: number }>(lockPath, {});
+    if (!existing?.pid || existing.pid === process.pid) unlinkSync(lockPath);
+  } catch {}
+}
 
 function normalizeAgent(v: string): string { const a = String(v || 'custom').toLowerCase(); return (a === 'claude' || a === 'claude-code' || a === 'claude_code') ? 'claude-code' : a === 'openclaw' || a === 'open-claw' ? 'openclaw' : 'custom'; }
 function classifyEvent(agent: string, msg: string): string { const t = msg.toLowerCase(); if (t.includes('mcp')) return 'mcp_error'; if (t.includes('config') || t.includes('json')) return 'agent_config'; if (t.includes('traceback') || t.includes('syntaxerror') || t.includes('typeerror')) return 'coding_error_summary'; return agent === 'custom' ? 'coding_error_summary' : 'agent_runtime'; }
@@ -823,9 +843,13 @@ async function runOriginalAgent(args: Record<string, unknown>) {
 }
 
 async function runWorkerDaemon(args: Record<string, unknown>): Promise<number> {
+  if (!acquireWorkerLock()) {
+    process.stdout.write('Worker 已在运行中，跳过重复启动\n');
+    return 1;
+  }
   const cfg = loadConfig();
   const apiKey = agentApiKeyHeaders(cfg);
-  if (!apiKey) { process.stdout.write('Worker 需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+  if (!apiKey) { releaseWorkerLock(); process.stdout.write('Worker 需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
   const interval = Number(args.workerInterval || args.interval || WORKER_DEFAULT_INTERVAL_MS);
   const maxPerCycle = Number(args.maxParallelTasks || args.limit || WORKER_MAX_PARALLEL);
   const headers = { ...apiKey, 'Content-Type': 'application/json' };
@@ -862,7 +886,7 @@ async function runWorkerDaemon(args: Record<string, unknown>): Promise<number> {
             const submitResult = await requestJson(`${agentApiBase('v2')}/bounties/${item.id}/claim-and-submit`, {
               method: 'POST', headers, body: { content: solveData.answer, source: 'kb_auto', confidence: solveData.confidence || 0.8, execution_mode: 'agent' },
             });
-            if (submitResult.status < 400) solved++;
+            if (submitResult.status >= 200 && submitResult.status < 300) solved++;
           }
         }
         const updated = loadWorkerState();
@@ -891,6 +915,7 @@ async function runWorkerDaemon(args: Record<string, unknown>): Promise<number> {
     finalState.pid = null;
     finalState.nextCycleAt = null;
     saveWorkerState(finalState);
+    releaseWorkerLock();
   }
   return 0;
 }
@@ -947,6 +972,7 @@ export async function main(argv: string[]) {
     wState.pid = null;
     wState.nextCycleAt = null;
     saveWorkerState(wState);
+    releaseWorkerLock();
     process.stdout.write('已彻底禁用 Worker 互助循环。使用 worker-enable 可重新开启。\n');
     return 0;
   }
@@ -1317,6 +1343,7 @@ export async function main(argv: string[]) {
       wState.pid = null;
       wState.nextCycleAt = null;
       saveWorkerState(wState);
+      releaseWorkerLock();
       process.stdout.write(JSON.stringify({ ok: true, stopped: true, worker: loadWorkerState() }, null, 2) + '\n');
       return 0;
     }
