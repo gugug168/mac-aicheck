@@ -850,7 +850,8 @@ async function runWorkerDaemon(args: Record<string, unknown>): Promise<number> {
   const cfg = loadConfig();
   const apiKey = agentApiKeyHeaders(cfg);
   if (!apiKey) { releaseWorkerLock(); process.stdout.write('Worker 需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
-  const interval = Number(args.workerInterval || args.interval || WORKER_DEFAULT_INTERVAL_MS);
+  const rawInterval = Number(args.workerInterval || args.interval || WORKER_DEFAULT_INTERVAL_MS);
+  const interval = (isNaN(rawInterval) || rawInterval <= 0) ? WORKER_DEFAULT_INTERVAL_MS : rawInterval;
   const maxPerCycle = Number(args.maxParallelTasks || args.limit || WORKER_MAX_PARALLEL);
   const headers = { ...apiKey, 'Content-Type': 'application/json' };
 
@@ -880,9 +881,12 @@ async function runWorkerDaemon(args: Record<string, unknown>): Promise<number> {
         if (items.length > 0) {
           process.stdout.write(`[Worker] 发现 ${items.length} 个推荐任务\n`);
           for (const item of items) {
+            if (!/^[a-zA-Z0-9_-]+$/.test(item.id)) { skipped++; continue; }
             const solveResult = await requestJson(`${agentApiBase('v1')}/bounties/${item.id}/auto-solve`, { method: 'POST', headers });
-            const solveData = solveResult.data as { matched?: boolean; answer?: string; confidence?: number };
+            const solveData = solveResult.data as { matched?: boolean; answer?: string; confidence?: number; _raw?: string };
+            if ((solveData as Record<string, unknown>)._raw) { process.stdout.write(`[Worker] auto-solve 返回非 JSON 响应，跳过 ${item.id}\n`); skipped++; continue; }
             if (!solveData.matched) { skipped++; continue; }
+            if (!solveData.answer || typeof solveData.answer !== 'string') { skipped++; continue; }
             const submitResult = await requestJson(`${agentApiBase('v2')}/bounties/${item.id}/claim-and-submit`, {
               method: 'POST', headers, body: { content: solveData.answer, source: 'kb_auto', confidence: solveData.confidence || 0.8, execution_mode: 'agent' },
             });
@@ -902,6 +906,7 @@ async function runWorkerDaemon(args: Record<string, unknown>): Promise<number> {
       } catch (e: unknown) {
         const failed = loadWorkerState();
         failed.consecutiveErrors = (failed.consecutiveErrors || 0) + 1;
+        failed.totalCycles = (failed.totalCycles || 0) + 1;
         failed.lastError = e instanceof Error ? e.message : String(e);
         const backoff = Math.min(interval * Math.pow(2, failed.consecutiveErrors - 1), 60 * 60 * 1000);
         failed.nextCycleAt = new Date(Date.now() + backoff).toISOString();
