@@ -308,8 +308,14 @@ function detectInstaller(cmd: string): { type: 'brew' | 'npm' | 'npx' | 'unknown
   }
 }
 
-async function upgradeCommand(): Promise<{ ok: boolean; results: Array<{ name: string; from: string; to: string; status: string }> }> {
-  const results: Array<{ name: string; from: string; to: string; status: string }> = [];
+type UpgradeResult = { name: string; from: string; to: string; status: string };
+
+function isUpgradeCommandOk(results: UpgradeResult[]): boolean {
+  return !results.some(result => result.status.startsWith('failed'));
+}
+
+async function upgradeCommand(): Promise<{ ok: boolean; results: UpgradeResult[] }> {
+  const results: UpgradeResult[] = [];
   const repos = [
     { name: 'claude-code', cmd: 'claude', npmPkg: '@anthropic-ai/claude-code', repo: 'anthropics/claude-code' },
     { name: 'openclaw', cmd: 'openclaw', npmPkg: 'openclaw', repo: 'openclaw/openclaw' },
@@ -355,7 +361,7 @@ async function upgradeCommand(): Promise<{ ok: boolean; results: Array<{ name: s
     writeJson(p.versionCache, cache);
   }
 
-  return { ok: true, results };
+  return { ok: isUpgradeCommandOk(results), results };
 }
 
 // 经验库：已知错误的本地修复建议（类比 Evolver genes.json）
@@ -2131,6 +2137,7 @@ export const _testHelpers = {
   isBlockedHost,
   assertSafeRequestUrl,
   checkUpdatesWithNotify,
+  isUpgradeCommandOk,
   acquireWorkerLock,
   releaseWorkerLock,
   createEvent,
