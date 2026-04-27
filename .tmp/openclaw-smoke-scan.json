@@ -1,0 +1,175 @@
+{
+  "score": {
+    "score": 88
+  },
+  "results": [
+    {
+      "id": "git",
+      "name": "Git",
+      "category": "toolchain",
+      "status": "pass",
+      "version": "2.50.1",
+      "path": "/usr/bin/git",
+      "message": "Git 2.50.1"
+    },
+    {
+      "id": "node-version",
+      "name": "Node.js",
+      "category": "toolchain",
+      "status": "pass",
+      "version": "v23.11.0",
+      "path": "/opt/homebrew/bin/node",
+      "message": "Node.js v23.11.0"
+    },
+    {
+      "id": "python-versions",
+      "name": "Python",
+      "category": "toolchain",
+      "status": "pass",
+      "version": "3.14.3",
+      "path": "/opt/homebrew/bin/python3",
+      "message": "Python 3.14.3"
+    },
+    {
+      "id": "npm-mirror",
+      "name": "npm 镜像源",
+      "category": "network",
+      "status": "warn",
+      "message": "npm 使用非标准源: https://registry.npmjs.org",
+      "error_type": "misconfigured"
+    },
+    {
+      "id": "proxy-config",
+      "name": "代理配置",
+      "category": "network",
+      "status": "pass",
+      "message": "未检测到代理配置"
+    },
+    {
+      "id": "apple-silicon",
+      "name": "Apple Silicon 检测",
+      "category": "apple",
+      "status": "warn",
+      "error_type": "incompatible",
+      "message": "Apple Silicon (Apple M4)，建议安装 Rosetta 2"
+    },
+    {
+      "id": "homebrew",
+      "name": "Homebrew 检测",
+      "category": "brew",
+      "status": "pass",
+      "version": "5.1.7",
+      "message": "Homebrew 5.1.7 已安装"
+    },
+    {
+      "id": "developer-mode",
+      "name": "开发者模式",
+      "category": "apple",
+      "status": "warn",
+      "error_type": "permission",
+      "message": "建议开启开发者模式：sudo nvram boot-args=\"devmode=1\" 或 Recovery Mode 设置"
+    },
+    {
+      "id": "screen-permission",
+      "name": "屏幕录制权限",
+      "category": "apple",
+      "status": "fail",
+      "message": "屏幕录制权限未授权，请到 系统设置 → 隐私与安全性 → 屏幕录制 添加对应应用",
+      "error_type": "permission"
+    },
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "category": "ai-tools",
+      "status": "pass",
+      "message": "Claude Code 已安装 (2.1.114 (Claude Code))"
+    },
+    {
+      "id": "gemini-cli",
+      "name": "Gemini CLI",
+      "category": "ai-tools",
+      "status": "pass",
+      "message": "Gemini CLI 已安装 (0.36.0)"
+    },
+    {
+      "id": "openclaw",
+      "name": "OpenClaw",
+      "category": "ai-tools",
+      "status": "pass",
+      "message": "OpenClaw 已安装 (OpenClaw 2026.4.14 (323493f))"
+    },
+    {
+      "id": "xcode",
+      "name": "Xcode Command Line Tools",
+      "category": "toolchain",
+      "status": "pass",
+      "path": "/Library/Developer/CommandLineTools",
+      "message": "Xcode CLT 已安装: /Library/Developer/CommandLineTools"
+    },
+    {
+      "id": "rosetta",
+      "name": "Rosetta 2",
+      "category": "apple",
+      "status": "pass",
+      "message": "Rosetta 2 已安装"
+    },
+    {
+      "id": "ssl-certs",
+      "name": "SSL 证书",
+      "category": "network",
+      "status": "pass",
+      "message": "SSL 证书正常（github.com HTTPS 正常, HTTP 200）"
+    },
+    {
+      "id": "dns-resolution",
+      "name": "DNS 解析",
+      "category": "network",
+      "status": "pass",
+      "message": "DNS 解析正常 (avg 21ms)"
+    },
+    {
+      "id": "git-identity",
+      "name": "Git 身份配置",
+      "category": "toolchain",
+      "status": "warn",
+      "message": "Git 全局身份未配置（git config --global user.name/email）",
+      "error_type": "misconfigured"
+    },
+    {
+      "id": "admin-perms",
+      "name": "管理员权限",
+      "category": "permission",
+      "status": "pass",
+      "message": "具有管理员权限"
+    },
+    {
+      "id": "ccswitch",
+      "name": "CCSwitch 检测",
+      "category": "ai-tools",
+      "status": "pass",
+      "message": "CCSwitch 已安装 (0.10.0-rc.4)"
+    },
+    {
+      "id": "git-credential-health",
+      "name": "Git 凭据链路检测",
+      "category": "toolchain",
+      "status": "pass",
+      "message": "Git 凭据链路存在",
+      "detail": "credential.helper: (未配置)\nSSH Keys: /Users/gugu/.ssh/id_ed25519"
+    },
+    {
+      "id": "uv-package-manager",
+      "name": "uv 包管理器检测",
+      "category": "toolchain",
+      "status": "pass",
+      "message": "uv 已安装 (uv 0.7.6 (Homebrew 2025-05-19))"
+    }
+  ],
+  "upload": {
+    "token": "fd89b6bd441a4496a26921e16e06f66d",
+    "claim_url": "https://aicoevo.net/claim?t=fd89b6bd441a4496a26921e16e06f66d",
+    "ttl_seconds": 300,
+    "problem_brief_id": "17b6c280c5",
+    "evidence_pack_id": "81b35fa35d"
+  }
+}

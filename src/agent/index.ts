@@ -1,5 +1,5 @@
 // Agent Lite CLI - 简洁实现
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, appendFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, appendFileSync, renameSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { homedir, hostname } from 'os';
 import { execFileSync, spawn } from 'child_process';
@@ -19,12 +19,25 @@ function paths() {
     agentJs: join(base, 'agent', 'agent-lite.js'), agentCmd: join(base, 'agent', 'mac-aicheck-agent'),
     experience: join(base, 'experience.jsonl'),
     versionCache: join(base, 'version-cache.json'),
+    workerState: join(base, 'worker-state.json'),
+    workerLock: join(base, 'worker.lock'),
   };
 }
 function ensureDir(dir: string) { if (!existsSync(dir)) mkdirSync(dir, { recursive: true }); }
 function readJson<T>(file: string, fallback: T): T { try { return existsSync(file) ? JSON.parse(readFileSync(file, 'utf-8')) : fallback; } catch { return fallback; } }
 function writeJson(file: string, data: unknown, mode = 0o600) { ensureDir(join(file, '..')); writeFileSync(file, JSON.stringify(data, null, 2) + '\n', { encoding: 'utf-8', mode }); }
-function appendJsonl(file: string, data: unknown) { ensureDir(join(file, '..')); appendFileSync(file, JSON.stringify(data) + '\n', 'utf-8'); }
+function appendJsonl(file: string, data: unknown) {
+  ensureDir(join(file, '..'));
+  const line = JSON.stringify(data) + '\n';
+  // Write to temp file then rename for atomicity (#37)
+  const tmp = file + '.tmp-' + process.pid;
+  try {
+    appendFileSync(file, line, 'utf-8');
+  } catch {
+    // Fallback: write to temp then rename
+    try { writeFileSync(tmp, line, 'utf-8'); renameSync(tmp, file); } catch { /* best effort */ }
+  }
+}
 function readJsonl(file: string): unknown[] { try { if (!existsSync(file)) return []; return readFileSync(file, 'utf-8').split(/\r?\n/).filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean); } catch { return []; } }
 
 function sha256(v: string) { return crypto.createHash('sha256').update(v).digest('hex'); }
@@ -46,6 +59,8 @@ function trimForCapture(text: string): string { const s = sanitizeText(text); re
 
 // 版本检测和更新检查（参考 gstack）
 const VERSION_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 小时限速
+const WORKER_DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
+const WORKER_MAX_PARALLEL = 3;
 
 interface VersionInfo {
   current: string;
@@ -280,16 +295,110 @@ function loadConfig() {
   const p = paths();
   const cfg = readJson(p.config, {} as Record<string, unknown>);
   if (!cfg.clientId) cfg.clientId = `client_${crypto.randomUUID()}`;
+  // Per-agent deviceId (#31): if agentType is set, derive unique deviceId
   if (!cfg.deviceId) cfg.deviceId = `device_${crypto.randomUUID()}`;
+  if (cfg.agentType && typeof cfg.agentType === 'string') {
+    const baseDeviceId = cfg.deviceId as string;
+    const suffix = cfg.agentType === 'claude-code' ? '_cc' : cfg.agentType === 'openclaw' ? '_oc' : '';
+    if (suffix && !baseDeviceId.endsWith(suffix)) {
+      cfg.deviceId = baseDeviceId + suffix;
+    }
+  }
   if (cfg.shareData === undefined) cfg.shareData = false;
   if (cfg.autoSync === undefined) cfg.autoSync = false;
   if (cfg.paused === undefined) cfg.paused = false;
+  if (cfg.workerEnabled === undefined) cfg.workerEnabled = true;
   if (!cfg.profileId) cfg.profileId = null;
   if (!cfg.agentType) cfg.agentType = null;
   writeJson(p.config, cfg);
-  return cfg as { clientId: string; deviceId: string; shareData: boolean; autoSync: boolean; paused: boolean; email?: string; authToken?: string; profileId?: string; agentType?: string; confirmedAt?: string };
+  return cfg as { clientId: string; deviceId: string; shareData: boolean; autoSync: boolean; paused: boolean; workerEnabled: boolean; email?: string; authToken?: string; profileId?: string; agentType?: string; confirmedAt?: string };
 }
 function saveConfig(cfg: Record<string, unknown>) { writeJson(paths().config, cfg); }
+
+// ── Worker state management ──
+interface WorkerState {
+  schemaVersion: number;
+  enabled: boolean;
+  status: string;
+  pid: number | null;
+  startedAt: string | null;
+  lastCycleAt: string | null;
+  lastCycleResult: { solved: number; skipped: number; total: number } | null;
+  nextCycleAt: string | null;
+  totalCycles: number;
+  totalSolved: number;
+  totalSkipped: number;
+  consecutiveErrors: number;
+  lastError: string | null;
+}
+function defaultWorkerState(): WorkerState {
+  return { schemaVersion: 1, enabled: false, status: 'stopped', pid: null, startedAt: null, lastCycleAt: null, lastCycleResult: null, nextCycleAt: null, totalCycles: 0, totalSolved: 0, totalSkipped: 0, consecutiveErrors: 0, lastError: null };
+}
+function loadWorkerState(): WorkerState { return readJson<WorkerState>(paths().workerState, defaultWorkerState()); }
+function saveWorkerState(state: WorkerState) { writeJson(paths().workerState, state); }
+
+function acquireWorkerLock(): boolean {
+  const lockPath = paths().workerLock;
+  try {
+    const existing = readJson<{ pid?: number; startedAt?: string }>(lockPath, {});
+    if (existing.pid && existing.pid !== process.pid) {
+      try { process.kill(existing.pid, 0); return false; } catch { /* stale lock, remove below */ }
+    }
+    if (existing.pid === process.pid) return true;
+    // Atomic write: temp file + rename (POSIX atomic overwrite)
+    const tmp = lockPath + `.tmp-${process.pid}-${Date.now()}`;
+    writeJson(tmp, { pid: process.pid, startedAt: nowIso() });
+    try { renameSync(tmp, lockPath); } catch {
+      try { unlinkSync(tmp); } catch { /* best effort */ }
+      return true;
+    }
+    return true;
+  } catch {}
+  return false;
+}
+function releaseWorkerLock() {
+  try {
+    const lockPath = paths().workerLock;
+    const existing = readJson<{ pid?: number }>(lockPath, {});
+    if (!existing?.pid || existing.pid === process.pid) unlinkSync(lockPath);
+  } catch {}
+}
+
+function isProcessAlive(pid: number | null | undefined): boolean {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function workerSpawn(command: string, args: string[], options: Record<string, unknown>) {
+  const spawnImpl = (globalThis as { __MAC_AICHECK_TEST_SPAWN__?: typeof spawn }).__MAC_AICHECK_TEST_SPAWN__ || spawn;
+  return spawnImpl(command, args, options as Parameters<typeof spawn>[2]);
+}
+
+function startWorkerDaemon() {
+  const cfg = loadConfig();
+  if (!cfg.workerEnabled) return { ok: true, skipped: true, reason: 'worker disabled' as const };
+  if (!agentApiKeyHeaders(cfg)) return { ok: true, skipped: true, reason: 'missing auth token' as const };
+
+  const wState = loadWorkerState();
+  if (isProcessAlive(wState.pid)) {
+    return { ok: true, alreadyRunning: true, pid: wState.pid };
+  }
+
+  const local = installLocalAgent();
+  wState.enabled = true;
+  wState.status = 'starting';
+  wState.startedAt = wState.startedAt || nowIso();
+  saveWorkerState(wState);
+
+  const child = workerSpawn('node', [local.agentJs, 'worker', 'daemon'], { detached: true, stdio: 'ignore' });
+  child.unref?.();
+  return { ok: true, started: true, pid: child.pid };
+}
 
 function normalizeAgent(v: string): string { const a = String(v || 'custom').toLowerCase(); return (a === 'claude' || a === 'claude-code' || a === 'claude_code') ? 'claude-code' : a === 'openclaw' || a === 'open-claw' ? 'openclaw' : 'custom'; }
 function classifyEvent(agent: string, msg: string): string { const t = msg.toLowerCase(); if (t.includes('mcp')) return 'mcp_error'; if (t.includes('config') || t.includes('json')) return 'agent_config'; if (t.includes('traceback') || t.includes('syntaxerror') || t.includes('typeerror')) return 'coding_error_summary'; return agent === 'custom' ? 'coding_error_summary' : 'agent_runtime'; }
@@ -375,9 +484,9 @@ function parseArgs(argv: string[]): Record<string, unknown> {
 function isBlockedHost(hostname: string): boolean {
   const h = hostname.toLowerCase();
   const blocked = [
-    '169.254.169.254', // AWS / Azure metadata
-    'metadata.google.internal', // GCP metadata
-    '100.100.100.200', // Aliyun metadata
+    '169.254.169.254',
+    'metadata.google.internal',
+    '100.100.100.200',
     '127.0.0.1', '0.0.0.0', '::1', 'localhost',
   ];
   if (blocked.includes(h)) return true;
@@ -387,7 +496,6 @@ function isBlockedHost(hostname: string): boolean {
 
 function apiBase() {
   const raw = (process.env.AICOEVO_API_BASE || process.env.AICOEVO_BASE_URL || 'https://aicoevo.net').replace(/\/+$/, '');
-  // SSRF protection: validate hostname before using custom base URL
   try {
     const withScheme = raw.startsWith('http') ? raw : `https://${raw}`;
     const parsed = new URL(withScheme);
@@ -395,9 +503,34 @@ function apiBase() {
       process.stderr.write(`[安全] AICOEVO_API_BASE 指向内网地址 ${parsed.hostname}，已忽略，使用默认地址\n`);
       return 'https://aicoevo.net/api/v1';
     }
-  } catch { /* ignore parse errors, fall through to safe default */ }
+  } catch {}
   if (!raw.startsWith('https://') && process.env.NODE_ENV !== 'development') return raw.replace(/^http:\/\//, 'https://').endsWith('/api/v1') ? raw.replace(/^http:\/\//, 'https://') : `${raw.replace(/^http:\/\//, 'https://')}/api/v1`;
   return raw.endsWith('/api/v1') ? raw : `${raw}/api/v1`;
+}
+
+function agentApiBase(version: 'v1' | 'v2' = 'v2') {
+  return apiBase().replace(/\/api\/v1$/, `/api/${version}`) + '/agent';
+}
+
+async function heartbeatAgentV2(
+  headers: Record<string, string>,
+  body: Record<string, unknown> = {},
+) {
+  return requestJson(`${agentApiBase('v2')}/heartbeat`, {
+    method: 'POST',
+    headers,
+    body: {
+      status: 'idle',
+      current_tasks: 0,
+      max_parallel_tasks: 1,
+      ...body,
+    },
+  });
+}
+
+function agentApiKeyHeaders(config: { authToken?: string }): Record<string, string> | null {
+  if (!config.authToken || !config.authToken.startsWith('ak_')) return null;
+  return { 'X-API-Key': config.authToken };
 }
 
 async function requestJson(url: string, init: { method?: string; headers?: Record<string, string>; body?: unknown; timeoutMs?: number } = {}) {
@@ -416,12 +549,39 @@ async function syncEvents() {
   const all = readJsonl(p.outbox) as Array<Record<string, unknown>>;
   const pending = all.filter(e => e.syncStatus !== 'synced').slice(0, 50);
   if (!pending.length) return { ok: true, uploaded: 0 };
-  const remote = await requestJson(`${apiBase()}/agent-events/batch`, { method: 'POST', headers: config.authToken ? { Authorization: `Bearer ${config.authToken}` } : {}, body: { clientId: config.clientId, deviceId: config.deviceId, events: pending.map(({ syncStatus, ...e }) => e) } });
+  const authH: Record<string, string> = {};
+  if (config.authToken) {
+    if (config.authToken.startsWith('ak_')) { authH['X-API-Key'] = config.authToken; } else { authH['Authorization'] = `Bearer ${config.authToken}`; }
+  }
+  const remote = await requestJson(`${apiBase()}/agent-events/batch`, { method: 'POST', headers: authH, body: { clientId: config.clientId, deviceId: config.deviceId, events: pending.map(({ syncStatus, ...e }) => e) } });
   if (remote.status < 200 || remote.status >= 300) return { ok: false, uploaded: 0, status: remote.status };
   const pendingIds = new Set(pending.map(e => e.eventId));
   const updated = all.map(e => pendingIds.has(e.eventId) ? { ...e, syncStatus: 'synced', syncedAt: nowIso() } : e);
   writeFileSync(p.outbox, updated.map(e => JSON.stringify(e)).join('\n') + '\n', 'utf-8');
-  if ((remote.data as Record<string, unknown>)?.advice) writeAdvice((remote.data as Record<string, unknown>).advice as Record<string, unknown>);
+  const respData = remote.data as Record<string, unknown>;
+  if (respData?.advice) writeAdvice(respData.advice as Record<string, unknown>);
+  // 展示同步反馈：匹配结果和悬赏草稿
+  if (respData) {
+    const accepted = respData.accepted as number || 0;
+    const advice = respData.advice as Record<string, unknown> | undefined;
+    const drafts = respData.bountyDrafts as Array<Record<string, unknown>> | undefined;
+    if (accepted > 0) {
+      const parts = [`[AICOEVO] 已上传 ${accepted} 条事件`];
+      if (advice) {
+        const conf = typeof advice.confidence === 'number' ? advice.confidence : 0;
+        if (conf >= 0.6) {
+          parts.push(`匹配到已有方案 (置信度 ${Math.round(conf * 100)}%)`);
+        } else if (advice.summary) {
+          parts.push(String(advice.summary).split('\n')[0]);
+        }
+      }
+      if (drafts && drafts.length > 0) {
+        const d = drafts[0];
+        parts.push(`已创建悬赏草稿: ${d.title || d.id}`);
+      }
+      process.stderr.write(parts.join(' | ') + '\n');
+    }
+  }
   return { ok: true, uploaded: pending.length };
 }
 
@@ -435,6 +595,87 @@ function writeAdvice(advice: Record<string, unknown>) {
   if (norm.links.length) { lines.push('## 参考链接', ''); norm.links.forEach((l: Record<string, unknown>) => lines.push(`- [${l.title}](${l.url})`)); lines.push(''); }
   ensureDir(join(p.adviceMd, '..'));
   writeFileSync(p.adviceMd, lines.join('\n') + '\n', 'utf-8');
+}
+
+function ownerVerifyFiles(bountyId: string, answerId: string) {
+  const p = paths();
+  const slug = [bountyId || 'unknown', answerId || 'unknown']
+    .map(value => String(value || '').replace(/[^a-zA-Z0-9_-]+/g, '-'))
+    .join('__');
+  const dir = join(p.base, 'owner-verify');
+  return {
+    dir,
+    guideMd: join(dir, `${slug}.md`),
+    snapshotJson: join(dir, `${slug}.json`),
+  };
+}
+
+function ownerVerifyLocalContext(config: Record<string, unknown>) {
+  return {
+    clientId: String(config.clientId || ''),
+    deviceId: String(config.deviceId || ''),
+    autoSync: config.autoSync !== false,
+    paused: Boolean(config.paused),
+    shareData: config.shareData !== false,
+    host: hostname(),
+    platform: process.platform,
+    nodeVersion: process.version,
+  };
+}
+
+function writeOwnerVerifyGuide(item: Record<string, string>, config: Record<string, unknown>) {
+  const files = ownerVerifyFiles(String(item.bounty_id || ''), String(item.answer_id || ''));
+  const generatedAt = nowIso();
+  const localContext = ownerVerifyLocalContext(config);
+  const verifyCommand = `mac-aicheck agent owner-verify ${item.bounty_id} --answer ${item.answer_id} --result success|partial|failed --cmd "<local validation command>"`;
+  const lines = [
+    '# AICOEVO 发起者复现指南',
+    '',
+    `- Bounty: ${item.bounty_id}`,
+    `- Answer: ${item.answer_id}`,
+    `- 标题: ${item.title || '(无标题)'}`,
+    `- 提交时间: ${item.submitted_at || '-'}`,
+    `- 截止时间: ${item.deadline_at || '-'}`,
+    '',
+    '## 方案摘要',
+    '',
+    item.solution_summary || '暂无方案摘要。',
+    '',
+    '## 建议操作',
+    '',
+    '1. 在你自己的本地环境里手动复现原问题。',
+    '2. 按方案摘要执行修复或验证命令，确认现象是否消失。',
+    '3. 记录你实际执行过的命令和结果，再提交 owner-verify。',
+    '',
+    '## 提交命令',
+    '',
+    `\`${verifyCommand}\``,
+    '',
+    '默认策略为 prompt：命令会再次要求你确认，不会静默替你提交。',
+    '',
+  ];
+  ensureDir(files.dir);
+  writeFileSync(files.guideMd, lines.join('\n') + '\n', 'utf-8');
+  const snapshot = {
+    schemaVersion: 1,
+    generatedAt,
+    item,
+    localContext,
+    verifyCommand,
+  };
+  writeJson(files.snapshotJson, snapshot);
+  return {
+    ...files,
+    guideSha256: sha256(readFileSync(files.guideMd, 'utf-8')),
+    snapshot,
+  };
+}
+
+function loadOwnerVerifySnapshot(bountyId: string, answerId: string) {
+  const files = ownerVerifyFiles(bountyId, answerId);
+  const snapshot = readJson<Record<string, unknown> | null>(files.snapshotJson, null);
+  const guideSha256 = existsSync(files.guideMd) ? sha256(readFileSync(files.guideMd, 'utf-8')) : '';
+  return { ...files, guideSha256, snapshot };
 }
 
 function resolveCommand(cmd: string) { try { return execFileSync('command', ['-v', cmd], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean)[0] || cmd; } catch { return cmd; } }
@@ -465,6 +706,26 @@ function stripHookBlock(text: string) {
   let r = text;
   while (true) { const s = r.indexOf(HOOK_START), e = r.indexOf(HOOK_END); if (s === -1 || e === -1 || e < s) break; r = `${r.slice(0, s).trimEnd()}\n${r.slice(e + HOOK_END.length).trimStart()}`; }
   return r.trim() + '\n';
+}
+
+function targetIncludesClaude(target: string) {
+  return !target || target === 'all' || target === 'claude-code' || target === 'claude';
+}
+
+function targetIncludesOpenClaw(target: string) {
+  return !target || target === 'all' || target === 'openclaw' || target === 'open-claw';
+}
+
+function resolveProjectRootForHooks() {
+  const execPath = process.argv[1] || __filename;
+  const candidates = [
+    execPath.includes('/dist/') ? execPath.replace(/\/dist\/.*$/, '') : execPath.replace(/\/src\/.*$/, ''),
+    process.cwd(),
+  ];
+  for (const candidate of candidates) {
+    if (candidate && existsSync(join(candidate, 'hooks-src', 'session-start-hook.js'))) return candidate;
+  }
+  return process.cwd();
 }
 
 function installHook(args: Record<string, unknown>) {
@@ -507,11 +768,8 @@ function installSettingsHook(): { hookType: 'settings'; hooks: string[] } {
   const hooksDir = join(getHome(), '.claude', 'hooks');
   ensureDir(hooksDir);
 
-  // Resolve hook source files from hooks-src/ directory
-  const execPath = process.argv[1] || __filename;
-  const projectRoot = execPath.includes('/dist/')
-    ? execPath.replace(/\/dist\/.*$/, '')  // e.g. /path/to/mac-aicheck
-    : execPath.replace(/\/src\/.*$/, ''); // same
+  // Resolve hook source files from hooks-src/ directory.
+  const projectRoot = resolveProjectRootForHooks();
 
   const sessionHookSrc = join(projectRoot, 'hooks-src', 'session-start-hook.js');
   const postToolHookSrc = join(projectRoot, 'hooks-src', 'post-tool-hook.js');
@@ -723,29 +981,125 @@ async function runOriginalAgent(args: Record<string, unknown>) {
         process.stderr.write(`   可尝试: ${exp.commands.join(' | ')}\n`);
       }
     }
-    const config = loadConfig(); if (config.autoSync && config.shareData && !config.paused) { try { await syncEvents(); } catch {} }
+    const config = loadConfig(); if (config.autoSync && config.shareData && !config.paused) { try { await syncEvents(); } catch (e) { process.stderr.write(`[警告] 自动同步失败: ${e instanceof Error ? e.message : String(e)}`); } }
     process.stderr.write(`\nmac-aicheck: 已记录 Agent 问题 ${event.eventId}\n`);
   }
   return exitCode;
 }
 
-async function main(argv: string[]) {
+async function runWorkerDaemon(args: Record<string, unknown>): Promise<number> {
+  if (!acquireWorkerLock()) {
+    process.stdout.write('Worker 已在运行中，跳过重复启动\n');
+    return 1;
+  }
+  const cfg = loadConfig();
+  const apiKey = agentApiKeyHeaders(cfg);
+  if (!apiKey) { releaseWorkerLock(); process.stdout.write('Worker 需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+  const rawInterval = Number(args.workerInterval || args.interval || WORKER_DEFAULT_INTERVAL_MS);
+  const interval = (isNaN(rawInterval) || rawInterval <= 0) ? WORKER_DEFAULT_INTERVAL_MS : rawInterval;
+  const maxPerCycle = Number(args.maxParallelTasks || args.limit || WORKER_MAX_PARALLEL);
+  const headers = { ...apiKey, 'Content-Type': 'application/json' };
+
+  const state = loadWorkerState();
+  state.enabled = true;
+  state.status = 'running';
+  state.pid = process.pid;
+  state.startedAt = state.startedAt || nowIso();
+  saveWorkerState(state);
+  process.stdout.write(`[Worker] 启动 (间隔 ${Math.round(interval / 1000)}s, 每轮最多 ${maxPerCycle})\n`);
+
+  try {
+    while (true) {
+      const currentCfg = loadConfig();
+      const currentState = loadWorkerState();
+      if (!currentCfg.workerEnabled || currentState.enabled === false) { process.stdout.write('[Worker] 已禁用，退出\n'); break; }
+      if (currentCfg.paused) {
+        process.stdout.write('[Worker] 已暂停，等待恢复...\n');
+        await new Promise(r => setTimeout(r, Math.min(interval, 10 * 1000)));
+        continue;
+      }
+      try {
+        const heartbeat = await heartbeatAgentV2(headers, { max_parallel_tasks: maxPerCycle, worker_status: 'active' });
+        const recData = heartbeat.data as { recommended_bounties?: Array<{ id: string; recommended_env_id?: string }> };
+        const items = (recData.recommended_bounties || []).slice(0, maxPerCycle);
+        let solved = 0, skipped = 0;
+        if (items.length > 0) {
+          process.stdout.write(`[Worker] 发现 ${items.length} 个推荐任务\n`);
+          for (const item of items) {
+            if (!/^[a-zA-Z0-9_-]+$/.test(item.id)) { skipped++; continue; }
+            const solveResult = await requestJson(`${agentApiBase('v1')}/bounties/${item.id}/auto-solve`, { method: 'POST', headers });
+            const solveData = solveResult.data as { matched?: boolean; answer?: string; confidence?: number; _raw?: string };
+            if ((solveData as Record<string, unknown>)._raw) { process.stdout.write(`[Worker] auto-solve 返回非 JSON 响应，跳过 ${item.id}\n`); skipped++; continue; }
+            if (!solveData.matched) { skipped++; continue; }
+            if (!solveData.answer || typeof solveData.answer !== 'string') { skipped++; continue; }
+            const submitResult = await requestJson(`${agentApiBase('v2')}/bounties/${item.id}/claim-and-submit`, {
+              method: 'POST', headers, body: { ...(item.recommended_env_id ? { env_id: item.recommended_env_id } : {}), content: solveData.answer, source: 'kb_auto', confidence: solveData.confidence || 0.8, execution_mode: 'agent' },
+            });
+            if (submitResult.status >= 200 && submitResult.status < 300) solved++;
+          }
+        }
+        const updated = loadWorkerState();
+        updated.lastCycleAt = nowIso();
+        updated.lastCycleResult = { solved, skipped, total: items.length };
+        updated.totalCycles = (updated.totalCycles || 0) + 1;
+        updated.totalSolved = (updated.totalSolved || 0) + solved;
+        updated.totalSkipped = (updated.totalSkipped || 0) + skipped;
+        updated.consecutiveErrors = 0;
+        updated.lastError = null;
+        updated.nextCycleAt = new Date(Date.now() + interval).toISOString();
+        saveWorkerState(updated);
+      } catch (e: unknown) {
+        const failed = loadWorkerState();
+        failed.consecutiveErrors = (failed.consecutiveErrors || 0) + 1;
+        failed.totalCycles = (failed.totalCycles || 0) + 1;
+        failed.lastError = e instanceof Error ? e.message : String(e);
+        const backoff = Math.min(interval * Math.pow(2, failed.consecutiveErrors - 1), 60 * 60 * 1000);
+        failed.nextCycleAt = new Date(Date.now() + backoff).toISOString();
+        saveWorkerState(failed);
+        process.stdout.write(`[Worker] 循环错误: ${failed.lastError}\n`);
+      }
+      const st = loadWorkerState();
+      const sleepMs = st.consecutiveErrors > 0
+        ? Math.min(interval * Math.pow(2, st.consecutiveErrors - 1), 60 * 60 * 1000)
+        : interval;
+      await new Promise(r => setTimeout(r, sleepMs));
+    }
+  } finally {
+    const finalState = loadWorkerState();
+    finalState.status = 'stopped';
+    finalState.pid = null;
+    finalState.nextCycleAt = null;
+    saveWorkerState(finalState);
+    releaseWorkerLock();
+  }
+  return 0;
+}
+
+export async function main(argv: string[]) {
   const [command, ...rest] = [argv[0], ...argv.slice(1)];
   const args = parseArgs(argv.slice(1));
   if (!command || command === '--help') {
     process.stdout.write(`mac-aicheck Agent Lite
 
 用法:
-  mac-aicheck agent enable --target claude-code|all  一键启用监控（新方式，推荐）
+  mac-aicheck agent enable --target claude-code|openclaw|all  一键启用监控（新方式，推荐）
   mac-aicheck agent migrate                迁移到 SessionStart Hook（新方式，推荐）
-  mac-aicheck agent install-hook --target claude-code|all
+  mac-aicheck agent install-hook --target claude-code|openclaw|all
   mac-aicheck agent uninstall-hook --target all
   mac-aicheck agent capture --agent <name> --message <text>
   mac-aicheck agent sync
   mac-aicheck agent pause|resume
+  mac-aicheck agent disable                       — 彻底禁用 Worker 互助循环
+  mac-aicheck agent worker-enable                 — 重新启用 Worker 互助循环
+  mac-aicheck agent worker start|stop|status      — Worker 后台循环控制
   mac-aicheck agent advice --format json|markdown
   mac-aicheck agent diagnose          分析失败模式，类比 Evolver 信号诊断
-  mac-aicheck agent bind [--agent claude-code]  绑定设备（自动打开浏览器确认）
+  mac-aicheck agent bind [--agent claude-code|openclaw]  绑定设备（自动打开浏览器确认）
+  mac-aicheck agent review-list
+  mac-aicheck agent review-submit <lease_id> --result success|partial|failed
+  mac-aicheck agent owner-check                            查看待复现确认的方案列表
+  mac-aicheck agent owner-verify <bounty_id> --answer <id> --result success|partial|failed
+                                                           提交复现验证结果
   mac-aicheck agent install-local-agent
   mac-aicheck agent upgrade            一键更新 claude-code / openclaw 到最新版本
   mac-aicheck agent upgrade self       更新 mac-aicheck 自身到最新版本
@@ -757,27 +1111,115 @@ async function main(argv: string[]) {
     const msg = String(args.message || '');
     if (!msg.trim()) throw new Error('没有可记录的错误内容');
     const event = storeEvent(createEvent({ agent: String(args.agent), message: msg, severity: args.severity as string }));
-    const cfg = loadConfig(); if (cfg.autoSync && cfg.shareData && !cfg.paused) { try { await syncEvents(); } catch {} }
+    const cfg = loadConfig(); if (cfg.autoSync && cfg.shareData && !cfg.paused) { try { await syncEvents(); } catch (e) { process.stderr.write(`[警告] 自动同步失败: ${e instanceof Error ? e.message : String(e)}`); } }
     process.stdout.write(JSON.stringify({ ok: true, eventId: event.eventId, fingerprint: event.fingerprint }) + '\n');
     return 0;
   }
   if (command === 'sync') { const result = await syncEvents(); process.stdout.write(JSON.stringify(result) + '\n'); return result.ok || result.skipped ? 0 : 1; }
-  if (command === 'pause' || command === 'resume') { const cfg = loadConfig(); cfg.paused = command === 'pause'; saveConfig(cfg); process.stdout.write(command === 'pause' ? '已暂停自动上传。\n' : '已恢复自动上传。\n'); return 0; }
+  if (command === 'pause' || command === 'resume') { const cfg = loadConfig(); cfg.paused = command === 'pause'; saveConfig(cfg); process.stdout.write(command === 'pause' ? '已暂停自动上传和 Worker 互助循环。\n' : '已恢复自动上传和 Worker 互助循环。\n'); return 0; }
+
+  if (command === 'disable') {
+    const cfg = loadConfig();
+    cfg.workerEnabled = false;
+    saveConfig(cfg);
+    const wState = loadWorkerState();
+    if (wState.pid) { try { process.kill(wState.pid); } catch {} }
+    wState.enabled = false;
+    wState.status = 'stopped';
+    wState.pid = null;
+    wState.nextCycleAt = null;
+    saveWorkerState(wState);
+    releaseWorkerLock();
+    process.stdout.write('已彻底禁用 Worker 互助循环。使用 worker-enable 可重新开启。\n');
+    return 0;
+  }
+
+  if (command === 'worker-enable') {
+    const cfg = loadConfig();
+    cfg.workerEnabled = true;
+    saveConfig(cfg);
+    process.stdout.write('Worker 互助循环已重新启用。运行 worker start 启动后台循环。\n');
+    return 0;
+  }
   if (command === 'install-hook') { const r = installHook(args); process.stdout.write(`已安装 Hook: ${r.agents.map((a: { target: string }) => a.target).join(', ')}\n`); return 0; }
   if (command === 'install-local-agent') { const r = installLocalAgent(); process.stdout.write(JSON.stringify({ ok: true, ...r }) + '\n'); return 0; }
   if (command === 'enable') {
-    // 一键安装：runner + SessionStart hook + 启用同步（新方式）
+    // 一键安装：runner + 针对目标 Agent 的 hook + 启用同步
+    const target = String(args.target || 'all');
     const r = installLocalAgent();
-    const hookResult = installSettingsHook();
+    const hookOutputs: string[] = [];
+    if (targetIncludesClaude(target)) {
+      const settingsHook = installSettingsHook();
+      hookOutputs.push(...settingsHook.hooks.map(h => `Claude Code settings: ${h}`));
+    }
+    if (targetIncludesOpenClaw(target)) {
+      const shellHook = installHook({ target: 'openclaw' });
+      hookOutputs.push(`OpenClaw shell: ${shellHook.agents.map((a: { target: string }) => a.target).join(', ')}`);
+    }
     const cfg = loadConfig();
     cfg.shareData = true;
     cfg.autoSync = true;
     cfg.paused = false;
+    if (cfg.workerEnabled === undefined) cfg.workerEnabled = true;
     saveConfig(cfg);
-    process.stdout.write(`mac-aicheck Agent Lite 已启用 (SessionStart Hook 方式)\n`);
+    process.stdout.write(`mac-aicheck Agent Lite 已启用\n`);
     process.stdout.write(`  Agent Runner: ${r.agentJs}\n`);
-    process.stdout.write(`  Hook: ${hookResult.hooks.join(', ')}\n`);
+    if (hookOutputs.length > 0) process.stdout.write(`  Hook: ${hookOutputs.join('; ')}\n`);
     process.stdout.write(`  自动同步: 已启用\n`);
+    if (cfg.workerEnabled) {
+      try {
+        const workerStart = startWorkerDaemon();
+        if (workerStart.started) {
+          process.stdout.write(`  Worker 互助循环: 已启动 (pid ${workerStart.pid})\n`);
+        } else if (workerStart.alreadyRunning) {
+          process.stdout.write(`  Worker 互助循环: 已运行中\n`);
+        } else if (workerStart.reason === 'missing auth token') {
+          process.stdout.write(`  Worker 互助循环: 等待绑定完成后自动启动\n`);
+        } else {
+          process.stdout.write(`  Worker 互助循环: 已禁用\n`);
+        }
+      } catch (e: unknown) {
+        process.stdout.write(`  Worker 互助循环: 启动失败 (${(e as Error).message})\n`);
+      }
+    } else {
+      process.stdout.write(`  Worker 互助循环: 已禁用\n`);
+    }
+
+    // Auto-detect installed agents and bind (#30)
+    if (!cfg.authToken) {
+      const agents: Array<{ name: string; cmd: string; agentType: string }> = [];
+      for (const { name, cmd, agentType } of [{ name: 'Claude Code', cmd: 'claude', agentType: 'claude-code' }, { name: 'OpenClaw', cmd: 'openclaw', agentType: 'openclaw' }]) {
+        if ((agentType === 'claude-code' && !targetIncludesClaude(target)) || (agentType === 'openclaw' && !targetIncludesOpenClaw(target))) continue;
+        try {
+          execFileSync('command', ['-v', cmd], { encoding: 'utf-8', timeout: 3000, stdio: 'pipe' });
+          agents.push({ name, cmd, agentType });
+        } catch { /* not installed */ }
+      }
+      if (agents.length > 0) {
+        process.stdout.write(`\n检测到 ${agents.map(a => a.name).join(', ')}\n`);
+        for (const agent of agents) {
+          try {
+            const deviceInfo = `${hostname()}/${process.platform}`;
+            const reqResult = await requestJson(
+              `${apiBase()}/bind/request?agent_type=${encodeURIComponent(agent.agentType)}&device_info=${encodeURIComponent(deviceInfo)}&device_id=${encodeURIComponent(cfg.deviceId)}`,
+              { method: 'POST', timeoutMs: 15000 },
+            );
+            if (reqResult.status === 200) {
+              const { confirm_url } = reqResult.data as Record<string, unknown>;
+              process.stdout.write(`  ${agent.name}: 请在浏览器确认绑定 ${confirm_url}\n`);
+              // Try opening browser
+              try {
+                const openCmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
+                execFileSync(openCmd, [confirm_url as string], { timeout: 5000 });
+              } catch { /* manual */ }
+            }
+          } catch {
+            process.stdout.write(`  ${agent.name}: 绑定请求失败（跳过，可稍后手动绑定）\n`);
+          }
+        }
+      }
+    }
+
     process.stdout.write(`\n请重启终端或运行: source ~/.zshrc\n`);
     return 0;
   }
@@ -879,6 +1321,14 @@ async function main(argv: string[]) {
       saveConfig(config);
 
       process.stdout.write('\n绑定成功!\n  自动同步: 已启用\n\n');
+      if (config.workerEnabled) {
+        try {
+          const workerStart = startWorkerDaemon();
+          if (workerStart.started) process.stdout.write(`  Worker 互助循环: 已启动 (pid ${workerStart.pid})\n\n`);
+        } catch (e: unknown) {
+          process.stdout.write(`  Worker 互助循环: 启动失败 (${(e as Error).message})\n\n`);
+        }
+      }
       return 0;
     }
 
@@ -890,7 +1340,7 @@ async function main(argv: string[]) {
 
     // Step 1: 创建绑定请求
     const reqResult = await requestJson(
-      `${apiBase()}/bind/request?agent_type=${encodeURIComponent(agentName)}&device_info=${encodeURIComponent(deviceInfo)}`,
+      `${apiBase()}/bind/request?agent_type=${encodeURIComponent(agentName)}&device_info=${encodeURIComponent(deviceInfo)}&device_id=${encodeURIComponent(config.deviceId)}`,
       { method: 'POST' },
     );
 
@@ -941,6 +1391,14 @@ async function main(argv: string[]) {
         saveConfig(config);
 
         process.stdout.write('绑定成功!\n  自动同步: 已启用\n\n');
+        if (config.workerEnabled) {
+          try {
+            const workerStart = startWorkerDaemon();
+            if (workerStart.started) process.stdout.write(`  Worker 互助循环: 已启动 (pid ${workerStart.pid})\n\n`);
+          } catch (e: unknown) {
+            process.stdout.write(`  Worker 互助循环: 启动失败 (${(e as Error).message})\n\n`);
+          }
+        }
         process.stdout.write('现在 Claude Code 中的错误会自动记录并同步到 aicoevo.net。\n');
         return 0;
       }
@@ -1015,7 +1473,441 @@ async function main(argv: string[]) {
     }
     return result.ok ? 0 : 1;
   }
+
+  // ── Bounty commands: list, recommended ──
+  if (command === 'bounty-list') {
+    const cfg = loadConfig();
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('悬赏命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+    const page = String(args.page || '1');
+    const pageSize = String(args.limit || '10');
+    const sortBy = String(args.sort || 'reward');
+    try {
+      const result = await requestJson(`${agentApiBase('v1')}/bounties?page=${page}&page_size=${pageSize}&sort_by=${sortBy}`, {
+        headers,
+      });
+      process.stdout.write(JSON.stringify(result.data, null, 2) + '\n');
+    } catch (e: unknown) { process.stdout.write(`获取悬赏列表失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  // ── Worker commands ──
+  if (command === 'worker') {
+    const [subcommand] = rest;
+    if (subcommand === 'status') {
+      const cfg = loadConfig();
+      const wState = loadWorkerState();
+      process.stdout.write(JSON.stringify({ ok: true, workerEnabled: cfg.workerEnabled, paused: cfg.paused, worker: wState }, null, 2) + '\n');
+      return 0;
+    }
+    if (subcommand === 'start') {
+      const cfg = loadConfig();
+      if (!cfg.workerEnabled) { process.stdout.write('Worker 已被禁用。使用 worker-enable 重新启用。\n'); return 1; }
+      try {
+        const result = startWorkerDaemon();
+        if (result.alreadyRunning) {
+          process.stdout.write(JSON.stringify({ ok: true, alreadyRunning: true, worker: loadWorkerState() }, null, 2) + '\n');
+          return 0;
+        }
+        if (result.started) {
+          process.stdout.write(JSON.stringify({ ok: true, started: true, pid: result.pid, worker: loadWorkerState() }, null, 2) + '\n');
+          return 0;
+        }
+        process.stdout.write(JSON.stringify({ ok: false, reason: result.reason, worker: loadWorkerState() }, null, 2) + '\n');
+        return 1;
+      } catch (e: unknown) {
+        process.stdout.write(`Worker 启动失败: ${(e as Error).message}\n`);
+        return 1;
+      }
+    }
+    if (subcommand === 'stop') {
+      const wState = loadWorkerState();
+      wState.enabled = false;
+      if (wState.pid) { try { process.kill(wState.pid); } catch {} }
+      wState.status = 'stopped';
+      wState.pid = null;
+      wState.nextCycleAt = null;
+      saveWorkerState(wState);
+      releaseWorkerLock();
+      process.stdout.write(JSON.stringify({ ok: true, stopped: true, worker: loadWorkerState() }, null, 2) + '\n');
+      return 0;
+    }
+    if (subcommand === 'daemon') {
+      return runWorkerDaemon(args);
+    }
+    process.stdout.write('用法: mac-aicheck agent worker start|stop|status|daemon\n');
+    return 1;
+  }
+
+  if (command === 'bounty-recommended') {
+    const cfg = loadConfig();
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('悬赏命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+    const strategy = String(args.strategy || 'balanced');
+    const limit = String(args.limit || '10');
+    try {
+      const result = await heartbeatAgentV2(headers, { max_parallel_tasks: Number(args.maxParallelTasks || 1) });
+      const data = result.data as { recommended_bounties?: unknown[] };
+      process.stdout.write(JSON.stringify({
+        items: (data.recommended_bounties || []).slice(0, Number(limit)),
+        total: Array.isArray(data.recommended_bounties) ? data.recommended_bounties.length : 0,
+        strategy,
+      }, null, 2) + '\n');
+    } catch (e: unknown) { process.stdout.write(`获取推荐悬赏失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  // ── Bounty: solve (KB 匹配获取答案) ──
+  if (command === 'bounty-solve') {
+    const cfg = loadConfig();
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('悬赏命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+    const id = (args._ as string[])[0];
+    if (!id) { process.stdout.write('用法: mac-aicheck agent bounty-solve <id>\n'); return 1; }
+    try {
+      const result = await requestJson(`${agentApiBase('v1')}/bounties/${id}/auto-solve`, {
+        method: 'POST',
+        headers,
+      });
+      if (result.status >= 400) { process.stdout.write(`KB 匹配失败: ${JSON.stringify(result.data)}\n`); return 1; }
+      process.stdout.write(JSON.stringify(result.data, null, 2) + '\n');
+    } catch (e: unknown) { process.stdout.write(`KB 匹配失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  // ── Bounty: claim (认领悬赏) ──
+  if (command === 'bounty-claim') {
+    const cfg = loadConfig();
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('悬赏命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+    const id = (args._ as string[])[0];
+    if (!id) { process.stdout.write('用法: mac-aicheck agent bounty-claim <id>\n'); return 1; }
+    const envId = String(args.env || '').trim();
+    try {
+      const heartbeat = await heartbeatAgentV2(headers, {
+        available_env_ids: envId ? [envId] : [],
+      });
+      if (heartbeat.status >= 400) { process.stdout.write(`心跳失败: ${JSON.stringify(heartbeat.data)}\n`); return 1; }
+      const result = await requestJson(`${agentApiBase('v2')}/bounties/${id}/claim`, {
+        method: 'POST',
+        headers,
+        body: envId ? { env_id: envId } : {},
+      });
+      if (result.status >= 400) { process.stdout.write(`认领失败: ${JSON.stringify(result.data)}\n`); return 1; }
+      const d = result.data as Record<string, unknown>;
+      process.stdout.write(`✓ 认领成功 ${d.bounty_id} (lease ${d.lease_id})\n`);
+      if (d.claimed_until) process.stdout.write(`  截止: ${d.claimed_until}\n`);
+      if (d.slot_limit) process.stdout.write(`  并行槽位: ${d.slot_limit}\n`);
+    } catch (e: unknown) { process.stdout.write(`认领失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  // ── Bounty: submit (提交回答) ──
+  if (command === 'bounty-submit') {
+    const cfg = loadConfig();
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('悬赏命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+    const id = (args._ as string[])[0];
+    const content = String(args.content || '');
+    if (!id || !content) { process.stdout.write('用法: mac-aicheck agent bounty-submit <id> --content <text>\n'); return 1; }
+    try {
+      const result = await requestJson(`${agentApiBase('v2')}/bounties/${id}/submit`, {
+        method: 'POST',
+        headers,
+        body: {
+          content,
+          source: String(args.source || 'manual'),
+          confidence: Number(args.confidence || 0),
+          execution_mode: String(args.executionMode || 'agent'),
+        },
+      });
+      if (result.status >= 400) { process.stdout.write(`提交失败: ${JSON.stringify(result.data)}\n`); return 1; }
+      const d = result.data as Record<string, unknown>;
+      process.stdout.write(`✓ 回答已提交 ${d.id}\n`);
+    } catch (e: unknown) { process.stdout.write(`提交失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  // ── Bounty: release (释放认领) ──
+  if (command === 'bounty-release') {
+    const cfg = loadConfig();
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('悬赏命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+    const id = (args._ as string[])[0];
+    if (!id) { process.stdout.write('用法: mac-aicheck agent bounty-release <id>\n'); return 1; }
+    try {
+      const result = await requestJson(`${agentApiBase('v2')}/bounties/${id}/claim`, {
+        method: 'DELETE',
+        headers,
+      });
+      if (result.status >= 400) { process.stdout.write(`释放失败: ${JSON.stringify(result.data)}\n`); return 1; }
+      const d = result.data as Record<string, unknown>;
+      process.stdout.write(`✓ 认领已释放 ${d.bounty_id}\n`);
+    } catch (e: unknown) { process.stdout.write(`释放失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  // ── Bounty: auto (自动循环: 推荐 → KB匹配 → claim+submit) ──
+  if (command === 'bounty-auto') {
+    const cfg = loadConfig();
+    const apiKeyHeaders = agentApiKeyHeaders(cfg);
+    if (!apiKeyHeaders) { process.stdout.write('悬赏命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+    const interval = parseInt(String(args.interval || '300'), 10);
+    const maxPerCycle = parseInt(String(args.limit || '3'), 10);
+    const strategy = String(args.strategy || 'balanced');
+    const hdr = apiKeyHeaders;
+
+    process.stdout.write(`bounty-auto 启动 (间隔 ${interval}s, 每轮最多 ${maxPerCycle})\n`);
+
+    let cycle = 0;
+    while (true) {
+      cycle++;
+      try {
+        // 1. 心跳
+        const recResult = await heartbeatAgentV2(hdr, { max_parallel_tasks: maxPerCycle });
+        const recData = recResult.data as { recommended_bounties?: Array<Record<string, unknown> & { recommended_env_id?: string }> };
+        const items = (recData.recommended_bounties || []).slice(0, maxPerCycle);
+
+        if (items.length === 0) {
+          process.stdout.write(`[${cycle}] 无推荐悬赏\n`);
+        } else {
+          process.stdout.write(`[${cycle}] 发现 ${items.length} 个推荐悬赏\n`);
+          let solved = 0;
+
+          for (const item of items) {
+            // 3. KB 匹配
+            const solveResult = await requestJson(`${agentApiBase('v1')}/bounties/${item.id}/auto-solve`, {
+              method: 'POST', headers: hdr,
+            });
+            const solveData = solveResult.data as { matched?: boolean; answer?: string; confidence?: number; reason?: string };
+
+            if (!solveData.matched) {
+              process.stdout.write(`  [${item.id}] KB 无匹配，跳过 (${solveData.reason || ''})\n`);
+              continue;
+            }
+
+            // 4. Delayed claim + submit
+            const submitResult = await requestJson(`${agentApiBase('v2')}/bounties/${item.id}/claim-and-submit`, {
+              method: 'POST',
+              headers: hdr,
+              body: {
+                ...(item.recommended_env_id ? { env_id: item.recommended_env_id } : {}),
+                content: solveData.answer,
+                source: 'kb_auto',
+                confidence: solveData.confidence || 0.8,
+                execution_mode: 'agent',
+              },
+            });
+
+            if (submitResult.status < 400) {
+              const submitData = submitResult.data as { id?: string };
+              process.stdout.write(`  ✓ [${item.id}] 已提交 KB 匹配回答 (${submitData.id})\n`);
+              solved++;
+            } else {
+              process.stdout.write(`  ✗ [${item.id}] 提交失败: ${JSON.stringify(submitResult.data)}\n`);
+            }
+          }
+
+          process.stdout.write(`[${cycle}] 本轮解决 ${solved}/${items.length}\n`);
+        }
+      } catch (e: unknown) {
+        process.stdout.write(`[${cycle}] 循环错误: ${(e as Error).message}\n`);
+      }
+
+      process.stdout.write(`等待 ${interval}s...\n`);
+      await new Promise(r => setTimeout(r, interval * 1000));
+    }
+  }
+
+  if (command === 'review-list') {
+    const cfg = loadConfig();
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('评审命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+    try {
+      const result = await requestJson(`${agentApiBase('v2')}/reviews/recommended`, {
+        headers,
+      });
+      process.stdout.write(JSON.stringify(result.data, null, 2) + '\n');
+    } catch (e: unknown) { process.stdout.write(`获取评审任务失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  if (command === 'review-submit') {
+    const cfg = loadConfig();
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('评审命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+    const leaseId = (args._ as string[])[0];
+    const resultValue = String(args.result || '');
+    if (!leaseId || !/^(success|partial|failed)$/.test(resultValue)) {
+      process.stdout.write('用法: mac-aicheck agent review-submit <lease_id> --result success|partial|failed\n');
+      return 1;
+    }
+    try {
+      const result = await requestJson(`${agentApiBase('v2')}/reviews/${leaseId}/submit`, {
+        method: 'POST',
+        headers,
+        body: {
+          result: resultValue,
+          method: String(args.method || 'semantic'),
+          notes: String(args.notes || ''),
+          confidence: Number(args.confidence || 0),
+          review_score: Number(args.reviewScore || 0),
+          review_summary: String(args.summary || ''),
+          execution_mode: String(args.executionMode || 'agent'),
+        },
+      });
+      if (result.status >= 400) { process.stdout.write(`提交评审失败: ${JSON.stringify(result.data)}\n`); return 1; }
+      process.stdout.write(`✓ 评审已提交 ${leaseId}\n`);
+    } catch (e: unknown) { process.stdout.write(`提交评审失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  // ── TASK-100: 发起者复现循环 ──
+
+  if (command === 'owner-check') {
+    const cfg = loadConfig();
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+    try {
+      const result = await requestJson(`${agentApiBase('v2')}/status`, { headers });
+      if (result.status !== 200) { process.stdout.write(`获取状态失败: ${result.status}\n`); return 1; }
+      const pending = (result.data as Record<string, unknown>).pending_owner_verifications as Array<Record<string, string>> || [];
+      if (pending.length === 0) {
+        process.stdout.write('没有待复现确认的方案。\n');
+        return 0;
+      }
+      process.stdout.write(`待复现确认 (${pending.length}):\n\n`);
+      for (const item of pending) {
+        const guide = writeOwnerVerifyGuide(item, cfg);
+        process.stdout.write(`## ${item.title || '(无标题)'}\n`);
+        process.stdout.write(`  Bounty:   ${item.bounty_id}\n`);
+        process.stdout.write(`  Answer:   ${item.answer_id}\n`);
+        process.stdout.write(`  方案摘要: ${item.solution_summary}\n`);
+        process.stdout.write(`  提交时间: ${item.submitted_at}\n`);
+        process.stdout.write(`  截止时间: ${item.deadline_at}\n\n`);
+        process.stdout.write(`  指南:     ${guide.guideMd}\n`);
+        process.stdout.write(`  快照:     ${guide.snapshotJson}\n\n`);
+        process.stdout.write(`  → mac-aicheck agent owner-verify ${item.bounty_id} --answer ${item.answer_id} --result success|partial|failed\n\n`);
+      }
+    } catch (e: unknown) { process.stdout.write(`获取待复现列表失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  if (command === 'owner-verify') {
+    const cfg = loadConfig();
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+    const bountyId = (args._ as string[])[0];
+    const answerId = String(args.answer || '');
+    const resultValue = String(args.result || '');
+    if (!bountyId || !answerId || !/^(success|partial|failed)$/.test(resultValue)) {
+      process.stdout.write('用法: mac-aicheck agent owner-verify <bounty_id> --answer <id> --result success|partial|failed\n');
+      process.stdout.write('       [--notes <text>] [--cmd <cmd1,cmd2>]\n');
+      return 1;
+    }
+    const notes = String(args.notes || '');
+    const commandsRun = args.cmd ? String(args.cmd).split(',').map((s: string) => s.trim()).filter(Boolean) : [];
+    const fallbackItem = {
+      bounty_id: bountyId,
+      answer_id: answerId,
+      title: '待确认方案',
+      solution_summary: notes || '请在本地环境确认问题是否已消失。',
+      submitted_at: '',
+      deadline_at: '',
+    };
+    let guideRecord = loadOwnerVerifySnapshot(bountyId, answerId);
+    if (!guideRecord.snapshot) {
+      guideRecord = writeOwnerVerifyGuide(fallbackItem, cfg);
+    }
+
+    // prompt 策略: 默认必须提示用户确认
+    const skipPrompt = args.yes === true || args.yes === 'true';
+    if (!skipPrompt) {
+      process.stdout.write(`\n即将提交复现验证:\n`);
+      process.stdout.write(`  Bounty: ${bountyId}\n`);
+      process.stdout.write(`  Answer: ${answerId}\n`);
+      process.stdout.write(`  Result: ${resultValue}\n`);
+      process.stdout.write(`\n请确认您已在本地环境验证该方案。输入 yes 继续: `);
+      const readline = await import('readline');
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const confirm = await new Promise<string>(resolve => rl.question('', (ans: string) => { rl.close(); resolve(ans.trim().toLowerCase()); }));
+      if (confirm !== 'yes' && confirm !== 'y') {
+        process.stdout.write('已取消。\n');
+        return 0;
+      }
+    }
+
+    try {
+      const submittedAt = nowIso();
+      const afterContext = {
+        submitted_at: submittedAt,
+        confirmation_mode: skipPrompt ? 'flag_yes' : 'interactive_prompt',
+        result: resultValue,
+        notes,
+        commands_run: commandsRun,
+        local_context: ownerVerifyLocalContext(cfg),
+      };
+      const result = await requestJson(`${agentApiBase('v2')}/bounties/${bountyId}/owner-verify`, {
+        method: 'POST',
+        headers,
+        body: {
+          answer_id: answerId,
+          result: resultValue,
+          notes,
+          commands_run: commandsRun,
+          proof_payload: {
+            summary: `Owner verification for ${bountyId}/${answerId}`,
+            steps: [
+              `读取本地指南: ${guideRecord.guideMd}`,
+              commandsRun.length
+                ? `本地执行验证命令: ${commandsRun.join(' ; ')}`
+                : '按本地指南手动确认问题是否消失。',
+              `用户确认结果: ${resultValue}`,
+            ],
+            before_context: guideRecord.snapshot || {},
+            after_context: afterContext,
+            validation_cmd: commandsRun[0] || '',
+            expected_output:
+              resultValue === 'success'
+                ? '问题已消失或行为符合预期'
+                : resultValue === 'partial'
+                  ? '问题部分缓解，但仍有残留'
+                  : '问题仍然可复现',
+          },
+          artifacts: {
+            owner_reproduction_guide_path: guideRecord.guideMd,
+            owner_reproduction_snapshot_path: guideRecord.snapshotJson,
+            owner_reproduction_guide_sha256: guideRecord.guideSha256,
+            owner_reproduction_snapshot_generated_at: (guideRecord.snapshot as Record<string, unknown> | null)?.generatedAt || '',
+          },
+        },
+      });
+      if (result.status !== 200) {
+        process.stdout.write(`提交失败 (${result.status}): ${JSON.stringify(result.data)}\n`);
+        return 1;
+      }
+      const data = result.data as Record<string, unknown>;
+      process.stdout.write(`复现验证已提交:\n`);
+      process.stdout.write(`  状态: ${data.review_status || 'unknown'}\n`);
+      process.stdout.write(`  Owner 分数: ${data.owner_score ?? '-'}\n`);
+      process.stdout.write(`  社区分数: ${data.community_score ?? '-'}\n`);
+      process.stdout.write(`  总分: ${data.total_score ?? '-'} / ${data.threshold ?? 70}\n`);
+    } catch (e: unknown) { process.stdout.write(`提交复现验证失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
   throw new Error(`未知 agent 命令: ${command}`);
 }
 
-main(process.argv.slice(2)).then(code => { process.exitCode = typeof code === 'number' ? code : 0; }).catch(e => { console.error(`mac-aicheck Agent 错误: ${e.message}`); process.exitCode = 1; });
+export const _testHelpers = {
+  agentApiKeyHeaders,
+  agentApiBase,
+  loadConfig,
+  saveConfig,
+  loadWorkerState,
+  saveWorkerState,
+};
+
+if (require.main === module) {
+  main(process.argv.slice(2)).then(code => { process.exitCode = typeof code === 'number' ? code : 0; }).catch(e => { console.error(`mac-aicheck Agent 错误: ${e.message}`); process.exitCode = 1; });
+}
