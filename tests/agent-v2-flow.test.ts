@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { once } from 'node:events';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
+import { spawn } from 'node:child_process';
 import { main as agentMain, _testHelpers } from '../src/agent/index';
+
+function restoreEnv(name: 'HOME' | 'AICOEVO_BASE_URL' | 'AICOEVO_API_BASE', value: string | undefined) {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
 
 function createTempHome() {
   return mkdtempSync(path.join(tmpdir(), 'mac-aicheck-agent-'));
@@ -31,12 +38,14 @@ describe('agent v2 flow', () => {
   const homes: string[] = [];
   const originalHome = process.env.HOME;
   const originalBaseUrl = process.env.AICOEVO_BASE_URL;
+  const originalApiBase = process.env.AICOEVO_API_BASE;
 
   afterEach(() => {
     vi.unstubAllGlobals();
     delete (globalThis as { __MAC_AICHECK_TEST_SPAWN__?: unknown }).__MAC_AICHECK_TEST_SPAWN__;
-    process.env.HOME = originalHome;
-    process.env.AICOEVO_BASE_URL = originalBaseUrl;
+    restoreEnv('HOME', originalHome);
+    restoreEnv('AICOEVO_BASE_URL', originalBaseUrl);
+    restoreEnv('AICOEVO_API_BASE', originalApiBase);
     for (const home of homes.splice(0)) {
       rmSync(home, { recursive: true, force: true });
     }
@@ -108,17 +117,34 @@ describe('agent v2 flow', () => {
     expect(calls[1]?.body).toBe('{}');
     expect(output).toContain('lease_1');
   });
+
+  it('blocks loopback, link-local and IPv6 private API bases', () => {
+    for (const blockedHost of [
+      'http://127.0.0.2',
+      'http://169.254.10.20',
+      'http://[::ffff:127.0.0.1]',
+      'http://[fe80::1]',
+      'metadata.google.internal',
+    ]) {
+      process.env.AICOEVO_API_BASE = blockedHost;
+      expect(_testHelpers.isBlockedHost(new URL(blockedHost.startsWith('http') ? blockedHost : `https://${blockedHost}`).hostname)).toBe(true);
+      expect(_testHelpers.apiBase()).toBe('https://aicoevo.net/api/v1');
+      expect(_testHelpers.agentApiBase('v2')).toBe('https://aicoevo.net/api/v2/agent');
+    }
+  });
 });
 
 describe('worker-on (TASK-091)', () => {
   const homes: string[] = [];
   const originalHome = process.env.HOME;
   const originalBaseUrl = process.env.AICOEVO_BASE_URL;
+  const originalApiBase = process.env.AICOEVO_API_BASE;
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    process.env.HOME = originalHome;
-    process.env.AICOEVO_BASE_URL = originalBaseUrl;
+    restoreEnv('HOME', originalHome);
+    restoreEnv('AICOEVO_BASE_URL', originalBaseUrl);
+    restoreEnv('AICOEVO_API_BASE', originalApiBase);
     for (const home of homes.splice(0)) {
       rmSync(home, { recursive: true, force: true });
     }
@@ -183,6 +209,23 @@ describe('worker-on (TASK-091)', () => {
     expect(code).toBe(0);
     expect(output).toContain('"workerEnabled": true');
     expect(output).toContain('"status": "stopped"');
+  });
+
+  it('worker lock rejects a live foreign pid and replaces stale locks', async () => {
+    const home = seedConfig();
+    const lockPath = path.join(home, '.mac-aicheck', 'worker.lock');
+    const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], { stdio: 'ignore' });
+
+    try {
+      writeFileSync(lockPath, JSON.stringify({ pid: holder.pid, startedAt: new Date().toISOString() }), 'utf8');
+      expect(_testHelpers.acquireWorkerLock()).toBe(false);
+    } finally {
+      holder.kill();
+      await once(holder, 'exit');
+    }
+
+    expect(_testHelpers.acquireWorkerLock()).toBe(true);
+    _testHelpers.releaseWorkerLock();
   });
 
   it('worker daemon performs heartbeat and processes recommended_bounties', async () => {

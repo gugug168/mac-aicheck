@@ -1,9 +1,10 @@
 // Agent Lite CLI - 简洁实现
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, appendFileSync, renameSync, unlinkSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, appendFileSync, renameSync, unlinkSync, openSync, closeSync } from 'fs';
 import { join } from 'path';
 import { homedir, hostname } from 'os';
 import { execFileSync, spawn } from 'child_process';
 import crypto from 'node:crypto';
+import { isIP } from 'node:net';
 
 const LOCAL_VERSION = process.env.npm_package_version || '1.0.0';
 
@@ -28,15 +29,7 @@ function readJson<T>(file: string, fallback: T): T { try { return existsSync(fil
 function writeJson(file: string, data: unknown, mode = 0o600) { ensureDir(join(file, '..')); writeFileSync(file, JSON.stringify(data, null, 2) + '\n', { encoding: 'utf-8', mode }); }
 function appendJsonl(file: string, data: unknown) {
   ensureDir(join(file, '..'));
-  const line = JSON.stringify(data) + '\n';
-  // Write to temp file then rename for atomicity (#37)
-  const tmp = file + '.tmp-' + process.pid;
-  try {
-    appendFileSync(file, line, 'utf-8');
-  } catch {
-    // Fallback: write to temp then rename
-    try { writeFileSync(tmp, line, 'utf-8'); renameSync(tmp, file); } catch { /* best effort */ }
-  }
+  appendFileSync(file, JSON.stringify(data) + '\n', { encoding: 'utf-8', mode: 0o600, flag: 'a' });
 }
 function readJsonl(file: string): unknown[] { try { if (!existsSync(file)) return []; return readFileSync(file, 'utf-8').split(/\r?\n/).filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean); } catch { return []; } }
 
@@ -339,21 +332,26 @@ function saveWorkerState(state: WorkerState) { writeJson(paths().workerState, st
 
 function acquireWorkerLock(): boolean {
   const lockPath = paths().workerLock;
-  try {
-    const existing = readJson<{ pid?: number; startedAt?: string }>(lockPath, {});
-    if (existing.pid && existing.pid !== process.pid) {
-      try { process.kill(existing.pid, 0); return false; } catch { /* stale lock, remove below */ }
-    }
-    if (existing.pid === process.pid) return true;
-    // Atomic write: temp file + rename (POSIX atomic overwrite)
-    const tmp = lockPath + `.tmp-${process.pid}-${Date.now()}`;
-    writeJson(tmp, { pid: process.pid, startedAt: nowIso() });
-    try { renameSync(tmp, lockPath); } catch {
-      try { unlinkSync(tmp); } catch { /* best effort */ }
+  const payload = JSON.stringify({ pid: process.pid, startedAt: nowIso() }, null, 2) + '\n';
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let fd: number | null = null;
+    try {
+      fd = openSync(lockPath, 'wx', 0o600);
+      writeFileSync(fd, payload, { encoding: 'utf-8' });
+      closeSync(fd);
       return true;
+    } catch (error: unknown) {
+      if (fd !== null) {
+        try { closeSync(fd); } catch { /* best effort */ }
+      }
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== 'EEXIST') return false;
+      const existing = readJson<{ pid?: number; startedAt?: string }>(lockPath, {});
+      if (existing.pid === process.pid) return true;
+      if (existing.pid && isProcessAlive(existing.pid)) return false;
+      try { unlinkSync(lockPath); } catch { /* another process may have raced us */ }
     }
-    return true;
-  } catch {}
+  }
   return false;
 }
 function releaseWorkerLock() {
@@ -481,21 +479,57 @@ function parseArgs(argv: string[]): Record<string, unknown> {
   return r;
 }
 
+function normalizeHostname(hostname: string): string {
+  return String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '');
+}
+
+function isBlockedIpv4(host: string): boolean {
+  const normalized = normalizeHostname(host);
+  if (isIP(normalized) !== 4) return false;
+  const octets = normalized.split('.').map(part => Number(part));
+  const [a, b] = octets;
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a === 198 && (b === 18 || b === 19)) return true;
+  return false;
+}
+
+function ipv4FromMappedIpv6(host: string): string | null {
+  const normalized = normalizeHostname(host);
+  if (!normalized.startsWith('::ffff:')) return null;
+  const tail = normalized.slice('::ffff:'.length);
+  if (isIP(tail) === 4) return tail;
+  const parts = tail.split(':');
+  if (parts.length !== 2 || parts.some(part => !/^[0-9a-f]{1,4}$/i.test(part))) return null;
+  const high = parseInt(parts[0], 16);
+  const low = parseInt(parts[1], 16);
+  return [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
+}
+
 function isBlockedHost(hostname: string): boolean {
-  const h = hostname.toLowerCase();
-  const blocked = [
-    '169.254.169.254',
-    'metadata.google.internal',
-    '100.100.100.200',
-    '127.0.0.1', '0.0.0.0', '::1', 'localhost',
-  ];
-  if (blocked.includes(h)) return true;
-  if (/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(h)) return true;
+  const h = normalizeHostname(hostname);
+  if (!h) return true;
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  if (h === 'metadata.google.internal' || h.endsWith('.metadata.google.internal')) return true;
+  if (h === '100.100.100.200') return true;
+  if (isBlockedIpv4(h)) return true;
+  const mappedIpv4 = ipv4FromMappedIpv6(h);
+  if (mappedIpv4 && isBlockedIpv4(mappedIpv4)) return true;
+  if (isIP(h) === 6) {
+    if (h === '::1') return true;
+    if (/^fe[89ab][0-9a-f:]*$/i.test(h)) return true;
+    if (/^f[cd][0-9a-f:]*$/i.test(h)) return true;
+  }
   return false;
 }
 
 function apiBase() {
-  const raw = (process.env.AICOEVO_API_BASE || process.env.AICOEVO_BASE_URL || 'https://aicoevo.net').replace(/\/+$/, '');
+  const configuredBase = [process.env.AICOEVO_API_BASE, process.env.AICOEVO_BASE_URL]
+    .find(value => value && !['undefined', 'null'].includes(value.trim().toLowerCase()));
+  const raw = (configuredBase || 'https://aicoevo.net').replace(/\/+$/, '');
   try {
     const withScheme = raw.startsWith('http') ? raw : `https://${raw}`;
     const parsed = new URL(withScheme);
@@ -1902,6 +1936,10 @@ export async function main(argv: string[]) {
 export const _testHelpers = {
   agentApiKeyHeaders,
   agentApiBase,
+  apiBase,
+  isBlockedHost,
+  acquireWorkerLock,
+  releaseWorkerLock,
   loadConfig,
   saveConfig,
   loadWorkerState,
