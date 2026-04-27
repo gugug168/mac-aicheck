@@ -62,6 +62,7 @@ interface VersionInfo {
   repo: string;
   lastCheck: string;
   hasUpdate: boolean;
+  updates?: Array<{ name: string; current: string; latest: string }>;
 }
 
 async function checkForUpdates(): Promise<VersionInfo | null> {
@@ -104,6 +105,7 @@ async function checkForUpdates(): Promise<VersionInfo | null> {
     repo: '',
     lastCheck: nowIso(),
     hasUpdate: updates.length > 0,
+    updates,
   };
 
   writeJson(p.versionCache, result);
@@ -148,10 +150,41 @@ async function getLatestVersion(repo: string): Promise<string | null> {
 async function checkUpdatesWithNotify(): Promise<void> {
   const info = await checkForUpdates();
   if (info && info.hasUpdate) {
-    process.stderr.write(`\n🔔 mac-aicheck 版本更新通知:\n`);
-    process.stderr.write(`   ${info.latest}\n`);
-    process.stderr.write(`   运行 'mac-aicheck agent upgrade' 一键更新\n`);
+    const cfg = loadConfig() as Record<string, unknown>;
+    // Report to AICOEVO if upgradeNotify is enabled (default on)
+    if (cfg.upgradeNotify !== false) {
+      for (const upd of (info.updates || [])) {
+        await reportToolVersionEvent({
+          tool: upd.name,
+          currentVersion: upd.current,
+          latestVersion: upd.latest,
+          eventType: 'version_update_available',
+        }).catch(() => {});  // non-blocking
+      }
+    }
+    // Auto-upgrade if enabled, otherwise notify
+    if (cfg.autoUpgrade) {
+      process.stderr.write(`🔄 发现新版本，自动更新中...\n`);
+      await upgradeCommand();
+    } else {
+      process.stderr.write(`\n🔔 发现新版本:\n`);
+      for (const upd of (info.updates || [])) {
+        process.stderr.write(`   ${upd.name}: ${upd.current} → ${upd.latest}\n`);
+      }
+      process.stderr.write(`   运行 'mac-aicheck agent upgrade' 一键更新\n`);
+      process.stderr.write(`   开启自动更新: mac-aicheck agent config set autoUpgrade true\n`);
+    }
   }
+}
+
+async function reportToolVersionEvent(payload: { tool: string; currentVersion: string; latestVersion: string; eventType: string }): Promise<void> {
+  try {
+    await requestJson(`${apiBase()}/events/tool-version`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch { /* non-blocking */ }
 }
 
 // 检测命令的安装方式（brew / npm / npx）
