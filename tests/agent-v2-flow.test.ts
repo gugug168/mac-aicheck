@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { once } from 'node:events';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -10,7 +10,6 @@ function restoreEnv(name: 'HOME' | 'AICOEVO_BASE_URL' | 'AICOEVO_API_BASE', valu
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
 }
-
 function createTempHome() {
   return mkdtempSync(path.join(tmpdir(), 'mac-aicheck-agent-'));
 }
@@ -132,6 +131,129 @@ describe('agent v2 flow', () => {
       expect(_testHelpers.agentApiBase('v2')).toBe('https://aicoevo.net/api/v2/agent');
     }
   });
+
+  // ── TASK-100: Owner reproduction loop ──
+
+  it('owner-check lists pending owner verifications from status', async () => {
+    const home = seedConfig();
+    const fetchMock = vi.fn().mockResolvedValue({
+      status: 200,
+      ok: true,
+      text: async () => JSON.stringify({
+        owner_metrics: { queued_problems: 0, solutions_pending_owner: 1 },
+        worker_metrics: {},
+        pending_owner_verifications: [{
+          bounty_id: 'b_001',
+          answer_id: 'a_001',
+          title: 'npm install fails',
+          solution_summary: 'Run npm cache clean --force',
+          submitted_at: '2026-04-26T00:00:00Z',
+          deadline_at: '2026-04-28T00:00:00Z',
+        }],
+        timestamp: '2026-04-26T00:00:00Z',
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const code = await agentMain(['owner-check']);
+    const output = stdout.mock.calls.map(call => String(call[0])).join('');
+    stdout.mockRestore();
+
+    expect(code).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://aicoevo.net/api/v2/agent/status');
+    expect(output).toContain('b_001');
+    expect(output).toContain('a_001');
+    expect(output).toContain('npm install fails');
+    expect(output).toContain('owner-verify');
+    const guidePath = path.join(home, '.mac-aicheck', 'owner-verify', 'b_001__a_001.md');
+    const snapshotPath = path.join(home, '.mac-aicheck', 'owner-verify', 'b_001__a_001.json');
+    expect(existsSync(guidePath)).toBe(true);
+    expect(existsSync(snapshotPath)).toBe(true);
+    expect(readFileSync(guidePath, 'utf8')).toContain('AICOEVO 发起者复现指南');
+  });
+
+  it('owner-check shows empty message when no pending', async () => {
+    seedConfig();
+    const fetchMock = vi.fn().mockResolvedValue({
+      status: 200,
+      ok: true,
+      text: async () => JSON.stringify({
+        owner_metrics: {},
+        worker_metrics: {},
+        pending_owner_verifications: [],
+        timestamp: '2026-04-26T00:00:00Z',
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const code = await agentMain(['owner-check']);
+    const output = stdout.mock.calls.map(call => String(call[0])).join('');
+    stdout.mockRestore();
+
+    expect(code).toBe(0);
+    expect(output).toContain('没有待复现确认');
+  });
+
+  it('owner-verify submits verification result to endpoint', async () => {
+    seedConfig();
+    let request: { url: string; body?: string } | null = null;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      request = { url, body: init?.body ? String(init.body) : undefined };
+      return {
+        status: 200,
+        ok: true,
+        text: async () => JSON.stringify({
+          bounty_id: 'b_001',
+          answer_id: 'a_001',
+          owner_verification: 'success',
+          owner_score: 60,
+          community_score: 0,
+          total_score: 60,
+          threshold: 70,
+          review_status: 'pending_review',
+        }),
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const code = await agentMain(['owner-verify', 'b_001', '--answer', 'a_001', '--result', 'success', '--yes']);
+    const output = stdout.mock.calls.map(call => String(call[0])).join('');
+    stdout.mockRestore();
+
+    expect(code).toBe(0);
+    expect(request?.url).toBe('https://aicoevo.net/api/v2/agent/bounties/b_001/owner-verify');
+    const body = JSON.parse(request?.body || '{}');
+    expect(body.answer_id).toBe('a_001');
+    expect(body.result).toBe('success');
+    expect(body.proof_payload.summary).toContain('b_001/a_001');
+    expect(body.proof_payload.before_context.item.answer_id).toBe('a_001');
+    expect(body.proof_payload.after_context.result).toBe('success');
+    expect(body.artifacts.owner_reproduction_guide_path).toContain('b_001__a_001.md');
+    expect(body.artifacts.owner_reproduction_snapshot_path).toContain('b_001__a_001.json');
+    expect(output).toContain('60');
+    expect(output).toContain('pending_review');
+  });
+
+  it('owner-verify rejects missing required args', async () => {
+    seedConfig();
+    const fetchMock = vi.fn().mockResolvedValue({
+      status: 200,
+      text: async () => '{}',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const code = await agentMain(['owner-verify']);
+    const output = stdout.mock.calls.map(call => String(call[0])).join('');
+    stdout.mockRestore();
+
+    expect(code).toBe(1);
+    expect(output).toContain('用法');
+  });
 });
 
 describe('worker-on (TASK-091)', () => {
@@ -227,7 +349,6 @@ describe('worker-on (TASK-091)', () => {
     expect(_testHelpers.acquireWorkerLock()).toBe(true);
     _testHelpers.releaseWorkerLock();
   });
-
   it('worker daemon performs heartbeat and processes recommended_bounties', async () => {
     seedConfig();
     const requests: Array<{ url: string; body?: string }> = [];
