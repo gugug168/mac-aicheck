@@ -35,6 +35,7 @@ describe('agent v2 flow', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     delete (globalThis as { __MAC_AICHECK_TEST_SPAWN__?: unknown }).__MAC_AICHECK_TEST_SPAWN__;
+    delete (globalThis as { __MAC_AICHECK_TEST_COMMAND_RUNNER__?: unknown }).__MAC_AICHECK_TEST_COMMAND_RUNNER__;
     process.env.HOME = originalHome;
     process.env.AICOEVO_BASE_URL = originalBaseUrl;
     for (const home of homes.splice(0)) {
@@ -107,6 +108,41 @@ describe('agent v2 flow', () => {
     ]);
     expect(calls[1]?.body).toBe('{}');
     expect(output).toContain('lease_1');
+  });
+
+  it('bounty-draft-list reads current private drafts', async () => {
+    seedConfig();
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse([{ id: 'draft_1', title: 'private bounty' }]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const code = await agentMain(['bounty-draft-list']);
+    const output = stdout.mock.calls.map(call => String(call[0])).join('');
+    stdout.mockRestore();
+
+    expect(code).toBe(0);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://aicoevo.net/api/v1/bounty-drafts/mine');
+    expect(output).toContain('draft_1');
+  });
+
+  it('bounty-draft-publish publishes draft with reward and anonymous visibility', async () => {
+    seedConfig();
+    let request: { url: string; body?: string } | null = null;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      request = { url, body: init?.body ? String(init.body) : undefined };
+      return mockResponse({ id: 'draft_1', status: 'open', reward: 0 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const code = await agentMain(['bounty-draft-publish', 'draft_1', '--reward', '0']);
+    const output = stdout.mock.calls.map(call => String(call[0])).join('');
+    stdout.mockRestore();
+
+    expect(code).toBe(0);
+    expect(request?.url).toBe('https://aicoevo.net/api/v1/bounty-drafts/draft_1/publish');
+    expect(JSON.parse(request?.body || '{}')).toEqual({ reward: 0, visibility: 'anonymous' });
+    expect(output).toContain('✓ 草稿已公开 draft_1');
   });
 
   // ── TASK-100: Owner reproduction loop ──
@@ -231,6 +267,26 @@ describe('agent v2 flow', () => {
     expect(code).toBe(1);
     expect(output).toContain('用法');
   });
+
+  it('workerEnabled and ownerAutoVerify default to true in config', () => {
+    const home = createTempHome();
+    homes.push(home);
+    const configDir = path.join(home, '.mac-aicheck');
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(path.join(configDir, 'config.json'), JSON.stringify({
+      clientId: 'client-test',
+      deviceId: 'device-test',
+      shareData: true,
+      autoSync: true,
+      paused: false,
+      authToken: 'ak_test_123',
+    }), 'utf8');
+    process.env.HOME = home;
+
+    const cfg = _testHelpers.loadConfig();
+    expect(cfg.workerEnabled).toBe(true);
+    expect(cfg.ownerAutoVerify).toBe(true);
+  });
 });
 
 describe('worker-on (TASK-091)', () => {
@@ -276,25 +332,6 @@ describe('worker-on (TASK-091)', () => {
     return { spy, get output() { return chunks.join(''); } };
   }
 
-  it('workerEnabled defaults to true in config', () => {
-    const home = createTempHome();
-    homes.push(home);
-    const configDir = path.join(home, '.mac-aicheck');
-    mkdirSync(configDir, { recursive: true });
-    writeFileSync(path.join(configDir, 'config.json'), JSON.stringify({
-      clientId: 'client-test',
-      deviceId: 'device-test',
-      shareData: true,
-      autoSync: true,
-      paused: false,
-      authToken: 'ak_test_123',
-    }), 'utf8');
-    process.env.HOME = home;
-
-    const cfg = _testHelpers.loadConfig();
-    expect(cfg.workerEnabled).toBe(true);
-  });
-
   it('worker status shows config and state', async () => {
     seedConfig();
     vi.stubGlobal('fetch', vi.fn());
@@ -305,6 +342,7 @@ describe('worker-on (TASK-091)', () => {
     const output = chunks.join('');
     expect(code).toBe(0);
     expect(output).toContain('"workerEnabled": true');
+    expect(output).toContain('"ownerAutoVerify": true');
     expect(output).toContain('"status": "stopped"');
   });
 
@@ -398,6 +436,76 @@ describe('worker-on (TASK-091)', () => {
     expect(wState.totalSkipped).toBeGreaterThanOrEqual(2);
   });
 
+  it('owner-auto-enable and owner-auto-disable toggle config', async () => {
+    seedConfig({ ownerAutoVerify: false });
+    vi.stubGlobal('fetch', vi.fn());
+
+    let code = await agentMain(['owner-auto-enable']);
+    expect(code).toBe(0);
+    let cfg = _testHelpers.loadConfig();
+    expect(cfg.ownerAutoVerify).toBe(true);
+
+    code = await agentMain(['owner-auto-disable']);
+    expect(code).toBe(0);
+    cfg = _testHelpers.loadConfig();
+    expect(cfg.ownerAutoVerify).toBe(false);
+  });
+
+  it('worker daemon auto-submits owner verification when ownerAutoVerify is enabled', async () => {
+    seedConfig({ ownerAutoVerify: true });
+    const requests: Array<{ url: string; body?: string }> = [];
+    (globalThis as { __MAC_AICHECK_TEST_COMMAND_RUNNER__?: unknown }).__MAC_AICHECK_TEST_COMMAND_RUNNER__ = async () => ({
+      stdout: '1 passed',
+      stderr: '',
+      exitCode: 0,
+    });
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      requests.push({ url, body: init?.body ? String(init.body) : undefined });
+      if (url.includes('/heartbeat')) return mockResponse({ recommended_bounties: [] });
+      if (url.includes('/api/v2/agent/status')) {
+        return mockResponse({
+          pending_owner_verifications: [{
+            bounty_id: 'b_owner_1',
+            answer_id: 'a_owner_1',
+            title: 'owner pending bounty',
+            solution_summary: 'Use `python -m pytest` to confirm.',
+            submitted_at: '2026-04-26T00:00:00Z',
+            deadline_at: '2026-04-28T00:00:00Z',
+          }],
+        });
+      }
+      if (url.endsWith('/bounties/b_owner_1')) return mockResponse({ id: 'b_owner_1', problem_brief_id: 'pb_owner_1' });
+      if (url.endsWith('/bounties/b_owner_1/answers')) return mockResponse([{ id: 'a_owner_1', content: 'Run `python -m pytest`.' }]);
+      if (url.includes('/problem-briefs/pb_owner_1/evidence')) {
+        return mockResponse({
+          payload: { repro_entry: 'python -m pytest' },
+        });
+      }
+      if (url.includes('/bounties/b_owner_1/owner-verify')) {
+        const cfg = _testHelpers.loadConfig();
+        cfg.workerEnabled = false;
+        _testHelpers.saveConfig(cfg);
+        return mockResponse({ ok: true, review_status: 'solved_confirmed' });
+      }
+      return mockResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { spy } = captureOutput();
+    const code = await agentMain(['worker', 'daemon', '--worker-interval', '10']);
+    spy.mockRestore();
+
+    expect(code).toBe(0);
+    const verifyReq = requests.find(req => req.url.includes('/bounties/b_owner_1/owner-verify'));
+    expect(verifyReq).toBeDefined();
+    expect(verifyReq?.body).toContain('"result":"success"');
+    expect(verifyReq?.body).toContain('"confirmation_mode":"auto_worker"');
+    expect(verifyReq?.body).toContain('"validation_cmd":"python -m pytest"');
+    const wState = _testHelpers.loadWorkerState();
+    expect(wState.totalOwnerVerified).toBeGreaterThanOrEqual(1);
+    expect(wState.lastCycleResult?.ownerVerified).toBeGreaterThanOrEqual(1);
+  });
+
   it('enable waits for binding before auto-starting worker', async () => {
     seedConfig({ authToken: undefined });
     const spawn = createSpawnStub();
@@ -409,6 +517,7 @@ describe('worker-on (TASK-091)', () => {
     spy.mockRestore();
 
     expect(code).toBe(0);
+    expect(capture.output).toContain('Owner 自动复现: 已启用');
     expect(capture.output).toContain('等待绑定完成后自动启动');
     expect(spawn.calls).toHaveLength(0);
   });
@@ -424,6 +533,7 @@ describe('worker-on (TASK-091)', () => {
     spy.mockRestore();
 
     expect(code).toBe(0);
+    expect(capture.output).toContain('Owner 自动复现: 已启用');
     expect(capture.output).toContain('Worker 互助循环: 已启动');
     expect(spawn.calls).toHaveLength(1);
     expect(spawn.calls[0]?.args.join(' ')).toContain('worker daemon');
@@ -441,8 +551,11 @@ describe('worker-on (TASK-091)', () => {
 
     expect(code).toBe(0);
     expect(capture.output).toContain('绑定成功');
+    expect(capture.output).toContain('Owner 自动复现: 已启用');
     expect(capture.output).toContain('Worker 互助循环: 已启动');
     expect(spawn.calls).toHaveLength(1);
     expect(spawn.calls[0]?.args.join(' ')).toContain('worker daemon');
+    const cfg = _testHelpers.loadConfig();
+    expect(cfg.ownerAutoVerify).toBe(true);
   });
 });

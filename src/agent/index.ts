@@ -61,6 +61,22 @@ function trimForCapture(text: string): string { const s = sanitizeText(text); re
 const VERSION_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 小时限速
 const WORKER_DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
 const WORKER_MAX_PARALLEL = 3;
+const WORKER_MAX_EXECUTION_COMMANDS = 2;
+const COMMAND_CAPTURE_MAX_CHARS = 4000;
+const WORKER_OWNER_SUCCESS_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const WORKER_OWNER_FAILURE_COOLDOWN_MS = 60 * 60 * 1000;
+const SAFE_DIRECT_EXECUTABLES = new Set(['python', 'python3', 'pytest', 'node']);
+const SAFE_NPM_SUBCOMMANDS = new Set(['test']);
+const SAFE_BUN_SUBCOMMANDS = new Set(['test']);
+const BLOCKED_COMMAND_PATTERNS = [
+  /\brm\b/i,
+  /\bshutdown\b/i,
+  /\breboot\b/i,
+  /\bhalt\b/i,
+  /\blaunchctl\b\s+(?:bootout|remove)\b/i,
+  /\bcurl\b/i,
+  /\bwget\b/i,
+];
 
 interface VersionInfo {
   current: string;
@@ -308,10 +324,11 @@ function loadConfig() {
   if (cfg.autoSync === undefined) cfg.autoSync = false;
   if (cfg.paused === undefined) cfg.paused = false;
   if (cfg.workerEnabled === undefined) cfg.workerEnabled = true;
+  if (cfg.ownerAutoVerify === undefined) cfg.ownerAutoVerify = true;
   if (!cfg.profileId) cfg.profileId = null;
   if (!cfg.agentType) cfg.agentType = null;
   writeJson(p.config, cfg);
-  return cfg as { clientId: string; deviceId: string; shareData: boolean; autoSync: boolean; paused: boolean; workerEnabled: boolean; email?: string; authToken?: string; profileId?: string; agentType?: string; confirmedAt?: string };
+  return cfg as { clientId: string; deviceId: string; shareData: boolean; autoSync: boolean; paused: boolean; workerEnabled: boolean; ownerAutoVerify: boolean; email?: string; authToken?: string; profileId?: string; agentType?: string; confirmedAt?: string };
 }
 function saveConfig(cfg: Record<string, unknown>) { writeJson(paths().config, cfg); }
 
@@ -323,16 +340,36 @@ interface WorkerState {
   pid: number | null;
   startedAt: string | null;
   lastCycleAt: string | null;
-  lastCycleResult: { solved: number; skipped: number; total: number } | null;
+  lastCycleResult: { solved: number; skipped: number; total: number; reviewed: number; ownerVerified: number } | null;
   nextCycleAt: string | null;
   totalCycles: number;
   totalSolved: number;
   totalSkipped: number;
+  totalReviewed: number;
+  totalOwnerVerified: number;
   consecutiveErrors: number;
   lastError: string | null;
+  recentOwnerActivity: Record<string, { status: string; at: string }>;
 }
 function defaultWorkerState(): WorkerState {
-  return { schemaVersion: 1, enabled: false, status: 'stopped', pid: null, startedAt: null, lastCycleAt: null, lastCycleResult: null, nextCycleAt: null, totalCycles: 0, totalSolved: 0, totalSkipped: 0, consecutiveErrors: 0, lastError: null };
+  return {
+    schemaVersion: 1,
+    enabled: false,
+    status: 'stopped',
+    pid: null,
+    startedAt: null,
+    lastCycleAt: null,
+    lastCycleResult: null,
+    nextCycleAt: null,
+    totalCycles: 0,
+    totalSolved: 0,
+    totalSkipped: 0,
+    totalReviewed: 0,
+    totalOwnerVerified: 0,
+    consecutiveErrors: 0,
+    lastError: null,
+    recentOwnerActivity: {},
+  };
 }
 function loadWorkerState(): WorkerState { return readJson<WorkerState>(paths().workerState, defaultWorkerState()); }
 function saveWorkerState(state: WorkerState) { writeJson(paths().workerState, state); }
@@ -513,6 +550,173 @@ async function requestJson(url: string, init: { method?: string; headers?: Recor
   return { status: resp.status, data };
 }
 
+function unique(values: string[]) {
+  return [...new Set((values || []).filter(Boolean))];
+}
+
+function clipText(value: string, max = COMMAND_CAPTURE_MAX_CHARS) {
+  const text = sanitizeText(String(value || ''));
+  return text.length > max ? text.slice(0, max) : text;
+}
+
+function tokenizeCommandLine(commandLine: string) {
+  const input = String(commandLine || '').trim();
+  if (!input) return [];
+  const tokens: string[] = [];
+  const re = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|[^\s]+/g;
+  let match;
+  while ((match = re.exec(input)) !== null) {
+    tokens.push(match[1] ?? match[2] ?? match[0]);
+  }
+  return tokens;
+}
+
+function isPotentialCommandLine(text: string) {
+  const normalized = String(text || '').trim();
+  if (!normalized || normalized.length > 300 || /[\r\n]/.test(normalized)) return false;
+  const tokens = tokenizeCommandLine(normalized);
+  if (tokens.length === 0) return false;
+  const first = String(tokens[0] || '').toLowerCase();
+  return SAFE_DIRECT_EXECUTABLES.has(first) || first === 'npm' || first === 'bun';
+}
+
+function extractCommandsFromText(text: string) {
+  const commands: string[] = [];
+  const source = String(text || '');
+  const backtickRe = /`([^`\r\n]+)`/g;
+  let match;
+  while ((match = backtickRe.exec(source)) !== null) {
+    const candidate = String(match[1] || '').trim();
+    if (isPotentialCommandLine(candidate)) commands.push(candidate);
+  }
+  for (const rawLine of source.split(/\r?\n/)) {
+    const line = rawLine.replace(/^\s*(?:[-*]|\d+\.)\s*/, '').trim();
+    if (isPotentialCommandLine(line)) commands.push(line);
+  }
+  return unique(commands);
+}
+
+function flattenTextCandidates(value: unknown, sink: string[] = []) {
+  if (Array.isArray(value)) {
+    for (const item of value) flattenTextCandidates(item, sink);
+    return sink;
+  }
+  if (value && typeof value === 'object') {
+    for (const [key, item] of Object.entries(value)) {
+      if (/command|cmd|step|trigger|repro|validation/i.test(key)) flattenTextCandidates(item, sink);
+    }
+    return sink;
+  }
+  if (typeof value === 'string' && value.trim()) sink.push(value);
+  return sink;
+}
+
+function collectExecutionCandidates({
+  item,
+  answerContent = '',
+  evidencePayload,
+  bounty,
+}: {
+  item: Record<string, unknown>;
+  answerContent?: string;
+  evidencePayload?: unknown;
+  bounty?: Record<string, unknown> | null;
+}) {
+  const sources: string[] = [];
+  flattenTextCandidates(item, sources);
+  flattenTextCandidates((bounty || {}).repro_contract, sources);
+  flattenTextCandidates(evidencePayload, sources);
+  if (answerContent) sources.push(answerContent);
+  const commands: string[] = [];
+  for (const source of sources) commands.push(...extractCommandsFromText(source));
+  return unique(commands).slice(0, WORKER_MAX_EXECUTION_COMMANDS);
+}
+
+function validateSafeCommand(commandLine: string) {
+  const normalized = String(commandLine || '').trim();
+  if (!normalized) return { ok: false, reason: 'empty command' };
+  if (/[|;&><]/.test(normalized)) return { ok: false, reason: 'shell metacharacters blocked' };
+  if (BLOCKED_COMMAND_PATTERNS.some(pattern => pattern.test(normalized))) {
+    return { ok: false, reason: 'blocked command pattern' };
+  }
+  const tokens = tokenizeCommandLine(normalized);
+  if (tokens.length === 0) return { ok: false, reason: 'empty command tokens' };
+  const first = String(tokens[0] || '').toLowerCase();
+  if (SAFE_DIRECT_EXECUTABLES.has(first)) {
+    return { ok: true, executable: tokens[0], args: tokens.slice(1), normalized };
+  }
+  if (first === 'npm' && SAFE_NPM_SUBCOMMANDS.has(String(tokens[1] || '').toLowerCase())) {
+    return { ok: true, executable: tokens[0], args: tokens.slice(1), normalized };
+  }
+  if (first === 'bun' && SAFE_BUN_SUBCOMMANDS.has(String(tokens[1] || '').toLowerCase())) {
+    return { ok: true, executable: tokens[0], args: tokens.slice(1), normalized };
+  }
+  return { ok: false, reason: `unsupported executable: ${first}` };
+}
+
+async function runSafeLocalCommand(commandLine: string): Promise<{ ok: boolean; skipped: boolean; command: string; stdout: string; stderr: string; exitCode: number | null }> {
+  const validation = validateSafeCommand(commandLine);
+  if (!validation.ok) {
+    return { ok: false, skipped: true, command: String(commandLine || '').trim(), stdout: '', stderr: String(validation.reason || ''), exitCode: null as number | null };
+  }
+  const runner = (globalThis as { __MAC_AICHECK_TEST_COMMAND_RUNNER__?: (command: string) => Promise<{ stdout?: string; stderr?: string; exitCode?: number }> }).__MAC_AICHECK_TEST_COMMAND_RUNNER__;
+  const normalized = validation.normalized as string;
+  if (runner) {
+    const result = await runner(normalized);
+    return {
+      ok: Number(result?.exitCode ?? 0) === 0,
+      skipped: false,
+      command: normalized,
+      stdout: clipText(result?.stdout || ''),
+      stderr: clipText(result?.stderr || ''),
+      exitCode: Number(result?.exitCode ?? 0),
+    };
+  }
+  try {
+    const executable = validation.executable as string;
+    const args = validation.args as string[];
+    const stdout = execFileSync(executable, args, {
+      encoding: 'utf-8',
+      timeout: 20000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return { ok: true, skipped: false, command: normalized, stdout: clipText(stdout || ''), stderr: '', exitCode: 0 };
+  } catch (error: unknown) {
+    const err = error as { stdout?: string; stderr?: string; status?: number; message?: string };
+    return {
+      ok: false,
+      skipped: false,
+      command: normalized,
+      stdout: clipText(err?.stdout || ''),
+      stderr: clipText(err?.stderr || err?.message || ''),
+      exitCode: Number(err?.status ?? 1),
+    };
+  }
+}
+
+function pruneActivityMap(map: Record<string, { status: string; at: string }>, maxEntries = 100) {
+  const entries = Object.entries(map || {})
+    .sort((a, b) => Date.parse(b[1]?.at || '') - Date.parse(a[1]?.at || ''))
+    .slice(0, maxEntries);
+  return Object.fromEntries(entries);
+}
+
+function shouldCooldownActivity(activityMap: Record<string, { status: string; at: string }>, key: string, successCooldownMs: number, failureCooldownMs: number) {
+  const record = activityMap?.[key];
+  if (!record?.at) return false;
+  const age = Date.now() - Date.parse(record.at);
+  if (!Number.isFinite(age) || age < 0) return false;
+  const cooldown = record.status === 'success' ? successCooldownMs : failureCooldownMs;
+  return age < cooldown;
+}
+
+function noteActivity(activityMap: Record<string, { status: string; at: string }>, key: string, status: string) {
+  return pruneActivityMap({
+    ...(activityMap || {}),
+    [key]: { status, at: nowIso() },
+  });
+}
+
 async function syncEvents() {
   const p = paths();
   const config = loadConfig();
@@ -549,7 +753,12 @@ async function syncEvents() {
       }
       if (drafts && drafts.length > 0) {
         const d = drafts[0];
-        parts.push(`已创建悬赏草稿: ${d.title || d.id}`);
+        if (d.status === 'open') {
+          parts.push(`已自动公开互助悬赏: ${d.title || d.id}`);
+        } else {
+          parts.push(`已创建悬赏草稿: ${d.title || d.id}`);
+          parts.push(`可执行 mac-aicheck agent bounty-draft-publish ${d.id} --reward 0 公开到互助队列`);
+        }
       }
       process.stderr.write(parts.join(' | ') + '\n');
     }
@@ -623,7 +832,9 @@ function writeOwnerVerifyGuide(item: Record<string, string>, config: Record<stri
     '',
     `\`${verifyCommand}\``,
     '',
-    '默认策略为 prompt：命令会再次要求你确认，不会静默替你提交。',
+    config.ownerAutoVerify
+      ? '当前已开启 ownerAutoVerify：后台 Worker 会自动复现并自动提交验证结果。'
+      : '当前未开启 ownerAutoVerify：手工 owner-verify 默认仍会再次要求你确认。',
     '',
   ];
   ensureDir(files.dir);
@@ -648,6 +859,149 @@ function loadOwnerVerifySnapshot(bountyId: string, answerId: string) {
   const snapshot = readJson<Record<string, unknown> | null>(files.snapshotJson, null);
   const guideSha256 = existsSync(files.guideMd) ? sha256(readFileSync(files.guideMd, 'utf-8')) : '';
   return { ...files, guideSha256, snapshot };
+}
+
+async function fetchPendingOwnerVerifications(headers: Record<string, string>) {
+  const result = await requestJson(`${agentApiBase('v2')}/status`, { headers });
+  if (result.status !== 200) return { ok: false, items: [] as Array<Record<string, unknown>> };
+  const data = result.data as Record<string, unknown>;
+  return {
+    ok: true,
+    items: Array.isArray(data.pending_owner_verifications) ? data.pending_owner_verifications as Array<Record<string, unknown>> : [],
+  };
+}
+
+async function fetchBountyDetail(bountyId: string) {
+  if (!bountyId) return { ok: false, data: null as Record<string, unknown> | null };
+  const result = await requestJson(`${apiBase()}/bounties/${bountyId}`);
+  return { ok: result.status === 200, data: result.status === 200 ? result.data as Record<string, unknown> : null };
+}
+
+async function fetchBountyAnswers(bountyId: string) {
+  if (!bountyId) return { ok: false, data: [] as Array<Record<string, unknown>> };
+  const result = await requestJson(`${apiBase()}/bounties/${bountyId}/answers`);
+  return { ok: result.status === 200, data: Array.isArray(result.data) ? result.data as Array<Record<string, unknown>> : [] };
+}
+
+async function fetchProblemBriefEvidence(briefId: string, headers: Record<string, string>) {
+  if (!briefId) return { ok: false, data: null as Record<string, unknown> | null };
+  const result = await requestJson(`${agentApiBase('v1')}/problem-briefs/${briefId}/evidence?include_payload=true`, { headers });
+  return { ok: result.status === 200, data: result.status === 200 ? result.data as Record<string, unknown> : null };
+}
+
+function buildAutoOwnerVerifyPayload({
+  item,
+  guideRecord,
+  execution,
+}: {
+  item: Record<string, unknown>;
+  guideRecord: ReturnType<typeof loadOwnerVerifySnapshot>;
+  execution: { ok: boolean; command: string; stdout: string; stderr: string; exitCode: number | null; skipped?: boolean };
+}) {
+  const result = execution.ok ? 'success' : (execution.stderr || execution.stdout ? 'partial' : 'failed');
+  return {
+    answer_id: String(item.answer_id || ''),
+    result,
+    notes: result === 'success'
+      ? `Auto owner verification succeeded for \`${execution.command}\``
+      : `Auto owner verification observed non-success result for \`${execution.command}\``,
+    commands_run: [execution.command],
+    proof_payload: {
+      summary: `Auto owner verification for ${item.bounty_id}/${item.answer_id}`,
+      steps: [
+        `读取本地指南: ${guideRecord.guideMd}`,
+        `自动执行验证命令: ${execution.command}`,
+        `自动提交结果: ${result}`,
+      ],
+      before_context: guideRecord.snapshot || { item },
+      after_context: {
+        submitted_at: nowIso(),
+        confirmation_mode: 'auto_worker',
+        result,
+        exit_code: execution.exitCode,
+        stdout_excerpt: clipText(execution.stdout, 1000),
+        stderr_excerpt: clipText(execution.stderr, 1000),
+        local_context: ownerVerifyLocalContext(loadConfig()),
+      },
+      validation_cmd: execution.command,
+      expected_output: result === 'success'
+        ? '问题已消失或行为符合预期'
+        : result === 'partial'
+          ? '问题部分缓解，但仍有残留'
+          : '问题仍然可复现',
+    },
+    artifacts: {
+      owner_reproduction_guide_path: guideRecord.guideMd,
+      owner_reproduction_snapshot_path: guideRecord.snapshotJson,
+      owner_reproduction_guide_sha256: guideRecord.guideSha256,
+      execution_result: {
+        ok: execution.ok,
+        exit_code: execution.exitCode,
+      },
+    },
+  };
+}
+
+async function runAutoOwnerVerifications(
+  headers: Record<string, string>,
+  config: ReturnType<typeof loadConfig>,
+  state: WorkerState,
+  maxPerCycle: number,
+) {
+  if (!config.ownerAutoVerify) return { ownerVerified: 0, reviewed: 0, recentOwnerActivity: state.recentOwnerActivity || {} };
+  const pending = await fetchPendingOwnerVerifications(headers);
+  if (!pending.ok) return { ownerVerified: 0, reviewed: 0, recentOwnerActivity: state.recentOwnerActivity || {} };
+
+  let ownerVerified = 0;
+  let recentOwnerActivity = state.recentOwnerActivity || {};
+  for (const item of pending.items.slice(0, maxPerCycle)) {
+    const answerId = String(item.answer_id || '');
+    const bountyId = String(item.bounty_id || '');
+    if (!answerId || !bountyId) continue;
+    if (shouldCooldownActivity(recentOwnerActivity, answerId, WORKER_OWNER_SUCCESS_COOLDOWN_MS, WORKER_OWNER_FAILURE_COOLDOWN_MS)) continue;
+
+    const guideRecord = loadOwnerVerifySnapshot(bountyId, answerId).snapshot
+      ? loadOwnerVerifySnapshot(bountyId, answerId)
+      : writeOwnerVerifyGuide(item as Record<string, string>, config);
+    const bountyResult = await fetchBountyDetail(bountyId);
+    const answersResult = await fetchBountyAnswers(bountyId);
+    const bounty = bountyResult.data;
+    const answers = answersResult.data;
+    const answer = answers.find(entry => String(entry.id || '') === answerId) || {};
+    const briefId = String((bounty || {}).problem_brief_id || '');
+    const evidenceResult = await fetchProblemBriefEvidence(briefId, headers);
+    const evidence = evidenceResult.data;
+    const candidates = collectExecutionCandidates({
+      item,
+      answerContent: String(answer.content || ''),
+      evidencePayload: evidence?.payload,
+      bounty,
+    });
+    if (candidates.length === 0) {
+      recentOwnerActivity = noteActivity(recentOwnerActivity, answerId, 'failed');
+      continue;
+    }
+
+    const execution = await runSafeLocalCommand(candidates[0]);
+    if (execution.skipped) {
+      recentOwnerActivity = noteActivity(recentOwnerActivity, answerId, 'failed');
+      continue;
+    }
+    const payload = buildAutoOwnerVerifyPayload({ item, guideRecord, execution });
+    const submitResult = await requestJson(`${agentApiBase('v2')}/bounties/${bountyId}/owner-verify`, {
+      method: 'POST',
+      headers,
+      body: payload,
+    });
+    if (submitResult.status === 200) {
+      ownerVerified++;
+      recentOwnerActivity = noteActivity(recentOwnerActivity, answerId, 'success');
+    } else {
+      recentOwnerActivity = noteActivity(recentOwnerActivity, answerId, 'failed');
+    }
+  }
+
+  return { ownerVerified, reviewed: 0, recentOwnerActivity };
 }
 
 function resolveCommand(cmd: string) { try { return execFileSync('command', ['-v', cmd], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean)[0] || cmd; } catch { return cmd; } }
@@ -1010,12 +1364,16 @@ async function runWorkerDaemon(args: Record<string, unknown>): Promise<number> {
             if (submitResult.status >= 200 && submitResult.status < 300) solved++;
           }
         }
+        const ownerRun = await runAutoOwnerVerifications(headers, currentCfg, currentState, maxPerCycle);
         const updated = loadWorkerState();
         updated.lastCycleAt = nowIso();
-        updated.lastCycleResult = { solved, skipped, total: items.length };
+        updated.lastCycleResult = { solved, skipped, total: items.length, reviewed: ownerRun.reviewed, ownerVerified: ownerRun.ownerVerified };
         updated.totalCycles = (updated.totalCycles || 0) + 1;
         updated.totalSolved = (updated.totalSolved || 0) + solved;
         updated.totalSkipped = (updated.totalSkipped || 0) + skipped;
+        updated.totalReviewed = (updated.totalReviewed || 0) + ownerRun.reviewed;
+        updated.totalOwnerVerified = (updated.totalOwnerVerified || 0) + ownerRun.ownerVerified;
+        updated.recentOwnerActivity = ownerRun.recentOwnerActivity;
         updated.consecutiveErrors = 0;
         updated.lastError = null;
         updated.nextCycleAt = new Date(Date.now() + interval).toISOString();
@@ -1064,6 +1422,10 @@ export async function main(argv: string[]) {
   mac-aicheck agent disable                       — 彻底禁用 Worker 互助循环
   mac-aicheck agent worker-enable                 — 重新启用 Worker 互助循环
   mac-aicheck agent worker start|stop|status      — Worker 后台循环控制
+  mac-aicheck agent bounty-draft-list             — 查看当前账号的私有悬赏草稿
+  mac-aicheck agent bounty-draft-detail <id>      — 查看单个私有悬赏草稿详情
+  mac-aicheck agent bounty-draft-publish <id> [--reward 0]
+                                                  — 将草稿公开到悬赏市场
   mac-aicheck agent advice --format json|markdown
   mac-aicheck agent diagnose          分析失败模式，类比 Evolver 信号诊断
   mac-aicheck agent bind [--agent claude-code|openclaw]  绑定设备（自动打开浏览器确认）
@@ -1072,6 +1434,7 @@ export async function main(argv: string[]) {
   mac-aicheck agent owner-check                            查看待复现确认的方案列表
   mac-aicheck agent owner-verify <bounty_id> --answer <id> --result success|partial|failed
                                                            提交复现验证结果
+  mac-aicheck agent owner-auto-enable|owner-auto-disable   配置 owner 待验证方案自动提交
   mac-aicheck agent install-local-agent
   mac-aicheck agent upgrade            一键更新 claude-code / openclaw 到最新版本
   mac-aicheck agent upgrade self       更新 mac-aicheck 自身到最新版本
@@ -1133,11 +1496,13 @@ export async function main(argv: string[]) {
     cfg.autoSync = true;
     cfg.paused = false;
     if (cfg.workerEnabled === undefined) cfg.workerEnabled = true;
+    cfg.ownerAutoVerify = true;
     saveConfig(cfg);
     process.stdout.write(`mac-aicheck Agent Lite 已启用\n`);
     process.stdout.write(`  Agent Runner: ${r.agentJs}\n`);
     if (hookOutputs.length > 0) process.stdout.write(`  Hook: ${hookOutputs.join('; ')}\n`);
     process.stdout.write(`  自动同步: 已启用\n`);
+    process.stdout.write(`  Owner 自动复现: 已启用\n`);
     if (cfg.workerEnabled) {
       try {
         const workerStart = startWorkerDaemon();
@@ -1290,9 +1655,10 @@ export async function main(argv: string[]) {
       config.autoSync = true;
       config.paused = false;
       config.confirmedAt = nowIso();
+      config.ownerAutoVerify = true;
       saveConfig(config);
 
-      process.stdout.write('\n绑定成功!\n  自动同步: 已启用\n\n');
+      process.stdout.write('\n绑定成功!\n  自动同步: 已启用\n  Owner 自动复现: 已启用\n\n');
       if (config.workerEnabled) {
         try {
           const workerStart = startWorkerDaemon();
@@ -1360,9 +1726,10 @@ export async function main(argv: string[]) {
         config.autoSync = true;
         config.paused = false;
         config.confirmedAt = nowIso();
+        config.ownerAutoVerify = true;
         saveConfig(config);
 
-        process.stdout.write('绑定成功!\n  自动同步: 已启用\n\n');
+        process.stdout.write('绑定成功!\n  自动同步: 已启用\n  Owner 自动复现: 已启用\n\n');
         if (config.workerEnabled) {
           try {
             const workerStart = startWorkerDaemon();
@@ -1469,7 +1836,7 @@ export async function main(argv: string[]) {
     if (subcommand === 'status') {
       const cfg = loadConfig();
       const wState = loadWorkerState();
-      process.stdout.write(JSON.stringify({ ok: true, workerEnabled: cfg.workerEnabled, paused: cfg.paused, worker: wState }, null, 2) + '\n');
+      process.stdout.write(JSON.stringify({ ok: true, workerEnabled: cfg.workerEnabled, ownerAutoVerify: cfg.ownerAutoVerify, paused: cfg.paused, worker: wState }, null, 2) + '\n');
       return 0;
     }
     if (subcommand === 'start') {
@@ -1511,6 +1878,18 @@ export async function main(argv: string[]) {
     return 1;
   }
 
+  if (command === 'owner-auto-enable' || command === 'owner-auto-disable') {
+    const cfg = loadConfig();
+    cfg.ownerAutoVerify = command === 'owner-auto-enable';
+    saveConfig(cfg);
+    process.stdout.write(
+      cfg.ownerAutoVerify
+        ? 'Owner 自动复现验证已启用。后台 Worker 会自动执行安全验证命令并自动提交结果。\n'
+        : 'Owner 自动复现验证已禁用。待确认方案仅保留在 owner-check / owner-verify 手工流程。\n',
+    );
+    return 0;
+  }
+
   if (command === 'bounty-recommended') {
     const cfg = loadConfig();
     const headers = agentApiKeyHeaders(cfg);
@@ -1526,6 +1905,60 @@ export async function main(argv: string[]) {
         strategy,
       }, null, 2) + '\n');
     } catch (e: unknown) { process.stdout.write(`获取推荐悬赏失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  if (command === 'bounty-draft-list') {
+    const cfg = loadConfig();
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('悬赏命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+    try {
+      const result = await requestJson(`${apiBase()}/bounty-drafts/mine`, { headers });
+      process.stdout.write(JSON.stringify(result.data, null, 2) + '\n');
+    } catch (e: unknown) { process.stdout.write(`获取私有草稿失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  if (command === 'bounty-draft-detail') {
+    const cfg = loadConfig();
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('悬赏命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+    const id = (args._ as string[])[0];
+    if (!id) { process.stdout.write('用法: mac-aicheck agent bounty-draft-detail <id>\n'); return 1; }
+    try {
+      const result = await requestJson(`${apiBase()}/bounty-drafts/${id}`, { headers });
+      process.stdout.write(JSON.stringify(result.data, null, 2) + '\n');
+    } catch (e: unknown) { process.stdout.write(`获取私有草稿详情失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  if (command === 'bounty-draft-publish') {
+    const cfg = loadConfig();
+    const headers = agentApiKeyHeaders(cfg);
+    if (!headers) { process.stdout.write('悬赏命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
+    const id = (args._ as string[])[0];
+    if (!id) {
+      process.stdout.write('用法: mac-aicheck agent bounty-draft-publish <id> [--reward 0] [--visibility anonymous|public]\n');
+      return 1;
+    }
+    try {
+      const result = await requestJson(`${apiBase()}/bounty-drafts/${id}/publish`, {
+        method: 'POST',
+        headers,
+        body: {
+          reward: Number(args.reward || 0),
+          visibility: String(args.visibility || 'anonymous'),
+        },
+      });
+      if (result.status >= 400) {
+        process.stdout.write(`公开草稿失败: ${JSON.stringify(result.data)}\n`);
+        return 1;
+      }
+      const data = result.data as Record<string, unknown>;
+      process.stdout.write(`✓ 草稿已公开 ${data.id || id}\n`);
+      if (data.status) process.stdout.write(`状态: ${data.status}\n`);
+      if (data.reward !== undefined) process.stdout.write(`悬赏: ${data.reward} EVO\n`);
+    } catch (e: unknown) { process.stdout.write(`公开草稿失败: ${(e as Error).message}\n`); return 1; }
     return 0;
   }
 
