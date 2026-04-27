@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import '../src/scanners/index'; // register scanners
 import '../src/fixers/index'; // trigger side-effect fixer registrations
 import { registerFixer, getFixers, getFixerById, getFixerForScanResult, getFixerByScannerId, clearFixers } from '../src/fixers/registry';
+import { determineVerificationStatus } from '../src/fixers/verify';
 import type { Fixer } from '../src/fixers/types';
 import type { ScanResult } from '../src/scanners/types';
 
@@ -28,6 +29,16 @@ describe('fixer registry (pre-registered)', () => {
     const fixer = getFixerForScanResult(scanResult);
     expect(fixer).toBeDefined();
     expect(fixer?.id).toBe('git-fixer');
+  });
+
+  it('git identity 的 warn 状态不会再误匹配到 fixer', () => {
+    const scanResult: ScanResult = { id: 'git-identity', name: 'Git 身份配置', category: 'toolchain', status: 'warn', message: '' };
+    const fixer = getFixerForScanResult(scanResult);
+    expect(fixer).toBeUndefined();
+  });
+
+  it('验证状态 fail→fail 不再误判为 warn', () => {
+    expect(determineVerificationStatus('fail', 'fail')).toBe('fail');
   });
 });
 
