@@ -107,7 +107,9 @@ function rememberVersionNotification(info: VersionInfo) {
 
 function hasFreshVersionNotification(info: VersionInfo): boolean {
   const signature = buildVersionUpdateSignature(info);
-  return Boolean(signature && info.notifiedSignature === signature && info.notifiedAt);
+  if (!signature || info.notifiedSignature !== signature || !info.notifiedAt) return false;
+  const msSinceNotify = Date.now() - new Date(info.notifiedAt).getTime();
+  return msSinceNotify <= 24 * 60 * 60 * 1000;
 }
 
 function isConfigBooleanKey(key: string): key is ConfigBooleanKey {
@@ -239,7 +241,13 @@ async function checkUpdatesWithNotify(): Promise<void> {
     // Auto-upgrade if enabled, otherwise notify
     if (cfg.autoUpgrade) {
       process.stderr.write(`🔄 发现新版本，自动更新中...\n`);
-      await upgradeCommand();
+      const result = await upgradeCommand();
+      if (result.ok) {
+        process.stderr.write(`✅ 自动更新成功\n`);
+        rememberVersionNotification(info);
+      } else {
+        process.stderr.write(`❌ 自动更新失败，请手动运行 mac-aicheck agent upgrade\n`);
+      }
     } else {
       process.stderr.write(`\n🔔 发现新版本:\n`);
       if (updates.length > 0) {
@@ -300,8 +308,14 @@ function detectInstaller(cmd: string): { type: 'brew' | 'npm' | 'npx' | 'unknown
   }
 }
 
-async function upgradeCommand(): Promise<{ ok: boolean; results: Array<{ name: string; from: string; to: string; status: string }> }> {
-  const results: Array<{ name: string; from: string; to: string; status: string }> = [];
+type UpgradeResult = { name: string; from: string; to: string; status: string };
+
+function isUpgradeCommandOk(results: UpgradeResult[]): boolean {
+  return !results.some(result => result.status.startsWith('failed'));
+}
+
+async function upgradeCommand(): Promise<{ ok: boolean; results: UpgradeResult[] }> {
+  const results: UpgradeResult[] = [];
   const repos = [
     { name: 'claude-code', cmd: 'claude', npmPkg: '@anthropic-ai/claude-code', repo: 'anthropics/claude-code' },
     { name: 'openclaw', cmd: 'openclaw', npmPkg: 'openclaw', repo: 'openclaw/openclaw' },
@@ -347,7 +361,7 @@ async function upgradeCommand(): Promise<{ ok: boolean; results: Array<{ name: s
     writeJson(p.versionCache, cache);
   }
 
-  return { ok: true, results };
+  return { ok: isUpgradeCommandOk(results), results };
 }
 
 // 经验库：已知错误的本地修复建议（类比 Evolver genes.json）
@@ -1613,7 +1627,7 @@ export async function main(argv: string[]) {
     if (sub === 'set') {
       const key = String(rest[1] || '').trim();
       const rawValue = rest[2];
-      if (!isConfigBooleanKey(key) || rawValue === undefined) {
+      if (!isConfigBooleanKey(key) || rawValue === undefined || String(rawValue).trim() === '') {
         process.stdout.write(configUsage() + '\n');
         return 1;
       }
@@ -2123,6 +2137,7 @@ export const _testHelpers = {
   isBlockedHost,
   assertSafeRequestUrl,
   checkUpdatesWithNotify,
+  isUpgradeCommandOk,
   acquireWorkerLock,
   releaseWorkerLock,
   createEvent,

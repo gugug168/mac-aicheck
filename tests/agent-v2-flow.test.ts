@@ -341,6 +341,18 @@ describe('agent v2 flow', () => {
     const cache = JSON.parse(readFileSync(cachePath, 'utf8')) as { notifiedSignature?: string };
     expect(cache.notifiedSignature).toBe('claude-code:1.0.0->1.1.0');
   });
+
+  it('treats failed upgrade results as unsuccessful', () => {
+    expect(_testHelpers.isUpgradeCommandOk([
+      { name: 'claude-code', from: '1.0.0', to: '1.1.0', status: 'upgraded' },
+      { name: 'openclaw', from: '2.0.0', to: '2.1.0', status: 'failed: brew exited 1' },
+    ])).toBe(false);
+
+    expect(_testHelpers.isUpgradeCommandOk([
+      { name: 'claude-code', from: '1.0.0', to: '1.1.0', status: 'upgraded' },
+      { name: 'openclaw', from: '2.0.0', to: '2.0.0', status: 'up to date' },
+    ])).toBe(true);
+  });
 });
 
 describe('worker-on (TASK-091)', () => {
