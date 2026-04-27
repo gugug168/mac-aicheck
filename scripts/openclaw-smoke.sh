@@ -32,7 +32,7 @@ echo "[2/6] 构建 MacAICheck"
 npm run build >/dev/null
 
 echo "[3/6] 真实扫描并上传"
-node - <<'NODE' > "$SCAN_JSON"
+node - 2>/dev/null <<'NODE' > "$SCAN_JSON"
 const fs = require('node:fs');
 const path = require('node:path');
 const { scanAll, calculateScore } = require('./dist/scanners/index.js');
@@ -53,14 +53,13 @@ const { createPayload, stashData } = require('./dist/api/aicoevo-client.js');
     JSON.stringify({ score, results, upload }, null, 2) + '\n',
     'utf-8',
   );
-  process.stdout.write(JSON.stringify({ ok: true }, null, 2));
 })().catch((error) => {
   console.error(error);
   process.exit(1);
 });
 NODE
 
-node - <<'NODE'
+node - 2>/dev/null <<'NODE'
 const fs = require('node:fs');
 const report = JSON.parse(fs.readFileSync('.tmp/openclaw-smoke-scan.json', 'utf-8'));
 const byId = new Map(report.results.map((item) => [item.id, item]));

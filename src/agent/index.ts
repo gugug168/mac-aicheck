@@ -1,9 +1,11 @@
 // Agent Lite CLI - 简洁实现
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, appendFileSync, renameSync, unlinkSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, appendFileSync, unlinkSync, openSync, closeSync } from 'fs';
 import { join } from 'path';
 import { homedir, hostname } from 'os';
 import { execFileSync, spawn } from 'child_process';
 import crypto from 'node:crypto';
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 
 const LOCAL_VERSION = process.env.npm_package_version || '1.0.0';
 
@@ -28,15 +30,7 @@ function readJson<T>(file: string, fallback: T): T { try { return existsSync(fil
 function writeJson(file: string, data: unknown, mode = 0o600) { ensureDir(join(file, '..')); writeFileSync(file, JSON.stringify(data, null, 2) + '\n', { encoding: 'utf-8', mode }); }
 function appendJsonl(file: string, data: unknown) {
   ensureDir(join(file, '..'));
-  const line = JSON.stringify(data) + '\n';
-  // Write to temp file then rename for atomicity (#37)
-  const tmp = file + '.tmp-' + process.pid;
-  try {
-    appendFileSync(file, line, 'utf-8');
-  } catch {
-    // Fallback: write to temp then rename
-    try { writeFileSync(tmp, line, 'utf-8'); renameSync(tmp, file); } catch { /* best effort */ }
-  }
+  appendFileSync(file, JSON.stringify(data) + '\n', { encoding: 'utf-8', mode: 0o600, flag: 'a' });
 }
 function readJsonl(file: string): unknown[] { try { if (!existsSync(file)) return []; return readFileSync(file, 'utf-8').split(/\r?\n/).filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean); } catch { return []; } }
 
@@ -311,15 +305,7 @@ function loadConfig() {
   const p = paths();
   const cfg = readJson(p.config, {} as Record<string, unknown>);
   if (!cfg.clientId) cfg.clientId = `client_${crypto.randomUUID()}`;
-  // Per-agent deviceId (#31): if agentType is set, derive unique deviceId
   if (!cfg.deviceId) cfg.deviceId = `device_${crypto.randomUUID()}`;
-  if (cfg.agentType && typeof cfg.agentType === 'string') {
-    const baseDeviceId = cfg.deviceId as string;
-    const suffix = cfg.agentType === 'claude-code' ? '_cc' : cfg.agentType === 'openclaw' ? '_oc' : '';
-    if (suffix && !baseDeviceId.endsWith(suffix)) {
-      cfg.deviceId = baseDeviceId + suffix;
-    }
-  }
   if (cfg.shareData === undefined) cfg.shareData = false;
   if (cfg.autoSync === undefined) cfg.autoSync = false;
   if (cfg.paused === undefined) cfg.paused = false;
@@ -376,15 +362,27 @@ function saveWorkerState(state: WorkerState) { writeJson(paths().workerState, st
 
 function acquireWorkerLock(): boolean {
   const lockPath = paths().workerLock;
-  try {
-    const existing = readJson<{ pid?: number; startedAt?: string }>(lockPath, {});
-    if (existing.pid && existing.pid !== process.pid) {
-      try { process.kill(existing.pid, 0); return false; } catch { unlinkSync(lockPath); }
+  const payload = JSON.stringify({ pid: process.pid, startedAt: nowIso() }, null, 2) + '\n';
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let fd: number | null = null;
+    try {
+      fd = openSync(lockPath, 'wx', 0o600);
+      writeFileSync(fd, payload, { encoding: 'utf-8' });
+      closeSync(fd);
+      return true;
+    } catch (error: unknown) {
+      if (fd !== null) {
+        try { closeSync(fd); } catch { /* best effort */ }
+      }
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== 'EEXIST') return false;
+      const existing = readJson<{ pid?: number; startedAt?: string }>(lockPath, {});
+      if (existing.pid === process.pid) return true;
+      if (existing.pid && isProcessAlive(existing.pid)) return false;
+      try { unlinkSync(lockPath); } catch { /* another process may have raced us */ }
     }
-    if (existing.pid === process.pid) return true;
-  } catch {}
-  writeJson(lockPath, { pid: process.pid, startedAt: nowIso() });
-  return true;
+  }
+  return false;
 }
 function releaseWorkerLock() {
   try {
@@ -434,17 +432,27 @@ function normalizeAgent(v: string): string { const a = String(v || 'custom').toL
 function classifyEvent(agent: string, msg: string): string { const t = msg.toLowerCase(); if (t.includes('mcp')) return 'mcp_error'; if (t.includes('config') || t.includes('json')) return 'agent_config'; if (t.includes('traceback') || t.includes('syntaxerror') || t.includes('typeerror')) return 'coding_error_summary'; return agent === 'custom' ? 'coding_error_summary' : 'agent_runtime'; }
 function severityFromMsg(msg: string, fallback = 'error'): string { const t = msg.toLowerCase(); return t.includes('warn') ? 'warn' : t.includes('info') ? 'info' : fallback; }
 
+function computeAgentSuffix(agent: string): string {
+  return agent === 'claude-code' ? '_cc' : agent === 'openclaw' ? '_oc' : '';
+}
+
+function normalizeDeviceId(deviceId: string, agent?: string): string {
+  const base = String(deviceId || '').replace(/(?:_cc|_oc)$/, '');
+  return base + computeAgentSuffix(normalizeAgent(agent || ''));
+}
+
 function createEvent(input: { agent?: string; message?: string; eventType?: string; severity?: string; occurredAt?: string; fingerprint?: string; eventId?: string }) {
   const config = loadConfig();
   const agent = normalizeAgent(input.agent || '');
   const sanitizedMessage = trimForCapture(input.message || '');
   const eventType = input.eventType || classifyEvent(agent, sanitizedMessage);
   const occurredAt = input.occurredAt || nowIso();
+  const deviceId = normalizeDeviceId(String(config.deviceId || ''), agent);
   return {
     schemaVersion: 1,
     eventId: input.eventId || `evt_${crypto.randomUUID()}`,
     clientId: config.clientId,
-    deviceId: config.deviceId,
+    deviceId,
     source: 'mac-aicheck-lite',
     agent,
     eventType,
@@ -511,14 +519,99 @@ function parseArgs(argv: string[]): Record<string, unknown> {
   return r;
 }
 
+function normalizeHostname(hostname: string): string {
+  return String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '');
+}
+
+function isBlockedIpv4(host: string): boolean {
+  const normalized = normalizeHostname(host);
+  if (isIP(normalized) !== 4) return false;
+  const octets = normalized.split('.').map(part => Number(part));
+  const [a, b] = octets;
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a === 198 && (b === 18 || b === 19)) return true;
+  return false;
+}
+
+function ipv4FromMappedIpv6(host: string): string | null {
+  const normalized = normalizeHostname(host);
+  if (!normalized.startsWith('::ffff:')) return null;
+  const tail = normalized.slice('::ffff:'.length);
+  if (isIP(tail) === 4) return tail;
+  const parts = tail.split(':');
+  if (parts.length !== 2 || parts.some(part => !/^[0-9a-f]{1,4}$/i.test(part))) return null;
+  const high = parseInt(parts[0], 16);
+  const low = parseInt(parts[1], 16);
+  return [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
+}
+
+function isBlockedHost(hostname: string): boolean {
+  const h = normalizeHostname(hostname);
+  if (!h) return true;
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  if (h === 'metadata.google.internal' || h.endsWith('.metadata.google.internal')) return true;
+  if (h === '100.100.100.200') return true;
+  if (isBlockedIpv4(h)) return true;
+  const mappedIpv4 = ipv4FromMappedIpv6(h);
+  if (mappedIpv4 && isBlockedIpv4(mappedIpv4)) return true;
+  if (isIP(h) === 6) {
+    if (h === '::1') return true;
+    if (/^fe[89ab][0-9a-f:]*$/i.test(h)) return true;
+    if (/^f[cd][0-9a-f:]*$/i.test(h)) return true;
+  }
+  return false;
+}
+
 function apiBase() {
-  const raw = (process.env.AICOEVO_API_BASE || process.env.AICOEVO_BASE_URL || 'https://aicoevo.net').replace(/\/+$/, '');
+  const configuredBase = [process.env.AICOEVO_API_BASE, process.env.AICOEVO_BASE_URL]
+    .find(value => value && !['undefined', 'null'].includes(value.trim().toLowerCase()));
+  const raw = (configuredBase || 'https://aicoevo.net').replace(/\/+$/, '');
+  try {
+    const withScheme = raw.startsWith('http') ? raw : `https://${raw}`;
+    const parsed = new URL(withScheme);
+    if (isBlockedHost(parsed.hostname)) {
+      process.stderr.write(`[安全] AICOEVO_API_BASE 指向内网地址 ${parsed.hostname}，已忽略，使用默认地址\n`);
+      return 'https://aicoevo.net/api/v1';
+    }
+  } catch {}
   if (!raw.startsWith('https://') && process.env.NODE_ENV !== 'development') return raw.replace(/^http:\/\//, 'https://').endsWith('/api/v1') ? raw.replace(/^http:\/\//, 'https://') : `${raw.replace(/^http:\/\//, 'https://')}/api/v1`;
   return raw.endsWith('/api/v1') ? raw : `${raw}/api/v1`;
 }
 
 function agentApiBase(version: 'v1' | 'v2' = 'v2') {
   return apiBase().replace(/\/api\/v1$/, `/api/${version}`) + '/agent';
+}
+
+type ResolvedAddress = { address: string; family: number };
+
+async function resolveHostname(hostname: string): Promise<ResolvedAddress[]> {
+  const override = (globalThis as {
+    __MAC_AICHECK_TEST_DNS_LOOKUP__?: (hostname: string) => Promise<ResolvedAddress[]>;
+  }).__MAC_AICHECK_TEST_DNS_LOOKUP__;
+  if (override) return await override(hostname);
+  const results = await lookup(hostname, { all: true, verbatim: true });
+  return results.map(result => ({ address: result.address, family: result.family }));
+}
+
+async function assertSafeRequestUrl(url: string): Promise<void> {
+  const parsed = new URL(url);
+  if (isBlockedHost(parsed.hostname)) {
+    throw new Error(`[安全] AICOEVO API 主机 ${parsed.hostname} 属于内网或本机地址，已拒绝请求`);
+  }
+  let resolved: ResolvedAddress[];
+  try {
+    resolved = await resolveHostname(parsed.hostname);
+  } catch {
+    return;
+  }
+  const blocked = resolved.find(result => isBlockedHost(result.address));
+  if (blocked) {
+    throw new Error(`[安全] AICOEVO API 主机 ${parsed.hostname} 解析到内网地址 ${blocked.address}，已拒绝请求`);
+  }
 }
 
 async function heartbeatAgentV2(
@@ -543,6 +636,7 @@ function agentApiKeyHeaders(config: { authToken?: string }): Record<string, stri
 }
 
 async function requestJson(url: string, init: { method?: string; headers?: Record<string, string>; body?: unknown; timeoutMs?: number } = {}) {
+  await assertSafeRequestUrl(url);
   const resp = await fetch(url, { method: init.method || 'GET', headers: { Accept: 'application/json', ...(init.body ? { 'Content-Type': 'application/json' } : {}), ...(init.headers || {}) }, body: init.body ? JSON.stringify(init.body) : undefined, signal: AbortSignal.timeout(init.timeoutMs || 5000) });
   const text = await resp.text();
   let data = {};
@@ -729,7 +823,7 @@ async function syncEvents() {
   if (config.authToken) {
     if (config.authToken.startsWith('ak_')) { authH['X-API-Key'] = config.authToken; } else { authH['Authorization'] = `Bearer ${config.authToken}`; }
   }
-  const remote = await requestJson(`${apiBase()}/agent-events/batch`, { method: 'POST', headers: authH, body: { clientId: config.clientId, deviceId: config.deviceId, events: pending.map(({ syncStatus, ...e }) => e) } });
+  const remote = await requestJson(`${apiBase()}/agent-events/batch`, { method: 'POST', headers: authH, body: { clientId: config.clientId, deviceId: normalizeDeviceId(String(config.deviceId || '')), events: pending.map(({ syncStatus, ...e }) => e) } });
   if (remote.status < 200 || remote.status >= 300) return { ok: false, uploaded: 0, status: remote.status };
   const pendingIds = new Set(pending.map(e => e.eventId));
   const updated = all.map(e => pendingIds.has(e.eventId) ? { ...e, syncStatus: 'synced', syncedAt: nowIso() } : e);
@@ -1307,7 +1401,7 @@ async function runOriginalAgent(args: Record<string, unknown>) {
         process.stderr.write(`   可尝试: ${exp.commands.join(' | ')}\n`);
       }
     }
-    const config = loadConfig(); if (config.autoSync && config.shareData && !config.paused) { try { await syncEvents(); } catch {} }
+    const config = loadConfig(); if (config.autoSync && config.shareData && !config.paused) { try { await syncEvents(); } catch (e) { process.stderr.write(`[警告] 自动同步失败: ${e instanceof Error ? e.message : String(e)}`); } }
     process.stderr.write(`\nmac-aicheck: 已记录 Agent 问题 ${event.eventId}\n`);
   }
   return exitCode;
@@ -1446,7 +1540,7 @@ export async function main(argv: string[]) {
     const msg = String(args.message || '');
     if (!msg.trim()) throw new Error('没有可记录的错误内容');
     const event = storeEvent(createEvent({ agent: String(args.agent), message: msg, severity: args.severity as string }));
-    const cfg = loadConfig(); if (cfg.autoSync && cfg.shareData && !cfg.paused) { try { await syncEvents(); } catch {} }
+    const cfg = loadConfig(); if (cfg.autoSync && cfg.shareData && !cfg.paused) { try { await syncEvents(); } catch (e) { process.stderr.write(`[警告] 自动同步失败: ${e instanceof Error ? e.message : String(e)}`); } }
     process.stdout.write(JSON.stringify({ ok: true, eventId: event.eventId, fingerprint: event.fingerprint }) + '\n');
     return 0;
   }
@@ -2307,6 +2401,12 @@ export async function main(argv: string[]) {
 export const _testHelpers = {
   agentApiKeyHeaders,
   agentApiBase,
+  apiBase,
+  isBlockedHost,
+  assertSafeRequestUrl,
+  acquireWorkerLock,
+  releaseWorkerLock,
+  createEvent,
   loadConfig,
   saveConfig,
   loadWorkerState,

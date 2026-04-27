@@ -7,8 +7,12 @@
     "mac-aicheck": "dist/index.js"
   },
   "files": [
+    "bin/",
     "dist/",
-    "README.md"
+    "hooks-src/",
+    "README.md",
+    "CHANGELOG.md",
+    "VERSION"
   ],
   "scripts": {
     "build": "tsc",

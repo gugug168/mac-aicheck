@@ -1,9 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { once } from 'node:events';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
+import { spawn } from 'node:child_process';
 import { main as agentMain, _testHelpers } from '../src/agent/index';
 
+function restoreEnv(name: 'HOME' | 'AICOEVO_BASE_URL' | 'AICOEVO_API_BASE', value: string | undefined) {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
 function createTempHome() {
   return mkdtempSync(path.join(tmpdir(), 'mac-aicheck-agent-'));
 }
@@ -31,13 +37,16 @@ describe('agent v2 flow', () => {
   const homes: string[] = [];
   const originalHome = process.env.HOME;
   const originalBaseUrl = process.env.AICOEVO_BASE_URL;
+  const originalApiBase = process.env.AICOEVO_API_BASE;
 
   afterEach(() => {
     vi.unstubAllGlobals();
     delete (globalThis as { __MAC_AICHECK_TEST_SPAWN__?: unknown }).__MAC_AICHECK_TEST_SPAWN__;
     delete (globalThis as { __MAC_AICHECK_TEST_COMMAND_RUNNER__?: unknown }).__MAC_AICHECK_TEST_COMMAND_RUNNER__;
-    process.env.HOME = originalHome;
-    process.env.AICOEVO_BASE_URL = originalBaseUrl;
+    delete (globalThis as { __MAC_AICHECK_TEST_DNS_LOOKUP__?: unknown }).__MAC_AICHECK_TEST_DNS_LOOKUP__;
+    restoreEnv('HOME', originalHome);
+    restoreEnv('AICOEVO_BASE_URL', originalBaseUrl);
+    restoreEnv('AICOEVO_API_BASE', originalApiBase);
     for (const home of homes.splice(0)) {
       rmSync(home, { recursive: true, force: true });
     }
@@ -143,6 +152,67 @@ describe('agent v2 flow', () => {
     expect(request?.url).toBe('https://aicoevo.net/api/v1/bounty-drafts/draft_1/publish');
     expect(JSON.parse(request?.body || '{}')).toEqual({ reward: 0, visibility: 'anonymous' });
     expect(output).toContain('✓ 草稿已公开 draft_1');
+  });
+
+  it('blocks loopback, link-local and IPv6 private API bases', () => {
+    for (const blockedHost of [
+      'http://127.0.0.2',
+      'http://169.254.10.20',
+      'http://[::ffff:127.0.0.1]',
+      'http://[fe80::1]',
+      'metadata.google.internal',
+    ]) {
+      process.env.AICOEVO_API_BASE = blockedHost;
+      expect(_testHelpers.isBlockedHost(new URL(blockedHost.startsWith('http') ? blockedHost : `https://${blockedHost}`).hostname)).toBe(true);
+      expect(_testHelpers.apiBase()).toBe('https://aicoevo.net/api/v1');
+      expect(_testHelpers.agentApiBase('v2')).toBe('https://aicoevo.net/api/v2/agent');
+    }
+  });
+
+  it('rejects API hosts that resolve to loopback addresses', async () => {
+    seedConfig();
+    process.env.AICOEVO_API_BASE = 'http://127.0.0.1.nip.io';
+    (globalThis as { __MAC_AICHECK_TEST_DNS_LOOKUP__?: (hostname: string) => Promise<Array<{ address: string; family: number }>> }).__MAC_AICHECK_TEST_DNS_LOOKUP__ = async (hostname: string) => {
+      expect(hostname).toBe('127.0.0.1.nip.io');
+      return [{ address: '127.0.0.1', family: 4 }];
+    };
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse({ items: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const code = await agentMain(['bounty-list']);
+    const output = stdout.mock.calls.map(call => String(call[0])).join('');
+    stdout.mockRestore();
+
+    expect(code).toBe(1);
+    expect(output).toContain('解析到内网地址 127.0.0.1');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('normalizes legacy suffixed device ids before adding the current agent suffix', async () => {
+    const home = seedConfig({ deviceId: 'device-test_oc', agentType: 'openclaw', autoSync: false });
+
+    const code = await agentMain(['capture', '--agent', 'claude-code', '--message', 'legacy suffix test']);
+    expect(code).toBe(0);
+
+    const outboxPath = path.join(home, '.mac-aicheck', 'outbox', 'events.jsonl');
+    const [event] = readFileSync(outboxPath, 'utf8').trim().split('\n').map(line => JSON.parse(line) as { deviceId: string; agent: string });
+    expect(event.agent).toBe('claude-code');
+    expect(event.deviceId).toBe('device-test_cc');
+
+    let request: { url: string; body?: string } | null = null;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      request = { url, body: init?.body ? String(init.body) : undefined };
+      return mockResponse({ accepted: 1, bountyDrafts: [] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const syncCode = await agentMain(['sync']);
+    expect(syncCode).toBe(0);
+    expect(request?.url).toBe('https://aicoevo.net/api/v1/agent-events/batch');
+    const body = JSON.parse(request?.body || '{}') as { deviceId: string; events: Array<{ deviceId: string }> };
+    expect(body.deviceId).toBe('device-test');
+    expect(body.events[0]?.deviceId).toBe('device-test_cc');
   });
 
   // ── TASK-100: Owner reproduction loop ──
@@ -293,11 +363,13 @@ describe('worker-on (TASK-091)', () => {
   const homes: string[] = [];
   const originalHome = process.env.HOME;
   const originalBaseUrl = process.env.AICOEVO_BASE_URL;
+  const originalApiBase = process.env.AICOEVO_API_BASE;
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    process.env.HOME = originalHome;
-    process.env.AICOEVO_BASE_URL = originalBaseUrl;
+    restoreEnv('HOME', originalHome);
+    restoreEnv('AICOEVO_BASE_URL', originalBaseUrl);
+    restoreEnv('AICOEVO_API_BASE', originalApiBase);
     for (const home of homes.splice(0)) {
       rmSync(home, { recursive: true, force: true });
     }
@@ -346,6 +418,22 @@ describe('worker-on (TASK-091)', () => {
     expect(output).toContain('"status": "stopped"');
   });
 
+  it('worker lock rejects a live foreign pid and replaces stale locks', async () => {
+    const home = seedConfig();
+    const lockPath = path.join(home, '.mac-aicheck', 'worker.lock');
+    const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], { stdio: 'ignore' });
+
+    try {
+      writeFileSync(lockPath, JSON.stringify({ pid: holder.pid, startedAt: new Date().toISOString() }), 'utf8');
+      expect(_testHelpers.acquireWorkerLock()).toBe(false);
+    } finally {
+      holder.kill();
+      await once(holder, 'exit');
+    }
+
+    expect(_testHelpers.acquireWorkerLock()).toBe(true);
+    _testHelpers.releaseWorkerLock();
+  });
   it('worker daemon performs heartbeat and processes recommended_bounties', async () => {
     seedConfig();
     const requests: Array<{ url: string; body?: string }> = [];
