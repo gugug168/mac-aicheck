@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'temp-space',
   name: '临时目录磁盘空间检测',
   category: 'system',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const tempDir = process.env.TMPDIR || '/tmp';
@@ -13,12 +15,13 @@ const scanner: Scanner = {
     const parts = output.trim().split(/\s+/);
     const availableKb = parseInt(parts[3] || '0', 10);
     const freeGb = Math.round(availableKb / 1024 / 1024);
-    if (!availableKb) return { id: this.id, name: this.name, category: this.category, status: 'unknown', message: '无法读取临时目录剩余空间', details: `TMPDIR: ${tempDir}` };
+    if (!availableKb) return { id: this.id, name: this.name, category: this.category, status: 'unknown', message: '无法读取临时目录剩余空间', detail: `TMPDIR: ${tempDir}` };
     return {
       id: this.id, name: this.name, category: this.category,
       status: freeGb < 10 ? 'fail' : 'pass',
+      error_type: freeGb < 10 ? 'resource' : undefined,
       message: freeGb < 10 ? `临时目录所在磁盘空间不足 (${freeGb} GB < 10 GB)` : `临时目录所在磁盘空间充足 (${freeGb} GB)`,
-      details: `TMPDIR: ${tempDir}\n${output}`,
+      detail: `TMPDIR: ${tempDir}\n${output}`,
     };
   },
 };

@@ -6,13 +6,15 @@ const scanner: Scanner = {
   id: 'uv-package-manager',
   name: 'uv 包管理器检测',
   category: 'toolchain',
+  affectsScore: false,
 
   async scan(): Promise<ScanResult> {
     if (!commandExists('uv')) {
       return {
         id: this.id, name: this.name, category: this.category,
         status: 'warn',
-        message: 'uv 未安装，Python MCP 服务器可能无法运行',
+        error_type: 'missing',
+        message: '未检测到 uv 包管理器',
         suggestions: ['curl -LsSf https://astral.sh/uv/install.sh | sh', 'brew install uv', 'pip install uv'],
       };
     }

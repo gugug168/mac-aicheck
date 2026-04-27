@@ -6,10 +6,12 @@ const scanner: Scanner = {
   id: 'git-path',
   name: 'Git PATH 完整性检测',
   category: 'toolchain',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     if (!commandExists('git')) {
-      return { id: this.id, name: this.name, category: this.category, status: 'fail', message: '未检测到 Git' };
+      return { id: this.id, name: this.name, category: this.category, status: 'fail', error_type: 'missing', message: '未检测到 Git' };
     }
 
     const gitPath = runCommand('which git', 5000).stdout.trim();
@@ -18,8 +20,9 @@ const scanner: Scanner = {
       return {
         id: this.id, name: this.name, category: this.category,
         status: 'fail',
-        message: `Git 可用，但常用配套命令缺失: ${missing.join(', ')}`,
-        details: `git: ${gitPath}`,
+        error_type: 'missing',
+        message: `Git 依赖命令缺失: ${missing.join(', ')}`,
+        detail: `git: ${gitPath}`,
       };
     }
 
@@ -27,7 +30,7 @@ const scanner: Scanner = {
       id: this.id, name: this.name, category: this.category,
       status: 'pass',
       message: 'Git 与常用 Unix 配套命令可用',
-      details: `git: ${gitPath}`,
+      detail: `git: ${gitPath}`,
     };
   },
 };

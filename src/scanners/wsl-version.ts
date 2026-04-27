@@ -7,6 +7,8 @@ const scanner: Scanner = {
   id: 'wsl-version',
   name: 'Rosetta/虚拟 Linux 环境检测',
   category: 'apple',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const arch = runCommand('uname -m', 3000).stdout.trim();
@@ -26,8 +28,9 @@ const scanner: Scanner = {
     return {
       id: this.id, name: this.name, category: this.category,
       status: rosetta || linuxTools.length > 0 ? 'pass' : 'warn',
+      error_type: rosetta || linuxTools.length > 0 ? undefined : 'incompatible',
       message: rosetta ? 'Rosetta 2 已安装，可运行多数 x86_64 macOS CLI' : '未检测到 Rosetta 2 或虚拟 Linux 工具',
-      details: `虚拟 Linux 工具: ${linuxTools.length ? linuxTools.join(', ') : '(未检测到)'}`,
+      detail: `虚拟 Linux 工具: ${linuxTools.length ? linuxTools.join(', ') : '(未检测到)'}`,
       suggestions: rosetta ? undefined : ['softwareupdate --install-rosetta --agree-to-license', 'brew install --cask utm'],
     };
   },

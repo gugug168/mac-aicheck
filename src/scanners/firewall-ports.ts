@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'firewall-ports',
   name: '防火墙端口检测',
   category: 'permission',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const firewall = runCommand('/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>/dev/null', 5000);
@@ -16,8 +18,9 @@ const scanner: Scanner = {
     return {
       id: this.id, name: this.name, category: this.category,
       status: enabled ? 'pass' : 'warn',
+      error_type: enabled ? undefined : 'permission',
       message: enabled ? 'macOS 应用防火墙已开启' : 'macOS 应用防火墙未开启或无法确认',
-      details: `Application Firewall: ${firewall.stdout || '(无法读取)'}\npf: ${pf.stdout || '(无法读取)'}\n监听中的 AI 常用端口:\n${listening || '(未发现)'}`,
+      detail: `Application Firewall: ${firewall.stdout || '(无法读取)'}\npf: ${pf.stdout || '(无法读取)'}\n监听中的 AI 常用端口:\n${listening || '(未发现)'}`,
     };
   },
 };

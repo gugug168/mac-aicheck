@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'node-manager-conflict',
   name: 'Node 版本管理器冲突检测',
   category: 'toolchain',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const managers = ['nvm', 'fnm', 'volta', 'asdf', 'mise'].filter(commandExists);
@@ -14,8 +16,9 @@ const scanner: Scanner = {
     return {
       id: this.id, name: this.name, category: this.category,
       status: managers.length > 1 ? 'warn' : 'pass',
+      error_type: managers.length > 1 ? 'conflict' : undefined,
       message: managers.length > 1 ? `检测到多个 Node 版本管理器: ${managers.join(', ')}` : `Node 版本管理器正常${managers.length ? ` (${managers[0]})` : ''}`,
-      details: `node: ${nodePath || '(未检测到)'}\nnpm: ${npmPath || '(未检测到)'}`,
+      detail: `node: ${nodePath || '(未检测到)'}\nnpm: ${npmPath || '(未检测到)'}`,
     };
   },
 };

@@ -13,6 +13,8 @@ const scanner: Scanner = {
   id: 'mcp-command-availability',
   name: 'MCP 命令可用性检测',
   category: 'ai-tools',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const config = readJsonCandidate([...getClaudeMcpConfigCandidates(), ...getMcpConfigCandidates()]);
@@ -23,13 +25,14 @@ const scanner: Scanner = {
     const commands = collectCommands(config.data);
     const missing = commands.filter(command => !canResolveCommand(command));
     if (commands.length === 0) {
-      return { id: this.id, name: this.name, category: this.category, status: 'unknown', message: 'MCP 配置中未发现 command 字段', details: `文件: ${config.path}` };
+      return { id: this.id, name: this.name, category: this.category, status: 'unknown', message: 'MCP 配置中未发现 command 字段', detail: `文件: ${config.path}` };
     }
     return {
       id: this.id, name: this.name, category: this.category,
       status: missing.length ? 'warn' : 'pass',
+      error_type: missing.length ? 'missing' : undefined,
       message: missing.length ? `部分 MCP command 不可解析 (${missing.length}/${commands.length})` : 'MCP command 均可解析',
-      details: `文件: ${config.path}\n${missing.length ? `不可解析:\n${missing.join('\n')}` : commands.join('\n')}`,
+      detail: `文件: ${config.path}\n${missing.length ? `不可解析:\n${missing.join('\n')}` : commands.join('\n')}`,
     };
   },
 };

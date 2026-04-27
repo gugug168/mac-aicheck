@@ -5,6 +5,8 @@ const scanner: Scanner = {
   id: 'env-path-length',
   name: 'PATH 长度检测',
   category: 'system',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const pathVar = process.env.PATH || '';
@@ -15,11 +17,13 @@ const scanner: Scanner = {
     const warnLength = 8192;
 
     if (pathVar.length > warnLength || duplicates.length > 0) {
+      const issue = duplicates.length > 0 ? '存在重复 PATH 条目' : 'PATH 过长';
       return {
         id: this.id, name: this.name, category: this.category,
         status: 'warn',
-        message: `PATH 偏长或存在重复项 (${pathVar.length} 字符，${entries.length} 个条目)`,
-        details: duplicates.length ? `重复项:\n${duplicates.map(([p, c]) => `  ${p} (x${c})`).join('\n')}` : `建议低于 ${warnLength} 字符。`,
+        error_type: 'misconfigured',
+        message: issue,
+        detail: duplicates.length ? `重复项:\n${duplicates.map(([p, c]) => `  ${p} (x${c})`).join('\n')}` : `建议低于 ${warnLength} 字符。`,
       };
     }
 

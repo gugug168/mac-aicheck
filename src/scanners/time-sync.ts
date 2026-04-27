@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'time-sync',
   name: '时间同步检测',
   category: 'permission',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const setup = runCommand('systemsetup -getusingnetworktime 2>/dev/null', 5000);
@@ -23,8 +25,9 @@ const scanner: Scanner = {
     return {
       id: this.id, name: this.name, category: this.category,
       status: enabled && !highOffset ? 'pass' : 'warn',
+      error_type: enabled && !highOffset ? undefined : 'misconfigured',
       message: enabled && !highOffset ? '系统时间同步正常' : '时间同步未开启或偏移可能过大',
-      details: `网络时间: ${setup.stdout || '(无法读取)'}\n时间服务器: ${server.stdout || '(无法读取)'}\nsntp:\n${sntp.stdout || '(无法读取)'}`,
+      detail: `网络时间: ${setup.stdout || '(无法读取)'}\n时间服务器: ${server.stdout || '(无法读取)'}\nsntp:\n${sntp.stdout || '(无法读取)'}`,
       suggestions: enabled ? undefined : ['sudo systemsetup -setusingnetworktime on'],
     };
   },

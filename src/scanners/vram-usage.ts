@@ -10,6 +10,8 @@ const scanner: Scanner = {
   id: 'vram-usage',
   name: '统一内存/GPU 内存压力检测',
   category: 'system',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const vm = runCommand('vm_stat', 5000).stdout;
@@ -30,8 +32,9 @@ const scanner: Scanner = {
     return {
       id: this.id, name: this.name, category: this.category,
       status: usedPct > 90 ? 'warn' : 'pass',
+      error_type: usedPct > 90 ? 'resource' : undefined,
       message: usedPct > 90 ? `统一内存使用率偏高 (${usedPct}%)，可能影响本地模型推理` : `统一内存压力正常 (${usedPct}%)`,
-      details: `总内存: ${Math.round(totalBytes / 1024 ** 3)} GB\n估算可用: ${Math.round(availableBytes / 1024 ** 3)} GB\n${gpuInfo}`,
+      detail: `总内存: ${Math.round(totalBytes / 1024 ** 3)} GB\n估算可用: ${Math.round(availableBytes / 1024 ** 3)} GB\n${gpuInfo}`,
     };
   },
 };

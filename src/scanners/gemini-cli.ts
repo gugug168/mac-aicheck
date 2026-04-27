@@ -6,13 +6,15 @@ const scanner: Scanner = {
   id: 'gemini-cli',
   name: 'Gemini CLI',
   category: 'ai-tools',
+  affectsScore: false,
 
   async scan(): Promise<ScanResult> {
     if (!commandExists('gemini')) {
       return {
         id: this.id, name: this.name, category: this.category,
-        status: 'fail',
+        status: 'warn',
         message: 'Gemini CLI 未安装。安装: npm install -g @google/gemini-cli',
+        error_type: 'missing',
       };
     }
     const ver = runCommand('gemini --version 2>/dev/null || echo "unknown"', 5000);

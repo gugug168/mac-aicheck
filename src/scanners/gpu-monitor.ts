@@ -93,7 +93,7 @@ function isDiscreteGpu(device: GpuDevice): boolean {
 }
 
 export async function checkGpu(): Promise<ScannerResult> {
-  const details: string[] = [];
+  const detail: string[] = [];
   const suggestions = [GPU_SUMMARY_COMMAND];
 
   const sysctlCpu = runCommand(SYSCTL_CPU_COMMAND, 3000).stdout;
@@ -113,32 +113,32 @@ export async function checkGpu(): Promise<ScannerResult> {
   );
 
   if (cpuBrand) {
-    details.push(`CPU: ${cpuBrand}`);
+    detail.push(`CPU: ${cpuBrand}`);
   }
 
   if (hasUnifiedAppleGpu) {
-    details.push(`统一 GPU: ${(appleGpu?.chipset || cpuBrand || 'Apple Silicon').trim()}`);
+    detail.push(`统一 GPU: ${(appleGpu?.chipset || cpuBrand || 'Apple Silicon').trim()}`);
   }
 
   if (gpuDevices.length > 0) {
-    details.push(
+    detail.push(
       `GPU 列表: ${gpuDevices.map(device => `${device.chipset}${device.vram ? ` (${device.vram})` : ''}`).join(', ')}`
     );
   }
 
   if (externalDisplays.length > 0) {
-    details.push(`外接显示器: ${externalDisplays.join(', ')}`);
+    detail.push(`外接显示器: ${externalDisplays.join(', ')}`);
   }
 
   if (discreteGpus.length > 0) {
-    details.push(`独立 GPU: ${discreteGpus.map(device => device.chipset).join(', ')}`);
+    detail.push(`独立 GPU: ${discreteGpus.map(device => device.chipset).join(', ')}`);
   }
 
   if (profilerSummary) {
-    details.push(`推荐命令输出:\n${profilerSummary}`);
+    detail.push(`推荐命令输出:\n${profilerSummary}`);
   }
 
-  details.push(`Metal 命令行工具: ${hasMetalCli ? '已检测到 metal' : '未检测到 metal'}`);
+  detail.push(`Metal 命令行工具: ${hasMetalCli ? '已检测到 metal' : '未检测到 metal'}`);
 
   if (!hasMetalCli) {
     suggestions.push('xcode-select --install');
@@ -151,8 +151,9 @@ export async function checkGpu(): Promise<ScannerResult> {
       category: 'system',
       status: 'fail',
       message: '未能读取 GPU 信息',
-      details: details.join('\n'),
+      detail: detail.join('\n'),
       suggestions,
+      error_type: 'incompatible',
     };
   }
 
@@ -169,14 +170,27 @@ export async function checkGpu(): Promise<ScannerResult> {
     summaryParts.push(`外接显示器已连接: ${externalDisplays.join(', ')}`);
   }
 
+  if (hasMetalCli) {
+    return {
+      id: 'gpu-monitor',
+      name: 'GPU 检测',
+      category: 'system',
+      status: 'pass',
+      message: summaryParts.join('；') || 'GPU 信息已检测',
+      detail: detail.join('\n'),
+      suggestions,
+    };
+  }
+
   return {
     id: 'gpu-monitor',
     name: 'GPU 检测',
     category: 'system',
-    status: hasMetalCli ? 'pass' : 'warn',
+    status: 'warn',
     message: summaryParts.join('；') || 'GPU 信息已检测',
-    details: details.join('\n'),
+    detail: detail.join('\n'),
     suggestions,
+    error_type: 'missing',
   };
 }
 
@@ -184,6 +198,8 @@ const scanner: Scanner = {
   id: 'gpu-monitor',
   name: 'GPU 检测',
   category: 'system',
+  affectsScore: false,
+  defaultEnabled: false,
   scan: checkGpu,
 };
 

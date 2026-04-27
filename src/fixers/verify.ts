@@ -44,11 +44,7 @@ export function determineVerificationStatus(
 ): VerificationStatus {
   if (current === 'pass') return 'pass';
   if (current === 'warn') return 'warn';
-  if (current === 'fail') {
-    // If originally fail and still fail, check if improved within fail
-    if (original === 'fail') return 'warn'; // partial credit for trying
-    return 'fail';
-  }
+  if (current === 'fail') return 'fail';
   return 'fail';
 }
 

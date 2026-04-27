@@ -81,5 +81,6 @@ export function isAdmin(): boolean {
 
 /** 跨平台 PATH 解析 */
 export function parsePath(pathVar: string): string[] {
-  return pathVar.split(process.platform === 'win32' ? ';' : ':').filter(Boolean);
+  const separator = pathVar.includes(';') ? ';' : ':';
+  return pathVar.split(separator).filter(Boolean);
 }

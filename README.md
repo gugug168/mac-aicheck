@@ -8,7 +8,8 @@
 
 ## 功能特性
 
-- 🔍 **18 项环境检测** — 覆盖 AI 工具链（Claude Code、OpenClaw、Gemini CLI）、系统权限、开发工具链、网络配置
+- 🔍 **21 项核心环境检测** — 覆盖 AI 工具链、系统权限、开发工具链、网络配置
+- 🧪 **33 项高级扩展检测** — 默认隐藏且不计分，避免把可选项误算成核心环境问题
 - 🛠️ **一键修复** — 检测到问题自动给出修复命令，点击即可执行
 - 📦 **AI 工具安装** — 从 Web UI 一键安装主流 AI 编程工具
 - 📊 **可视化报告** — 评分制 + 分类展示，支持导出历史记录
@@ -18,12 +19,16 @@
 
 | 类别 | 检测项 |
 |------|--------|
-| 🍺 Homebrew | Homebrew 安装、镜像配置 |
+| 🍺 Homebrew | Homebrew 安装 |
 | 🍎 macOS 系统 | Apple Silicon、Rosetta 2、屏幕录制权限、开发者模式 |
-| 🔧 开发工具链 | Xcode CLT、Node.js 版本、npm 镜像、Python 版本 |
-| 🤖 AI 工具 | Claude Code、OpenClaw、Gemini CLI、CCSwitch、Cute Claude Hooks、OpenCode |
-| 🔑 身份与权限 | Git 全局身份、admin 权限 |
-| 🌐 网络与证书 | 代理配置、SSL 证书、DNS 解析 |
+| 🔧 开发工具链 | Git、Git 全局身份、Git 凭据链路、Xcode CLT、Node.js 版本、Python 版本、uv 包管理器 |
+| 🤖 AI 工具 | Claude Code、OpenClaw、Gemini CLI、CCSwitch |
+| 🔑 身份与权限 | admin 权限 |
+| 🌐 网络与证书 | npm 镜像、代理配置、SSL 证书、DNS 解析 |
+
+说明：
+- 默认评分只统计核心 21 项。
+- 高级扩展检测默认隐藏，不参与评分，用于更深的环境排查。
 
 ## 快速开始
 
@@ -44,7 +49,10 @@ npm run build
 ### 使用
 
 ```bash
-# 方式一：CLI 扫描（生成 HTML 报告）
+# 方式一：CLI 扫描
+mac-aicheck
+
+# 方式一补充：保留 scan 别名
 mac-aicheck scan
 
 # 方式二：Web UI（浏览器打开，带交互式修复）
@@ -84,7 +92,7 @@ docker run -it --rm \
 mac-aicheck/
 ├── src/
 │   ├── index.ts              # CLI 入口 + HTTP 服务器
-│   ├── scanners/             # 18 个检测器
+│   ├── scanners/             # 核心 + 高级检测器
 │   │   ├── index.ts          # Scanner 注册表
 │   │   ├── types.ts          # 类型定义
 │   │   ├── claude-code.ts    # Claude Code
@@ -102,10 +110,7 @@ mac-aicheck/
 │   └── report/
 │       └── html.ts           # HTML 报告生成器
 ├── dist/                     # 编译输出
-├── dist/web/                 # Web UI 静态文件
-│   ├── index.html
-│   ├── app.js
-│   └── style.css
+├── dist/web/                 # Web UI 运行时数据（如 scan-data.json）
 └── package.json
 ```
 
@@ -115,9 +120,27 @@ mac-aicheck/
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `AICO_EVO_URL` | `https://aicoevo.com` | AICO EVO API 地址 |
+| `AICO_EVO_URL` | `https://aicoevo.net` | AICO EVO API 地址 |
 | `AICO_EVO_TOKEN` | — | 上报认证 Token |
 | `PORT` | `7890` | Web 服务端口 |
+
+### Agent Lite
+
+```bash
+# Claude Code + OpenClaw 一起启用
+mac-aicheck agent enable --target all
+
+# 仅启用 OpenClaw 监控
+mac-aicheck agent enable --target openclaw
+
+# 在 macOS 真机上跑 OpenClaw 烟雾验收
+bash scripts/openclaw-smoke.sh
+```
+
+说明：
+- Claude Code 使用 `~/.claude/settings.json` 的 SessionStart/PostToolUse hooks。
+- OpenClaw 使用 shell hook 写入 `~/.zshrc` / `~/.bashrc` / `~/.bash_profile`。
+- 悬赏命令需要先运行 `mac-aicheck agent bind` 获取 Agent API Key。
 
 ### 上报数据格式
 

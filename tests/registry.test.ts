@@ -34,4 +34,17 @@ describe('scanner registry', () => {
     const result = getScannerByCategory('nonexistent-category');
     expect(result).toHaveLength(0);
   });
+
+  it('defaultEnabled=false 的 scanner 默认不会出现在扫描列表中', () => {
+    const visible = getScanners().map(scanner => scanner.id);
+    const all = getScanners({ includeDefaultDisabled: true }).map(scanner => scanner.id);
+
+    expect(all).toContain('claude-cli');
+    expect(visible).not.toContain('claude-cli');
+  });
+
+  it('all scanner ids stay unique even when including hidden scanners', () => {
+    const all = getScanners({ includeDefaultDisabled: true }).map(scanner => scanner.id);
+    expect(new Set(all).size).toBe(all.length);
+  });
 });

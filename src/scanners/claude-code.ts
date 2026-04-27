@@ -6,13 +6,15 @@ const scanner: Scanner = {
   id: 'claude-code',
   name: 'Claude Code',
   category: 'ai-tools',
+  affectsScore: false,
 
   async scan(): Promise<ScanResult> {
     if (!commandExists('claude')) {
       return {
         id: this.id, name: this.name, category: this.category,
-        status: 'fail',
+        status: 'warn',
         message: 'Claude Code 未安装。安装: brew install --cask claude-code 或 https://claude.com/code',
+        error_type: 'missing',
       };
     }
     const ver = runCommand('claude --version 2>/dev/null || echo "unknown"', 5000);

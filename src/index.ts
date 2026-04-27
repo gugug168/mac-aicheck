@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { scanAll } from './scanners/index';
-import { fixAll, getFixerById } from './fixers/index';
+import { fixAll, getFixerById, getFixerForScanResult } from './fixers/index';
 import { calculateScore } from './scoring/calculator';
 import { createPayload, saveLocal, stashData, buildClaimUrl, submitFeedback } from './api/aicoevo-client';
 import { getInstallers, getAllowedCommands } from './installers/index';
@@ -12,10 +12,27 @@ import * as http from 'http';
 import { spawn } from 'child_process';
 
 const MAX_BODY = 1024 * 1024;
-const PORT = 7890;
 const WEB_DIR = path.join(__dirname, '../dist/web');
 const DATA_FILE = path.join(WEB_DIR, 'scan-data.json');
-const VERSION = "1.0.0";
+
+function resolvePort(): number {
+  const raw = Number(process.env.PORT || '7890');
+  return Number.isInteger(raw) && raw > 0 && raw <= 65535 ? raw : 7890;
+}
+
+function resolveVersion(): string {
+  try {
+    const packageJson = JSON.parse(
+      fs.readFileSync(path.join(__dirname, '../package.json'), 'utf-8')
+    ) as { version?: string };
+    return packageJson.version || '1.0.0';
+  } catch {
+    return '1.0.0';
+  }
+}
+
+const PORT = resolvePort();
+const VERSION = resolveVersion();
 
 function gc(s: number) { return s>=90?'#22c55e':s>=70?'#3b82f6':s>=50?'#eab308':'#ef4444'; }
 
@@ -23,15 +40,153 @@ function gc(s: number) { return s>=90?'#22c55e':s>=70?'#3b82f6':s>=50?'#eab308':
 // 单数据源：命令定义统一存储在 installers/index.ts 的 getAllowedCommands()
 const ALLOWED_COMMANDS: Record<string, { cmd: string }> = getAllowedCommands();
 
+function escapeHtml(value: string): string {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function persistServeData(score: unknown, results: unknown, payload: unknown): void {
+  if (!fs.existsSync(WEB_DIR)) fs.mkdirSync(WEB_DIR, { recursive: true });
+  fs.writeFileSync(DATA_FILE, JSON.stringify({ score, results, payload }, null, 2), 'utf-8');
+}
+
+function loadServeData(): { score: { score: number; label: string }; results: Array<any> } | null {
+  if (!fs.existsSync(DATA_FILE)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8')) as { score: { score: number; label: string }; results: Array<any> };
+  } catch {
+    return null;
+  }
+}
+
+function renderServePage(): string {
+  const data = loadServeData();
+  if (!data) {
+    return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>MacAICheck</title><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:32px;background:#0f172a;color:#e2e8f0"><h1>MacAICheck</h1><p>暂无扫描结果。先运行 <code>mac-aicheck --serve</code> 或 <code>mac-aicheck scan --serve</code>。</p></body></html>`;
+  }
+
+  const score = data.score?.score ?? 0;
+  const label = data.score?.label ?? '';
+  const issues = data.results.filter(item => item.status === 'fail' || item.status === 'warn');
+  const cards = issues.map((item) => {
+    const fixable = Boolean(getFixerForScanResult(item));
+    const detail = item.detail ? `<pre style="white-space:pre-wrap;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:12px;overflow:auto">${escapeHtml(item.detail)}</pre>` : '';
+    const fixButton = fixable
+      ? `<button onclick="runFix('${escapeHtml(item.id)}', this)" style="margin-top:12px;padding:10px 14px;border-radius:8px;border:0;background:#22c55e;color:#04130a;font-weight:700;cursor:pointer">尝试修复</button>`
+      : `<div style="margin-top:12px;color:#94a3b8;font-size:13px">当前没有自动修复器</div>`;
+    return `<section style="border:1px solid #334155;border-radius:12px;padding:16px;background:#111827">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">
+        <div>
+          <div style="font-size:18px;font-weight:700">${escapeHtml(item.name)}</div>
+          <div style="font-size:13px;color:#94a3b8">${escapeHtml(item.id)} · ${escapeHtml(item.category)} · ${escapeHtml(item.status)}</div>
+        </div>
+      </div>
+      <p style="margin:12px 0;color:#e5e7eb">${escapeHtml(item.message)}</p>
+      ${detail}
+      ${fixButton}
+    </section>`;
+  }).join('\n');
+
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MacAICheck</title>
+  <style>
+    body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#020617;color:#e2e8f0}
+    .wrap{max-width:980px;margin:0 auto;padding:28px 20px 48px}
+    .hero{display:grid;gap:16px;margin-bottom:24px}
+    .score{display:inline-block;padding:16px 18px;border-radius:14px;background:#111827;border:1px solid #334155}
+    .muted{color:#94a3b8}
+    .grid{display:grid;gap:16px}
+    .toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:18px 0 24px}
+    button.secondary{padding:10px 14px;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;cursor:pointer}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <h1 style="margin:0">MacAICheck</h1>
+      <div class="score">
+        <div class="muted">环境评分</div>
+        <div style="font-size:42px;font-weight:800;color:${gc(score)}">${score}</div>
+        <div class="muted">${escapeHtml(label)}</div>
+      </div>
+      <div class="toolbar">
+        <button class="secondary" onclick="location.reload()">刷新页面</button>
+        <button class="secondary" onclick="alert('重新运行命令: mac-aicheck --serve')">重新扫描</button>
+        <span class="muted">当前显示 fail/warn 项，共 ${issues.length} 项</span>
+      </div>
+    </div>
+    <div class="grid">
+      ${cards || '<div class="muted">当前没有 fail/warn 项。</div>'}
+    </div>
+  </div>
+  <script>
+    async function runFix(scannerId, button) {
+      const original = button.textContent;
+      button.disabled = true;
+      button.textContent = '修复中...';
+      try {
+        const res = await fetch('/api/fix', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scannerId })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || data.message || '修复失败');
+        alert((data.fixResult && data.fixResult.message) || '修复完成');
+        location.reload();
+      } catch (err) {
+        alert(err.message || String(err));
+        button.disabled = false;
+        button.textContent = original;
+      }
+    }
+  </script>
+</body>
+</html>`;
+}
+
+function openUrl(url: string): void {
+  const opener = process.platform === 'darwin'
+    ? { command: 'open', args: [url] }
+    : process.platform === 'win32'
+      ? { command: 'cmd', args: ['/c', 'start', '', url] }
+      : { command: 'xdg-open', args: [url] };
+
+  try {
+    const child = spawn(opener.command, opener.args, { detached: true, stdio: 'ignore' });
+    child.on('error', () => {});
+    child.unref();
+  } catch {}
+}
+
 function serveHttp() {
+  function isLocalRequest(req: http.IncomingMessage): boolean {
+    const host = (req.headers.host || '').toLowerCase();
+    return host.startsWith('127.0.0.1:') || host.startsWith('localhost:');
+  }
+
   const server = http.createServer((req, res) => {
     const pathname = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).pathname;
+
+    if (pathname === '/' || pathname === '/index.html') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(renderServePage());
+      return;
+    }
 
     // Scan data
     if (pathname === '/scan-data.json') {
       if (fs.existsSync(DATA_FILE)) {
         const data = fs.readFileSync(DATA_FILE, 'utf-8');
-        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
         res.end(data);
       } else {
         res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -55,7 +210,7 @@ function serveHttp() {
           type: i.type || 'manual',
         };
       });
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
       res.end(JSON.stringify(payload));
       return;
     }
@@ -77,7 +232,7 @@ function serveHttp() {
         // Security: validate ID against whitelist (prevents command injection)
         const entry = ALLOWED_COMMANDS[id || ''];
         if (!entry) {
-          res.writeHead(403, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+          res.writeHead(403, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
           res.end(JSON.stringify({ error: 'Unknown installer ID' }));
           return;
         }
@@ -87,7 +242,7 @@ function serveHttp() {
           'Content-Type': 'text/event-stream; charset=utf-8',
           'Cache-Control': 'no-cache',
           'Connection': 'keep-alive',
-          'Access-Control-Allow-Origin': 'null',
+          'Access-Control-Allow-Origin': 'http://localhost:7890',
           'X-Accel-Buffering': 'no',
         });
 
@@ -130,8 +285,56 @@ function serveHttp() {
       return;
     }
 
+    if (pathname === '/api/fix' && req.method === 'POST') {
+      let body = '';
+      let size = 0;
+      req.on('data', chunk => {
+        size += chunk.length;
+        if (size > MAX_BODY) { res.writeHead(413); res.end('Payload Too Large'); return; }
+        body += chunk;
+      });
+      req.on('end', async () => {
+        try {
+          const payload = JSON.parse(body || '{}') as { scannerId?: string; dryRun?: boolean };
+          const scannerId = String(payload.scannerId || '').trim();
+          if (!scannerId) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'scannerId required' }));
+            return;
+          }
+
+          const result = await fixAll({ dryRun: Boolean(payload.dryRun), scannerIds: [scannerId] });
+          const fixEntry = result.results[0];
+          if (!fixEntry) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: `No fixer available for ${scannerId}` }));
+            return;
+          }
+
+          const refreshedResults = await scanAll();
+          const refreshedScore = calculateScore(refreshedResults);
+          const refreshedPayload = createPayload(refreshedResults, refreshedScore);
+          persistServeData(refreshedScore, refreshedResults, refreshedPayload);
+
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
+          res.end(JSON.stringify({
+            ok: true,
+            fixResult: fixEntry.fixResult || null,
+            error: fixEntry.error || null,
+            score: refreshedScore,
+            results: refreshedResults,
+          }));
+        } catch (e: any) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: e?.message || '修复失败' }));
+        }
+      });
+      return;
+    }
+
     // Block all unknown /api/ routes (except stash, feedback, version-check, agent)
     if (pathname.startsWith('/api/') &&
+        pathname !== '/api/fix' &&
         pathname !== '/api/stash' &&
         pathname !== '/api/feedback' &&
         pathname !== '/api/version-check' &&
@@ -141,9 +344,16 @@ function serveHttp() {
       return;
     }
 
+    // Security: agent routes only accessible from localhost (#38)
+    if (pathname.startsWith('/api/agent') && !isLocalRequest(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Agent API only accessible from localhost' }));
+      return;
+    }
+
     // Agent Lite: 本地状态
     if (pathname === '/api/agent/status' && req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
       res.end(JSON.stringify(getAgentLocalStatus()));
       return;
     }
@@ -159,9 +369,11 @@ function serveHttp() {
       });
       req.on('end', () => {
         let payload: { target?: string } = {};
-        try { payload = JSON.parse(body); } catch { /* ignore */ }
-        const result = enableAgentExperience(payload.target || 'all');
-        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+        try { payload = JSON.parse(body); } catch { payload = { target: 'all' }; }
+        const VALID_TARGETS = ['all', 'claude-code', 'openclaw'];
+        const target = VALID_TARGETS.includes(payload.target || '') ? payload.target : 'all';
+        const result = enableAgentExperience(target);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
         res.end(JSON.stringify(result));
       });
       return;
@@ -169,28 +381,28 @@ function serveHttp() {
 
     // Agent Lite: 暂停上传
     if (pathname === '/api/agent/pause' && req.method === 'POST') {
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
       res.end(JSON.stringify(pauseAgentUploads(true)));
       return;
     }
 
     // Agent Lite: 恢复上传
     if (pathname === '/api/agent/resume' && req.method === 'POST') {
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
       res.end(JSON.stringify(pauseAgentUploads(false)));
       return;
     }
 
     // Agent Lite: 手动同步一次
     if (pathname === '/api/agent/sync' && req.method === 'POST') {
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
       res.end(JSON.stringify(syncAgentEvents()));
       return;
     }
 
     // Version check endpoint
     if (pathname === '/api/version-check' && req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
       res.end(JSON.stringify({ current: VERSION, latest: VERSION }));
       return;
     }
@@ -208,7 +420,7 @@ function serveHttp() {
         try {
           const payload = JSON.parse(body);
           const result = await stashData(payload);
-          res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
           res.end(JSON.stringify(result));
         } catch (e: any) {
           let detail = e.message || '未知错误';
@@ -235,7 +447,7 @@ function serveHttp() {
         try {
           const payload = JSON.parse(body);
           const result = await submitFeedback(payload);
-          res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'null' });
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': 'http://localhost:7890' });
           res.end(JSON.stringify(result));
         } catch (e: any) {
           let detail = e.message || '未知错误';
@@ -258,7 +470,11 @@ function serveHttp() {
       res.end('Forbidden');
       return;
     }
-    if (!fs.existsSync(filePath)) filePath = path.join(WEB_DIR, 'index.html');
+    if (!fs.existsSync(filePath)) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Not Found');
+      return;
+    }
     const ext = path.extname(filePath);
     const mime: Record<string, string> = {
       '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css',
@@ -271,7 +487,7 @@ function serveHttp() {
   server.listen(PORT, '127.0.0.1', () => {
     console.log(`\n[*] MacAICheck v${VERSION} Web UI: http://localhost:${PORT}`);
     console.log(`    Ctrl+C to stop\n`);
-    require('child_process').spawn('open', [`http://localhost:${PORT}`], { detached: true, stdio: 'ignore' }).unref();
+    openUrl(`http://localhost:${PORT}`);
   });
 }
 
@@ -284,13 +500,16 @@ async function runScan(serve: boolean) {
   try {
     saveLocal(payload);
     stashData(payload)
-      .then(({ token }) => {
-        const claimUrl = buildClaimUrl(token);
+      .then(({ token, claim_url }) => {
+        const claimUrl = claim_url || buildClaimUrl(token);
         console.log('\n[+] 扫描结果已上传，请在浏览器打开认领你的环境报告:');
         console.log(`    ${claimUrl}\n`);
       })
-      .catch(() => {});
-  } catch (e) { /* ignore */ }
+      .catch((err) => {
+        console.error('\n[-] 上传失败:', err instanceof Error ? err.message : String(err));
+        console.error('    扫描结果已保存在本地，请检查网络后重新运行上传\n');
+      });
+  } catch (e) { console.error('[MacAICheck] 保存本地报告失败:', e instanceof Error ? e.message : String(e)); }
   const passed = results.filter(r => r.status === 'pass').length;
   const warn = results.filter(r => r.status === 'warn').length;
   const fail = results.filter(r => r.status === 'fail').length;
@@ -300,9 +519,7 @@ async function runScan(serve: boolean) {
 
   if (serve) {
     // 保存完整数据供 Web UI 和社区功能使用
-    const data = JSON.stringify({ score, results, payload }, null, 2);
-    if (!fs.existsSync(WEB_DIR)) fs.mkdirSync(WEB_DIR, { recursive: true });
-    fs.writeFileSync(DATA_FILE, data, 'utf-8');
+    persistServeData(score, results, payload);
     serveHttp();
     return;
   }
@@ -314,8 +531,8 @@ if (args.includes('--serve') || args.includes('--web')) {
   runScan(true).catch(console.error);
 } else if (args.includes('--json')) {
   runScan(false).then(r => { if (r) console.log(JSON.stringify(r, null, 2)); }).catch(console.error);
-} else if (args.includes('--help') || args.length === 0) {
-  console.log('MacAICheck - AI Dev Environment Checker\nUsage:\n  mac-aicheck          Run diagnosis\n  mac-aicheck --serve   Start Web UI\n  mac-aicheck --json    JSON output\n  mac-aicheck agent     Agent Lite commands (install-hook, sync, etc.)');
+} else if (args.includes('--help')) {
+  console.log('MacAICheck - AI Dev Environment Checker\nUsage:\n  mac-aicheck          Run diagnosis\n  mac-aicheck --serve   Start Web UI\n  mac-aicheck --json    JSON output\n  mac-aicheck agent     Agent Lite commands (enable/install-hook/sync, etc.)');
 } else if (args.includes('agent')) {
   // Agent Lite CLI 子命令
   const agentArgs = args.slice(args.indexOf('agent') + 1);

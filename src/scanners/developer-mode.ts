@@ -14,6 +14,7 @@ const scanner: Scanner = {
     return {
       id: this.id, name: this.name, category: this.category,
       status: isEnabled ? 'pass' : 'warn',
+      error_type: isEnabled ? undefined : 'permission',
       message: isEnabled ? '系统完整性保护 (SIP) 已启用，开发者模式需在恢复模式手动开启'
                          : '建议开启开发者模式：sudo nvram boot-args="devmode=1" 或 Recovery Mode 设置',
     };

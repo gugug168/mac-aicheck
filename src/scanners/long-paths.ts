@@ -25,12 +25,14 @@ const scanner: Scanner = {
   id: 'long-paths',
   name: '长路径检测',
   category: 'system',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const warnLimit = 240;
     const found = scanLongPaths(process.cwd(), warnLimit);
     if (found.length > 0) {
-      return { id: this.id, name: this.name, category: this.category, status: 'warn', message: `发现 ${found.length} 个较长路径`, details: found.join('\n') };
+      return { id: this.id, name: this.name, category: this.category, status: 'warn', error_type: 'misconfigured', message: `发现 ${found.length} 个较长路径`, detail: found.join('\n') };
     }
     return { id: this.id, name: this.name, category: this.category, status: 'pass', message: `当前项目未发现超过 ${warnLimit} 字符的路径` };
   },

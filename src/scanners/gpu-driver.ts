@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'gpu-driver',
   name: 'GPU/Metal 驱动检测',
   category: 'apple',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const output = runCommand('system_profiler SPDisplaysDataType 2>/dev/null', 10000).stdout;
@@ -21,8 +23,9 @@ const scanner: Scanner = {
     return {
       id: this.id, name: this.name, category: this.category,
       status: hasMetalSupport ? 'pass' : 'warn',
+      error_type: hasMetalSupport ? undefined : 'incompatible',
       message: hasMetalSupport ? `Metal 支持正常: ${chipsets.join(', ')}` : `未确认 Metal 支持: ${chipsets.join(', ')}`,
-      details: [`GPU: ${chipsets.join(', ')}`, `metal CLI: ${hasMetalCli ? '可用' : '未检测到'}`, ...metalLines].join('\n'),
+      detail: [`GPU: ${chipsets.join(', ')}`, `metal CLI: ${hasMetalCli ? '可用' : '未检测到'}`, ...metalLines].join('\n'),
       suggestions: hasMetalCli ? undefined : ['xcode-select --install'],
     };
   },

@@ -109,6 +109,10 @@ export async function fixAll(options: FixAllOptions = {}): Promise<FixAllResult>
         const { newScanResult, status } = await verifyFix(scanResult, fixer.id);
         fixResult.verified = true;
         fixResult.newScanResult = newScanResult;
+        fixResult.partial = status === 'warn';
+        if (status === 'fail') {
+          fixResult.success = false;
+        }
         fixResult.nextSteps = buildNextSteps(status, fixer.risk, fixResult.message);
       } else {
         fixResult.verified = false;

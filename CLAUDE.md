@@ -7,6 +7,26 @@
 - 当前：18 项环境检测（scanner）
 - 目标：三层修复系统（Fixer Infrastructure → 精准诊断 → 修复后指导）
 
+## Three-Repo Ecosystem
+
+MacAICheck 是三端生态的 macOS 客户端：
+
+| 仓库 | 平台 | 技术栈 | GitHub |
+|------|------|--------|--------|
+| WinAICheck | Windows | Bun + TypeScript (.exe) | `gugug168/WinAICheck` |
+| **MacAICheck** | macOS | Node + TypeScript (CLI) | `gugug168/mac-aicheck` |
+| aicoevo-platform | 服务端 | FastAPI + Next.js + SQLite | `gugug168/aicoevo-platform` |
+
+**API 契约**: 见 aicoevo-platform 的 `docs/API_CONTRACT.md`，包含 scan-intake 请求/响应规范、当前共享上传 payload（`timestamp/score/results/systemInfo`）、认证方式和数据类型定义。
+
+**关键同步规则**:
+- 修改 `src/api/aicoevo-client.ts` 中的上传逻辑 → 同步检查 WinAICheck 的 `src/privacy/uploader.ts`
+- 修改扫描结果结构 → 三端同步更新
+- 修改上传端点路径 → aicoevo-platform 的路由也要同步
+- 新增扫描器分类 → 同步更新 `web/src/lib/types.ts` 的 `CATEGORY_LABELS`
+
+**WinAICheck 功能对照**: WinAICheck 已实现 37+ 扫描器 + 完整修复系统 + Agent Lite。MacAICheck 当前 18 项检测，修复系统 Phase 1 进行中。
+
 ## Current Status (2026-04-12)
 
 - **main 分支**: 稳定可发布

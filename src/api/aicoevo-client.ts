@@ -4,27 +4,55 @@
  * 基础URL: https://aicoevo.net (环境变量 AICO_EVO_URL 配置)
  *
  * 与 WinAICheck 对齐的流程:
- * 1. stash: POST /api/v1/stash → 获取 token（无需登录）
+ * 1. scan-intake: POST /api/v1/problem-briefs/scan-intake → 获取 token + problem brief（无需登录）
  * 2. claim: 浏览器打开 https://aicoevo.net/claim?t=TOKEN
  * 3. feedback: POST /api/v1/feedback（无需登录）
  */
 
 import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { homedir, hostname as osHostname, arch as osArch, release as osRelease } from 'os';
 import { execSync } from 'child_process';
 import type { ScanResult } from '../scanners/types';
 import type { ScoreResult } from '../scoring/calculator';
 
+function getAppVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(join(__dirname, '../../package.json'), 'utf-8')) as { version?: string };
+    return pkg.version || '1.0.0';
+  } catch {
+    return '1.0.0';
+  }
+}
+
 const DEFAULT_ORIGIN = 'https://aicoevo.net';
 const REPORT_DIR = join(homedir(), '.mac-aicheck', 'reports');
 
+function isBlockedHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  const blocked = ['169.254.169.254', 'metadata.google.internal', '100.100.100.200',
+    '127.0.0.1', '0.0.0.0', '::1', 'localhost'];
+  if (blocked.includes(h)) return true;
+  // Block private IP ranges
+  if (/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(h)) return true;
+  return false;
+}
+
 function getOrigin(): string {
-  const env = process.env.AICO_EVO_URL || process.env.AICO_EVO_BASE_URL || '';
+  const env = process.env.AICO_EVO_URL || process.env.AICOEVO_BASE_URL || '';
   if (!env) return DEFAULT_ORIGIN;
   const trimmed = env.trim().replace(/\/+$/, '');
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  return `https://${trimmed}`;
+  let url: string;
+  if (/^https?:\/\//i.test(trimmed)) url = trimmed;
+  else url = 'https://' + trimmed;
+  try {
+    const parsed = new URL(url);
+    if (isBlockedHost(parsed.hostname)) {
+      console.warn(`[安全] AICO_EVO_URL 指向内网地址 ${parsed.hostname}，已忽略`);
+      return DEFAULT_ORIGIN;
+    }
+  } catch { return DEFAULT_ORIGIN; }
+  return url;
 }
 
 function getApiBase(): string {
@@ -50,6 +78,13 @@ export interface AICOEVOPayload {
     category: string;
     status: string;
     message: string;
+    detail?: string;
+    error_type?: string;
+    suggestions?: string[];
+    version?: string | null;
+    path?: string | null;
+    fixCommand?: string | null;
+    severity?: string | null;
   }>;
   systemInfo: SystemInfo;
 }
@@ -67,12 +102,32 @@ function sanitize(message: string): string {
 // ===== System Info Collector =====
 
 function collectSystemInfo(): SystemInfo {
-  let hostname = 'unknown';
-  try { hostname = execSync('hostname', { timeout: 2000 }).toString().trim(); } catch {}
+  const hostname = osHostname() || 'unknown';
+  if (process.platform !== 'darwin') {
+    return {
+      os: process.platform,
+      version: osRelease() || 'unknown',
+      arch: osArch() || 'unknown',
+      hostname,
+    };
+  }
+
   let version = 'unknown';
-  try { version = execSync('sw_vers -productVersion', { timeout: 2000 }).toString().trim(); } catch {}
+  try {
+    version = execSync('sw_vers -productVersion', {
+      timeout: 2000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).toString().trim();
+  } catch {}
+
   let arch = 'unknown';
-  try { arch = execSync('uname -m', { timeout: 2000 }).toString().trim(); } catch {}
+  try {
+    arch = execSync('uname -m', {
+      timeout: 2000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).toString().trim();
+  } catch {}
+
   return { os: 'darwin', version, arch, hostname };
 }
 
@@ -136,6 +191,13 @@ export function createPayload(results: ScanResult[], score: ScoreResult): AICOEV
       category: r.category,
       status: r.status,
       message: sanitize(r.message),
+      detail: r.detail ? sanitize(r.detail) : undefined,
+      error_type: r.error_type,
+      suggestions: (r.suggestions || []).map(s => sanitize(s)),
+      version: r.version ?? null,
+      path: r.path ?? null,
+      fixCommand: r.fixCommand ?? null,
+      severity: r.severity ?? null,
     })),
     systemInfo: collectSystemInfo(),
   };
@@ -175,22 +237,26 @@ export interface StashRequest {
 
 export interface StashResponse {
   token: string;
+  claim_url?: string;
+  ttl_seconds?: number;
+  problem_brief_id?: string;
+  evidence_pack_id?: string;
 }
 
 /**
- * 上传扫描数据到 stash，获取一次性 token（无需登录）
+ * 上传扫描数据到 scan-intake，获取一次性 token 与结构化问题对象（无需登录）
  */
 export async function stashData(payload: AICOEVOPayload): Promise<StashResponse> {
   const fingerprint = JSON.stringify({
     platform: 'Mac',
-    userAgent: `MacAICheck/${process.version}`,
+    userAgent: `MacAICheck/${getAppVersion()}`,
     system: payload.systemInfo,
     score: payload.score,
     failCount: payload.results.filter(r => r.status === 'fail').length,
     failCategories: [...new Set(payload.results.filter(r => r.status === 'fail').map(r => r.category))],
   });
 
-  return apiFetch<StashResponse>(`${getApiBase()}/stash`, {
+  return apiFetch<StashResponse>(`${getApiBase()}/problem-briefs/scan-intake`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

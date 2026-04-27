@@ -6,6 +6,8 @@ const scanner: Scanner = {
   id: 'cpp-compiler',
   name: 'C/C++ 编译器检测',
   category: 'toolchain',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     if (commandExists('clang')) {
@@ -19,8 +21,9 @@ const scanner: Scanner = {
     return {
       id: this.id, name: this.name, category: this.category,
       status: 'fail',
-      message: '未检测到 C/C++ 编译器',
-      details: 'macOS 上建议安装 Xcode Command Line Tools。',
+      error_type: 'missing',
+      message: '未检测到可用的 C/C++ 编译器',
+      detail: 'macOS 上建议安装 Xcode Command Line Tools。',
       suggestions: ['xcode-select --install'],
     };
   },

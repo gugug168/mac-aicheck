@@ -9,6 +9,7 @@ const scanner: Scanner = {
   id: 'ccswitch',
   name: 'CCSwitch 检测',
   category: 'ai-tools',
+  affectsScore: false,
 
   async scan(): Promise<ScanResult> {
     if (commandExists('ccswitch')) {
@@ -31,15 +32,16 @@ const scanner: Scanner = {
         id: this.id, name: this.name, category: this.category,
         status: 'pass',
         message: 'CCSwitch 图形版或配置目录已存在',
-        details: appCandidates.filter(existsSync).join('\n'),
+        detail: appCandidates.filter(existsSync).join('\n'),
       };
     }
 
     return {
       id: this.id, name: this.name, category: this.category,
       status: 'warn',
-      message: 'CCSwitch 未安装（可选，多账号管理工具）',
-      details: 'macOS 可优先使用 npm install -g ccswitch；若使用图形版，通常位于 /Applications 或 ~/Applications。',
+      error_type: 'missing',
+      message: '未检测到 CCSwitch',
+      detail: 'macOS 可优先使用 npm install -g ccswitch；若使用图形版，通常位于 /Applications 或 ~/Applications。',
       suggestions: ['npm install -g ccswitch'],
     };
   },

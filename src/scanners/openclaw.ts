@@ -6,13 +6,15 @@ const scanner: Scanner = {
   id: 'openclaw',
   name: 'OpenClaw',
   category: 'ai-tools',
+  affectsScore: false,
 
   async scan(): Promise<ScanResult> {
     if (!commandExists('openclaw')) {
       return {
         id: this.id, name: this.name, category: this.category,
-        status: 'fail',
+        status: 'warn',
         message: 'OpenClaw 未安装。安装: npm install -g openclaw',
+        error_type: 'missing',
       };
     }
     const ver = runCommand('openclaw --version 2>/dev/null || echo "unknown"', 5000);

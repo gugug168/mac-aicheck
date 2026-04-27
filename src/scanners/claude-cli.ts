@@ -6,14 +6,17 @@ const scanner: Scanner = {
   id: 'claude-cli',
   name: 'Claude Code CLI 检测',
   category: 'ai-tools',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     if (!commandExists('claude')) {
       return {
         id: this.id, name: this.name, category: this.category,
         status: 'warn',
-        message: 'Claude Code CLI 未安装',
-        details: 'Claude Code 是 Anthropic 官方命令行 AI 编程助手。',
+        error_type: 'missing',
+        message: '未检测到 Claude Code CLI',
+        detail: 'Claude Code 是 Anthropic 官方命令行 AI 编程助手。',
         suggestions: ['npm install -g @anthropic-ai/claude-code'],
       };
     }

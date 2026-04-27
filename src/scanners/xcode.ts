@@ -9,17 +9,21 @@ const scanner: Scanner = {
 
   async scan(): Promise<ScanResult> {
     // First check: does xcode-select -p succeed?
-    const { exitCode: xcodeExit } = runCommand('xcode-select -p', 3000);
+    const { stdout: pathOutput, exitCode: xcodeExit } = runCommand('xcode-select -p', 3000);
     if (xcodeExit !== 0) {
       return {
         id: this.id, name: this.name, category: this.category, status: 'fail',
+        error_type: 'missing',
+        fixCommand: 'xcode-select --install',
+        severity: 'high',
         message: 'Xcode Command Line Tools 未安装。安装命令: xcode-select --install',
       };
     }
-    const { stdout } = runCommand('xcode-select -p', 3000);
+    const xcodePath = pathOutput.trim() || null;
     return {
       id: this.id, name: this.name, category: this.category, status: 'pass',
-      message: `Xcode CLT 已安装: ${stdout.trim()}`,
+      path: xcodePath,
+      message: `Xcode CLT 已安装: ${xcodePath}`,
     };
   },
 };

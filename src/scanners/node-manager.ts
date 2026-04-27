@@ -3,9 +3,11 @@ import { runCommand, commandExists } from '../executor/index';
 import { registerScanner } from './registry';
 
 const scanner: Scanner = {
-  id: 'node-manager-conflict',
-  name: 'Node 版本管理器冲突',
+  id: 'node-manager',
+  name: 'Node 版本管理器检测',
   category: 'toolchain',
+  affectsScore: false,
+  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const hasNvm = commandExists('nvm') || runCommand('ls ~/.nvm 2>/dev/null && echo exists', 3000).stdout.includes('exists');
@@ -23,7 +25,8 @@ const scanner: Scanner = {
         message: `${conflicts[0]} 单一版本管理器，无冲突` };
     }
     return { id: this.id, name: this.name, category: this.category, status: 'warn',
-      message: `检测到多个 Node 版本管理器: ${conflicts.join(', ')}，可能导致 node/npm 路径混乱，建议保留一个` };
+      message: `检测到多个 Node 版本管理器: ${conflicts.join(', ')}，可能导致 node/npm 路径混乱，建议保留一个`,
+      error_type: 'conflict' };
   },
 };
 registerScanner(scanner);
