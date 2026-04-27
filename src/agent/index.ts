@@ -1,9 +1,10 @@
 // Agent Lite CLI - 简洁实现
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, appendFileSync, renameSync, unlinkSync, openSync, closeSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, appendFileSync, unlinkSync, openSync, closeSync } from 'fs';
 import { join } from 'path';
 import { homedir, hostname } from 'os';
 import { execFileSync, spawn } from 'child_process';
 import crypto from 'node:crypto';
+import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 
 const LOCAL_VERSION = process.env.npm_package_version || '1.0.0';
@@ -288,15 +289,7 @@ function loadConfig() {
   const p = paths();
   const cfg = readJson(p.config, {} as Record<string, unknown>);
   if (!cfg.clientId) cfg.clientId = `client_${crypto.randomUUID()}`;
-  // Per-agent deviceId (#31): if agentType is set, derive unique deviceId
   if (!cfg.deviceId) cfg.deviceId = `device_${crypto.randomUUID()}`;
-  if (cfg.agentType && typeof cfg.agentType === 'string') {
-    const baseDeviceId = cfg.deviceId as string;
-    const suffix = cfg.agentType === 'claude-code' ? '_cc' : cfg.agentType === 'openclaw' ? '_oc' : '';
-    if (suffix && !baseDeviceId.endsWith(suffix)) {
-      cfg.deviceId = baseDeviceId + suffix;
-    }
-  }
   if (cfg.shareData === undefined) cfg.shareData = false;
   if (cfg.autoSync === undefined) cfg.autoSync = false;
   if (cfg.paused === undefined) cfg.paused = false;
@@ -402,17 +395,27 @@ function normalizeAgent(v: string): string { const a = String(v || 'custom').toL
 function classifyEvent(agent: string, msg: string): string { const t = msg.toLowerCase(); if (t.includes('mcp')) return 'mcp_error'; if (t.includes('config') || t.includes('json')) return 'agent_config'; if (t.includes('traceback') || t.includes('syntaxerror') || t.includes('typeerror')) return 'coding_error_summary'; return agent === 'custom' ? 'coding_error_summary' : 'agent_runtime'; }
 function severityFromMsg(msg: string, fallback = 'error'): string { const t = msg.toLowerCase(); return t.includes('warn') ? 'warn' : t.includes('info') ? 'info' : fallback; }
 
+function computeAgentSuffix(agent: string): string {
+  return agent === 'claude-code' ? '_cc' : agent === 'openclaw' ? '_oc' : '';
+}
+
+function normalizeDeviceId(deviceId: string, agent?: string): string {
+  const base = String(deviceId || '').replace(/(?:_cc|_oc)$/, '');
+  return base + computeAgentSuffix(normalizeAgent(agent || ''));
+}
+
 function createEvent(input: { agent?: string; message?: string; eventType?: string; severity?: string; occurredAt?: string; fingerprint?: string; eventId?: string }) {
   const config = loadConfig();
   const agent = normalizeAgent(input.agent || '');
   const sanitizedMessage = trimForCapture(input.message || '');
   const eventType = input.eventType || classifyEvent(agent, sanitizedMessage);
   const occurredAt = input.occurredAt || nowIso();
+  const deviceId = normalizeDeviceId(String(config.deviceId || ''), agent);
   return {
     schemaVersion: 1,
     eventId: input.eventId || `evt_${crypto.randomUUID()}`,
     clientId: config.clientId,
-    deviceId: config.deviceId,
+    deviceId,
     source: 'mac-aicheck-lite',
     agent,
     eventType,
@@ -546,6 +549,34 @@ function agentApiBase(version: 'v1' | 'v2' = 'v2') {
   return apiBase().replace(/\/api\/v1$/, `/api/${version}`) + '/agent';
 }
 
+type ResolvedAddress = { address: string; family: number };
+
+async function resolveHostname(hostname: string): Promise<ResolvedAddress[]> {
+  const override = (globalThis as {
+    __MAC_AICHECK_TEST_DNS_LOOKUP__?: (hostname: string) => Promise<ResolvedAddress[]>;
+  }).__MAC_AICHECK_TEST_DNS_LOOKUP__;
+  if (override) return await override(hostname);
+  const results = await lookup(hostname, { all: true, verbatim: true });
+  return results.map(result => ({ address: result.address, family: result.family }));
+}
+
+async function assertSafeRequestUrl(url: string): Promise<void> {
+  const parsed = new URL(url);
+  if (isBlockedHost(parsed.hostname)) {
+    throw new Error(`[安全] AICOEVO API 主机 ${parsed.hostname} 属于内网或本机地址，已拒绝请求`);
+  }
+  let resolved: ResolvedAddress[];
+  try {
+    resolved = await resolveHostname(parsed.hostname);
+  } catch {
+    return;
+  }
+  const blocked = resolved.find(result => isBlockedHost(result.address));
+  if (blocked) {
+    throw new Error(`[安全] AICOEVO API 主机 ${parsed.hostname} 解析到内网地址 ${blocked.address}，已拒绝请求`);
+  }
+}
+
 async function heartbeatAgentV2(
   headers: Record<string, string>,
   body: Record<string, unknown> = {},
@@ -568,6 +599,7 @@ function agentApiKeyHeaders(config: { authToken?: string }): Record<string, stri
 }
 
 async function requestJson(url: string, init: { method?: string; headers?: Record<string, string>; body?: unknown; timeoutMs?: number } = {}) {
+  await assertSafeRequestUrl(url);
   const resp = await fetch(url, { method: init.method || 'GET', headers: { Accept: 'application/json', ...(init.body ? { 'Content-Type': 'application/json' } : {}), ...(init.headers || {}) }, body: init.body ? JSON.stringify(init.body) : undefined, signal: AbortSignal.timeout(init.timeoutMs || 5000) });
   const text = await resp.text();
   let data = {};
@@ -587,7 +619,7 @@ async function syncEvents() {
   if (config.authToken) {
     if (config.authToken.startsWith('ak_')) { authH['X-API-Key'] = config.authToken; } else { authH['Authorization'] = `Bearer ${config.authToken}`; }
   }
-  const remote = await requestJson(`${apiBase()}/agent-events/batch`, { method: 'POST', headers: authH, body: { clientId: config.clientId, deviceId: config.deviceId, events: pending.map(({ syncStatus, ...e }) => e) } });
+  const remote = await requestJson(`${apiBase()}/agent-events/batch`, { method: 'POST', headers: authH, body: { clientId: config.clientId, deviceId: normalizeDeviceId(String(config.deviceId || '')), events: pending.map(({ syncStatus, ...e }) => e) } });
   if (remote.status < 200 || remote.status >= 300) return { ok: false, uploaded: 0, status: remote.status };
   const pendingIds = new Set(pending.map(e => e.eventId));
   const updated = all.map(e => pendingIds.has(e.eventId) ? { ...e, syncStatus: 'synced', syncedAt: nowIso() } : e);
@@ -1938,8 +1970,10 @@ export const _testHelpers = {
   agentApiBase,
   apiBase,
   isBlockedHost,
+  assertSafeRequestUrl,
   acquireWorkerLock,
   releaseWorkerLock,
+  createEvent,
   loadConfig,
   saveConfig,
   loadWorkerState,
