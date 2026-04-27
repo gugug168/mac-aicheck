@@ -372,8 +372,30 @@ function parseArgs(argv: string[]): Record<string, unknown> {
   return r;
 }
 
+function isBlockedHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  const blocked = [
+    '169.254.169.254', // AWS / Azure metadata
+    'metadata.google.internal', // GCP metadata
+    '100.100.100.200', // Aliyun metadata
+    '127.0.0.1', '0.0.0.0', '::1', 'localhost',
+  ];
+  if (blocked.includes(h)) return true;
+  if (/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(h)) return true;
+  return false;
+}
+
 function apiBase() {
   const raw = (process.env.AICOEVO_API_BASE || process.env.AICOEVO_BASE_URL || 'https://aicoevo.net').replace(/\/+$/, '');
+  // SSRF protection: validate hostname before using custom base URL
+  try {
+    const withScheme = raw.startsWith('http') ? raw : `https://${raw}`;
+    const parsed = new URL(withScheme);
+    if (isBlockedHost(parsed.hostname)) {
+      process.stderr.write(`[安全] AICOEVO_API_BASE 指向内网地址 ${parsed.hostname}，已忽略，使用默认地址\n`);
+      return 'https://aicoevo.net/api/v1';
+    }
+  } catch { /* ignore parse errors, fall through to safe default */ }
   if (!raw.startsWith('https://') && process.env.NODE_ENV !== 'development') return raw.replace(/^http:\/\//, 'https://').endsWith('/api/v1') ? raw.replace(/^http:\/\//, 'https://') : `${raw.replace(/^http:\/\//, 'https://')}/api/v1`;
   return raw.endsWith('/api/v1') ? raw : `${raw}/api/v1`;
 }
