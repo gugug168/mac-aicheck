@@ -6,6 +6,14 @@
   "bin": {
     "mac-aicheck": "dist/index.js"
   },
+  "files": [
+    "bin/",
+    "dist/",
+    "hooks-src/",
+    "README.md",
+    "CHANGELOG.md",
+    "VERSION"
+  ],
   "scripts": {
     "build": "tsc",
     "scan": "node dist/index.js scan",
