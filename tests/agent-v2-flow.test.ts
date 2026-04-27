@@ -42,6 +42,7 @@ describe('agent v2 flow', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     delete (globalThis as { __MAC_AICHECK_TEST_SPAWN__?: unknown }).__MAC_AICHECK_TEST_SPAWN__;
+    delete (globalThis as { __MAC_AICHECK_TEST_DNS_LOOKUP__?: unknown }).__MAC_AICHECK_TEST_DNS_LOOKUP__;
     restoreEnv('HOME', originalHome);
     restoreEnv('AICOEVO_BASE_URL', originalBaseUrl);
     restoreEnv('AICOEVO_API_BASE', originalApiBase);
@@ -130,6 +131,52 @@ describe('agent v2 flow', () => {
       expect(_testHelpers.apiBase()).toBe('https://aicoevo.net/api/v1');
       expect(_testHelpers.agentApiBase('v2')).toBe('https://aicoevo.net/api/v2/agent');
     }
+  });
+
+  it('rejects API hosts that resolve to loopback addresses', async () => {
+    seedConfig();
+    process.env.AICOEVO_API_BASE = 'http://127.0.0.1.nip.io';
+    (globalThis as { __MAC_AICHECK_TEST_DNS_LOOKUP__?: (hostname: string) => Promise<Array<{ address: string; family: number }>> }).__MAC_AICHECK_TEST_DNS_LOOKUP__ = async (hostname: string) => {
+      expect(hostname).toBe('127.0.0.1.nip.io');
+      return [{ address: '127.0.0.1', family: 4 }];
+    };
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse({ items: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const code = await agentMain(['bounty-list']);
+    const output = stdout.mock.calls.map(call => String(call[0])).join('');
+    stdout.mockRestore();
+
+    expect(code).toBe(1);
+    expect(output).toContain('解析到内网地址 127.0.0.1');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('normalizes legacy suffixed device ids before adding the current agent suffix', async () => {
+    const home = seedConfig({ deviceId: 'device-test_oc', agentType: 'openclaw', autoSync: false });
+
+    const code = await agentMain(['capture', '--agent', 'claude-code', '--message', 'legacy suffix test']);
+    expect(code).toBe(0);
+
+    const outboxPath = path.join(home, '.mac-aicheck', 'outbox', 'events.jsonl');
+    const [event] = readFileSync(outboxPath, 'utf8').trim().split('\n').map(line => JSON.parse(line) as { deviceId: string; agent: string });
+    expect(event.agent).toBe('claude-code');
+    expect(event.deviceId).toBe('device-test_cc');
+
+    let request: { url: string; body?: string } | null = null;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      request = { url, body: init?.body ? String(init.body) : undefined };
+      return mockResponse({ accepted: 1, bountyDrafts: [] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const syncCode = await agentMain(['sync']);
+    expect(syncCode).toBe(0);
+    expect(request?.url).toBe('https://aicoevo.net/api/v1/agent-events/batch');
+    const body = JSON.parse(request?.body || '{}') as { deviceId: string; events: Array<{ deviceId: string }> };
+    expect(body.deviceId).toBe('device-test');
+    expect(body.events[0]?.deviceId).toBe('device-test_cc');
   });
 
   // ── TASK-100: Owner reproduction loop ──
