@@ -31,10 +31,10 @@ describe('fixer registry (pre-registered)', () => {
     expect(fixer?.id).toBe('git-fixer');
   });
 
-  it('git identity 的 warn 状态也能匹配到 fixer', () => {
+  it('git identity 的 warn 状态不会再误匹配到 fixer', () => {
     const scanResult: ScanResult = { id: 'git-identity', name: 'Git 身份配置', category: 'toolchain', status: 'warn', message: '' };
     const fixer = getFixerForScanResult(scanResult);
-    expect(fixer?.id).toBe('git-fixer');
+    expect(fixer).toBeUndefined();
   });
 
   it('验证状态 fail→fail 不再误判为 warn', () => {

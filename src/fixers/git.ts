@@ -8,11 +8,13 @@ const gitFixer: Fixer = {
   id: 'git-fixer',
   name: 'Git 安装',
   risk: 'green',
-  scannerIds: ['git', 'git-identity'],
+  scannerIds: ['git'],
 
   canFix(scanResult: ScanResult): boolean {
-    return (scanResult.id === 'git' || scanResult.id === 'git-identity')
-      && (scanResult.status === 'fail' || scanResult.status === 'warn');
+    // Only handle git installation — git-identity requires interactive user input
+    // and cannot be auto-fixed without a name/email; the scanner surfaces that
+    // separately so the UI can prompt the user directly.
+    return scanResult.id === 'git' && scanResult.status === 'fail';
   },
 
   async execute(scanResult: ScanResult, dryRun?: boolean): Promise<FixResult> {
@@ -51,31 +53,9 @@ const gitFixer: Fixer = {
       }
     }
 
-    // Handle git identity configuration
-    if (scanResult.id === 'git' || scanResult.id === 'git-identity') {
-      // Extract name/email from scanResult.message if available
-      // Message format: "Git 全局身份未配置（git config --global user.name/email）"
-      // Or try to get from environment / ask user
-
-      // For now, attempt to set identity from environment or provide guidance
-      // If the fixer is called for git-identity-config, we need user input
-      const nameResult = runCommand('git config --global user.name 2>/dev/null || echo ""', 3000);
-      const emailResult = runCommand('git config --global user.email 2>/dev/null || echo ""', 3000);
-      const currentName = nameResult.stdout.trim();
-      const currentEmail = emailResult.stdout.trim();
-
-      if (!currentName || !currentEmail) {
-        return {
-          success: false,
-          message: 'Git 全局身份未配置，请先设置: git config --global user.name "你的名字" 和 git config --global user.email "你的邮箱"',
-          verified: false,
-        };
-      }
-    }
-
     return {
       success: true,
-      message: 'Git 安装/配置完成',
+      message: 'Git 安装完成',
       verified: false,
     };
   },
