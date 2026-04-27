@@ -63,6 +63,78 @@ interface VersionInfo {
   lastCheck: string;
   hasUpdate: boolean;
   updates?: Array<{ name: string; current: string; latest: string }>;
+  notifiedAt?: string;
+  notifiedSignature?: string;
+}
+
+type AgentConfig = {
+  clientId: string;
+  deviceId: string;
+  shareData: boolean;
+  autoSync: boolean;
+  paused: boolean;
+  workerEnabled: boolean;
+  upgradeNotify: boolean;
+  autoUpgrade: boolean;
+  email?: string;
+  authToken?: string;
+  profileId?: string | null;
+  agentType?: string | null;
+  confirmedAt?: string;
+};
+
+const CONFIG_BOOLEAN_KEYS = ['shareData', 'autoSync', 'paused', 'workerEnabled', 'upgradeNotify', 'autoUpgrade'] as const;
+type ConfigBooleanKey = typeof CONFIG_BOOLEAN_KEYS[number];
+
+function buildVersionUpdateSignature(info: Pick<VersionInfo, 'latest' | 'updates'>): string {
+  if (info.updates && info.updates.length > 0) {
+    return info.updates
+      .map(update => `${update.name}:${update.current}->${update.latest}`)
+      .sort()
+      .join('|');
+  }
+  return String(info.latest || '');
+}
+
+function rememberVersionNotification(info: VersionInfo) {
+  const cache = {
+    ...info,
+    notifiedAt: nowIso(),
+    notifiedSignature: buildVersionUpdateSignature(info),
+  };
+  writeJson(paths().versionCache, cache);
+}
+
+function hasFreshVersionNotification(info: VersionInfo): boolean {
+  const signature = buildVersionUpdateSignature(info);
+  return Boolean(signature && info.notifiedSignature === signature && info.notifiedAt);
+}
+
+function isConfigBooleanKey(key: string): key is ConfigBooleanKey {
+  return (CONFIG_BOOLEAN_KEYS as readonly string[]).includes(key);
+}
+
+function parseBooleanInput(raw: string): boolean | null {
+  const normalized = raw.trim().toLowerCase();
+  if (['true', '1', 'on', 'yes'].includes(normalized)) return true;
+  if (['false', '0', 'off', 'no'].includes(normalized)) return false;
+  return null;
+}
+
+function maskConfigForOutput(config: AgentConfig): Record<string, unknown> {
+  const masked: Record<string, unknown> = { ...config };
+  if (masked.authToken) masked.authToken = '<redacted>';
+  return masked;
+}
+
+function configUsage() {
+  return [
+    '用法:',
+    '  mac-aicheck agent config',
+    '  mac-aicheck agent config get <key>',
+    '  mac-aicheck agent config set <key> <value>',
+    `可修改项: ${CONFIG_BOOLEAN_KEYS.join(', ')}`,
+  ].join('\n');
 }
 
 async function checkForUpdates(): Promise<VersionInfo | null> {
@@ -150,10 +222,12 @@ async function getLatestVersion(repo: string): Promise<string | null> {
 async function checkUpdatesWithNotify(): Promise<void> {
   const info = await checkForUpdates();
   if (info && info.hasUpdate) {
-    const cfg = loadConfig() as Record<string, unknown>;
+    if (hasFreshVersionNotification(info)) return;
+    const cfg = loadConfig();
+    const updates = info.updates || [];
     // Report to AICOEVO if upgradeNotify is enabled (default on)
     if (cfg.upgradeNotify !== false) {
-      for (const upd of (info.updates || [])) {
+      for (const upd of updates) {
         await reportToolVersionEvent({
           tool: upd.name,
           currentVersion: upd.current,
@@ -168,11 +242,16 @@ async function checkUpdatesWithNotify(): Promise<void> {
       await upgradeCommand();
     } else {
       process.stderr.write(`\n🔔 发现新版本:\n`);
-      for (const upd of (info.updates || [])) {
-        process.stderr.write(`   ${upd.name}: ${upd.current} → ${upd.latest}\n`);
+      if (updates.length > 0) {
+        for (const upd of updates) {
+          process.stderr.write(`   ${upd.name}: ${upd.current} → ${upd.latest}\n`);
+        }
+      } else {
+        process.stderr.write(`   ${info.latest}\n`);
       }
       process.stderr.write(`   运行 'mac-aicheck agent upgrade' 一键更新\n`);
       process.stderr.write(`   开启自动更新: mac-aicheck agent config set autoUpgrade true\n`);
+      rememberVersionNotification(info);
     }
   }
 }
@@ -182,7 +261,7 @@ async function reportToolVersionEvent(payload: { tool: string; currentVersion: s
     await requestJson(`${apiBase()}/events/tool-version`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: payload,
     });
   } catch { /* non-blocking */ }
 }
@@ -327,10 +406,12 @@ function loadConfig() {
   if (cfg.autoSync === undefined) cfg.autoSync = false;
   if (cfg.paused === undefined) cfg.paused = false;
   if (cfg.workerEnabled === undefined) cfg.workerEnabled = true;
+  if (cfg.upgradeNotify === undefined) cfg.upgradeNotify = true;
+  if (cfg.autoUpgrade === undefined) cfg.autoUpgrade = false;
   if (!cfg.profileId) cfg.profileId = null;
   if (!cfg.agentType) cfg.agentType = null;
   writeJson(p.config, cfg);
-  return cfg as { clientId: string; deviceId: string; shareData: boolean; autoSync: boolean; paused: boolean; workerEnabled: boolean; email?: string; authToken?: string; profileId?: string; agentType?: string; confirmedAt?: string };
+  return cfg as AgentConfig;
 }
 function saveConfig(cfg: Record<string, unknown>) { writeJson(paths().config, cfg); }
 
@@ -1200,6 +1281,7 @@ export async function main(argv: string[]) {
   mac-aicheck agent owner-verify <bounty_id> --answer <id> --result success|partial|failed
                                                            提交复现验证结果
   mac-aicheck agent install-local-agent
+  mac-aicheck agent config [get|set]          查看或修改运行时配置（autoUpgrade/upgradeNotify 等）
   mac-aicheck agent upgrade            一键更新 claude-code / openclaw 到最新版本
   mac-aicheck agent upgrade self       更新 mac-aicheck 自身到最新版本
   mac-aicheck agent upgrade snooze     暂停更新提醒 (24h/48h/1w 递增)
@@ -1510,6 +1592,42 @@ export async function main(argv: string[]) {
     }
 
     process.stdout.write('\n\n绑定超时，请重新运行 bind 命令。\n');
+    return 1;
+  }
+  if (command === 'config') {
+    const sub = String(rest[0] || 'list');
+    const cfg = loadConfig();
+    if (sub === 'list' || sub === 'show') {
+      process.stdout.write(JSON.stringify(maskConfigForOutput(cfg), null, 2) + '\n');
+      return 0;
+    }
+    if (sub === 'get') {
+      const key = String(rest[1] || '').trim();
+      if (!isConfigBooleanKey(key)) {
+        process.stdout.write(configUsage() + '\n');
+        return 1;
+      }
+      process.stdout.write(`${String(cfg[key])}\n`);
+      return 0;
+    }
+    if (sub === 'set') {
+      const key = String(rest[1] || '').trim();
+      const rawValue = rest[2];
+      if (!isConfigBooleanKey(key) || rawValue === undefined) {
+        process.stdout.write(configUsage() + '\n');
+        return 1;
+      }
+      const parsedValue = parseBooleanInput(String(rawValue));
+      if (parsedValue === null) {
+        process.stdout.write(`配置项 ${key} 只接受 true/false。\n`);
+        return 1;
+      }
+      cfg[key] = parsedValue;
+      saveConfig(cfg);
+      process.stdout.write(`已更新 ${key} = ${parsedValue}\n`);
+      return 0;
+    }
+    process.stdout.write(configUsage() + '\n');
     return 1;
   }
   if (command === 'upgrade') {
@@ -2004,6 +2122,7 @@ export const _testHelpers = {
   apiBase,
   isBlockedHost,
   assertSafeRequestUrl,
+  checkUpdatesWithNotify,
   acquireWorkerLock,
   releaseWorkerLock,
   createEvent,

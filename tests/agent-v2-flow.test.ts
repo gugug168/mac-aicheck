@@ -301,6 +301,46 @@ describe('agent v2 flow', () => {
     expect(code).toBe(1);
     expect(output).toContain('用法');
   });
+
+  it('reports version updates once per cached result with a JSON object payload', async () => {
+    const home = seedConfig({ upgradeNotify: true, autoUpgrade: false });
+    const cachePath = path.join(home, '.mac-aicheck', 'version-cache.json');
+    writeFileSync(cachePath, JSON.stringify({
+      current: 'node:20.0.0|claude:1.0.0|openclaw:0.9.0',
+      latest: 'claude-code: 1.0.0 → 1.1.0',
+      repo: '',
+      lastCheck: new Date().toISOString(),
+      hasUpdate: true,
+      updates: [{ name: 'claude-code', current: '1.0.0', latest: '1.1.0' }],
+    }), 'utf8');
+
+    (globalThis as { __MAC_AICHECK_TEST_DNS_LOOKUP__?: (hostname: string) => Promise<Array<{ address: string; family: number }>> }).__MAC_AICHECK_TEST_DNS_LOOKUP__ = async (hostname: string) => {
+      expect(hostname).toBe('aicoevo.net');
+      return [{ address: '93.184.216.34', family: 4 }];
+    };
+
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await _testHelpers.checkUpdatesWithNotify();
+    await _testHelpers.checkUpdatesWithNotify();
+    const output = stderr.mock.calls.map(call => String(call[0])).join('');
+    stderr.mockRestore();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://aicoevo.net/api/v1/events/tool-version');
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body || 'null'))).toEqual({
+      tool: 'claude-code',
+      currentVersion: '1.0.0',
+      latestVersion: '1.1.0',
+      eventType: 'version_update_available',
+    });
+    expect(output.match(/发现新版本/g)).toHaveLength(1);
+
+    const cache = JSON.parse(readFileSync(cachePath, 'utf8')) as { notifiedSignature?: string };
+    expect(cache.notifiedSignature).toBe('claude-code:1.0.0->1.1.0');
+  });
 });
 
 describe('worker-on (TASK-091)', () => {
@@ -365,6 +405,47 @@ describe('worker-on (TASK-091)', () => {
 
     const cfg = _testHelpers.loadConfig();
     expect(cfg.workerEnabled).toBe(true);
+  });
+
+  it('upgradeNotify defaults to true and autoUpgrade defaults to false in config', () => {
+    const home = createTempHome();
+    homes.push(home);
+    const configDir = path.join(home, '.mac-aicheck');
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(path.join(configDir, 'config.json'), JSON.stringify({
+      clientId: 'client-test',
+      deviceId: 'device-test',
+      shareData: true,
+      autoSync: true,
+      paused: false,
+      authToken: 'ak_test_123',
+    }), 'utf8');
+    process.env.HOME = home;
+
+    const cfg = _testHelpers.loadConfig();
+    expect(cfg.upgradeNotify).toBe(true);
+    expect(cfg.autoUpgrade).toBe(false);
+  });
+
+  it('config set/get persists runtime boolean settings', async () => {
+    seedConfig();
+    vi.stubGlobal('fetch', vi.fn());
+
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const setCode = await agentMain(['config', 'set', 'autoUpgrade', 'true']);
+    const getCode = await agentMain(['config', 'get', 'autoUpgrade']);
+    const listCode = await agentMain(['config']);
+    const output = stdout.mock.calls.map(call => String(call[0])).join('');
+    stdout.mockRestore();
+
+    expect(setCode).toBe(0);
+    expect(getCode).toBe(0);
+    expect(listCode).toBe(0);
+    expect(output).toContain('已更新 autoUpgrade = true');
+    expect(output).toContain('true');
+    expect(output).toContain('"autoUpgrade": true');
+    expect(output).toContain('"authToken": "<redacted>"');
+    expect(_testHelpers.loadConfig().autoUpgrade).toBe(true);
   });
 
   it('worker status shows config and state', async () => {
