@@ -1,11 +1,19 @@
 {
   "name": "mac-aicheck",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "macOS AI 开发环境检测工具",
   "main": "dist/index.js",
   "bin": {
     "mac-aicheck": "dist/index.js"
   },
+  "files": [
+    "bin/",
+    "dist/",
+    "hooks-src/",
+    "README.md",
+    "CHANGELOG.md",
+    "VERSION"
+  ],
   "scripts": {
     "build": "tsc",
     "scan": "node dist/index.js scan",
