@@ -1,6 +1,6 @@
 {
   "score": {
-    "score": 88
+    "score": 85
   },
   "results": [
     {
@@ -117,23 +117,23 @@
       "id": "ssl-certs",
       "name": "SSL 证书",
       "category": "network",
-      "status": "pass",
-      "message": "SSL 证书正常（github.com HTTPS 正常, HTTP 200）"
+      "status": "fail",
+      "message": "SSL 证书异常（github.com 返回 000FAIL）",
+      "error_type": "network"
     },
     {
       "id": "dns-resolution",
       "name": "DNS 解析",
       "category": "network",
       "status": "pass",
-      "message": "DNS 解析正常 (avg 21ms)"
+      "message": "DNS 解析正常 (avg 13ms)"
     },
     {
       "id": "git-identity",
       "name": "Git 身份配置",
       "category": "toolchain",
-      "status": "warn",
-      "message": "Git 全局身份未配置（git config --global user.name/email）",
-      "error_type": "misconfigured"
+      "status": "pass",
+      "message": "Git 身份: gugu <gugu@example.com>"
     },
     {
       "id": "admin-perms",
@@ -155,7 +155,7 @@
       "category": "toolchain",
       "status": "pass",
       "message": "Git 凭据链路存在",
-      "detail": "credential.helper: (未配置)\nSSH Keys: /Users/gugu/.ssh/id_ed25519"
+      "detail": "credential.helper: gh auth git-credential\nSSH Keys: /Users/gugu/.ssh/id_ed25519"
     },
     {
       "id": "uv-package-manager",
@@ -166,10 +166,10 @@
     }
   ],
   "upload": {
-    "token": "fd89b6bd441a4496a26921e16e06f66d",
-    "claim_url": "https://aicoevo.net/claim?t=fd89b6bd441a4496a26921e16e06f66d",
+    "token": "cede4c28844a404182d6c52ec67fbe6c",
+    "claim_url": "https://aicoevo.net/claim?t=cede4c28844a404182d6c52ec67fbe6c",
     "ttl_seconds": 300,
-    "problem_brief_id": "17b6c280c5",
-    "evidence_pack_id": "81b35fa35d"
+    "problem_brief_id": "68c4ec9f5a",
+    "evidence_pack_id": "135e5029e8"
   }
 }
