@@ -62,6 +62,7 @@ interface VersionInfo {
   repo: string;
   lastCheck: string;
   hasUpdate: boolean;
+  updates?: Array<{ name: string; current: string; latest: string }>;
 }
 
 async function checkForUpdates(): Promise<VersionInfo | null> {
@@ -104,6 +105,7 @@ async function checkForUpdates(): Promise<VersionInfo | null> {
     repo: '',
     lastCheck: nowIso(),
     hasUpdate: updates.length > 0,
+    updates,
   };
 
   writeJson(p.versionCache, result);
@@ -148,10 +150,43 @@ async function getLatestVersion(repo: string): Promise<string | null> {
 async function checkUpdatesWithNotify(): Promise<void> {
   const info = await checkForUpdates();
   if (info && info.hasUpdate) {
-    process.stderr.write(`\n🔔 mac-aicheck 版本更新通知:\n`);
-    process.stderr.write(`   ${info.latest}\n`);
-    process.stderr.write(`   运行 'mac-aicheck agent upgrade' 一键更新\n`);
+    const cfg = loadConfig();
+    // Report to AICOEVO if upgradeNotify is enabled (default on)
+    if (cfg.upgradeNotify !== false) {
+      for (const upd of (info.updates || [])) {
+        await reportToolVersionEvent({
+          tool: upd.name,
+          currentVersion: upd.current,
+          latestVersion: upd.latest,
+          eventType: 'version_update_available',
+        }).catch(() => {});  // non-blocking
+      }
+    }
+    // Auto-upgrade if enabled, otherwise notify
+    if (cfg.autoUpgrade) {
+      process.stderr.write(`🔄 发现新版本，自动更新中...
+`);
+      await upgradeCommand();
+    } else {
+      process.stderr.write(`\n🔔 发现新版本:
+`);
+      for (const upd of (info.updates || [])) {
+        process.stderr.write(`   ${upd.name}: ${upd.current} → ${upd.latest}\n`);
+      }
+      process.stderr.write(`   运行 'mac-aicheck agent upgrade' 一键更新\n`);
+      process.stderr.write(`   开启自动更新: mac-aicheck agent config set autoUpgrade true\n`);
+    }
   }
+}
+
+async function reportToolVersionEvent(payload: { tool: string; currentVersion: string; latestVersion: string; eventType: string }): Promise<void> {
+  try {
+    await requestJson(`${apiBase()}/events/tool-version`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch { /* non-blocking */ }
 }
 
 // 检测命令的安装方式（brew / npm / npx）
@@ -294,10 +329,12 @@ function loadConfig() {
   if (cfg.autoSync === undefined) cfg.autoSync = false;
   if (cfg.paused === undefined) cfg.paused = false;
   if (cfg.workerEnabled === undefined) cfg.workerEnabled = true;
+  if (cfg.upgradeNotify === undefined) cfg.upgradeNotify = true;
+  if (cfg.autoUpgrade === undefined) cfg.autoUpgrade = false;
   if (!cfg.profileId) cfg.profileId = null;
   if (!cfg.agentType) cfg.agentType = null;
   writeJson(p.config, cfg);
-  return cfg as { clientId: string; deviceId: string; shareData: boolean; autoSync: boolean; paused: boolean; workerEnabled: boolean; email?: string; authToken?: string; profileId?: string; agentType?: string; confirmedAt?: string };
+  return cfg as { clientId: string; deviceId: string; shareData: boolean; autoSync: boolean; paused: boolean; workerEnabled: boolean; upgradeNotify: boolean; autoUpgrade: boolean; email?: string; authToken?: string; profileId?: string; agentType?: string; confirmedAt?: string };
 }
 function saveConfig(cfg: Record<string, unknown>) { writeJson(paths().config, cfg); }
 
@@ -1960,6 +1997,30 @@ export async function main(argv: string[]) {
       process.stdout.write(`  总分: ${data.total_score ?? '-'} / ${data.threshold ?? 70}\n`);
     } catch (e: unknown) { process.stdout.write(`提交复现验证失败: ${(e as Error).message}\n`); return 1; }
     return 0;
+  }
+
+  if (command === 'config') {
+    const cfg = loadConfig() as Record<string, unknown>;
+    const sub = rest[0];
+    const key = rest[1];
+    const value = rest[2];
+    if (sub === 'set' && key && value !== undefined) {
+      cfg[key] = value === 'true' ? true : value === 'false' ? false : value;
+      saveConfig(cfg as Record<string, unknown>);
+      process.stdout.write(`✅ ${key} = ${value}\n`);
+      return 0;
+    } else if (sub === 'get' && key) {
+      process.stdout.write(`${key} = ${cfg[key]}\n`);
+      return 0;
+    } else {
+      process.stdout.write(`用法:\n`);
+      process.stdout.write(`  mac-aicheck agent config set <key> <value>\n`);
+      process.stdout.write(`  mac-aicheck agent config get <key>\n`);
+      process.stdout.write(`当前配置:\n`);
+      process.stdout.write(`  upgradeNotify = ${cfg.upgradeNotify}  # 版本更新时自动上报 AICOEVO\n`);
+      process.stdout.write(`  autoUpgrade  = ${cfg.autoUpgrade}   # 发现新版本时自动更新\n`);
+      return 0;
+    }
   }
 
   throw new Error(`未知 agent 命令: ${command}`);
