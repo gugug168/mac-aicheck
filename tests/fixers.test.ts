@@ -19,7 +19,7 @@ describe('fixer registry (pre-registered)', () => {
   });
 
   it('getFixerByScannerId returns fixer matching scannerIds', () => {
-    // git-fixer handles 'git' and 'git-identity-config'
+    // git-fixer handles git installation
     const fixer = getFixerByScannerId('git');
     expect(fixer?.id).toBe('git-fixer');
   });
@@ -31,10 +31,22 @@ describe('fixer registry (pre-registered)', () => {
     expect(fixer?.id).toBe('git-fixer');
   });
 
-  it('git identity 的 warn 状态不会再误匹配到 fixer', () => {
+  it('git identity 的 warn 状态会匹配到专用 fixer', () => {
     const scanResult: ScanResult = { id: 'git-identity', name: 'Git 身份配置', category: 'toolchain', status: 'warn', message: '' };
     const fixer = getFixerForScanResult(scanResult);
-    expect(fixer).toBeUndefined();
+    expect(fixer?.id).toBe('git-identity-fixer');
+  });
+
+  it('Claude Code 的 warn 状态会匹配到安装 fixer', () => {
+    const scanResult: ScanResult = { id: 'claude-code', name: 'Claude Code', category: 'ai-tools', status: 'warn', message: '' };
+    const fixer = getFixerForScanResult(scanResult);
+    expect(fixer?.id).toBe('claude-code-fixer');
+  });
+
+  it('Git 凭据链路的 warn 状态会匹配到指导 fixer', () => {
+    const scanResult: ScanResult = { id: 'git-credential-health', name: 'Git 凭据链路检测', category: 'toolchain', status: 'warn', message: '' };
+    const fixer = getFixerForScanResult(scanResult);
+    expect(fixer?.id).toBe('git-credential-health-fixer');
   });
 
   it('验证状态 fail→fail 不再误判为 warn', () => {

@@ -6,10 +6,11 @@ const scanner: Scanner = {
   id: 'dns-resolution',
   name: 'DNS 解析',
   category: 'network',
+  affectsScore: false,
 
   async scan(): Promise<ScanResult> {
-    // 测试常用域名解析速度
-    const sites = ['github.com', 'google.com', 'npmjs.org'];
+    // 测试与开发环境更相关、且在国内外都更有代表性的域名
+    const sites = ['github.com', 'registry.npmjs.org', 'pypi.org'];
     const results: string[] = [];
 
     const checks = sites.map(async (site) => {
@@ -23,14 +24,17 @@ const scanner: Scanner = {
 
     const failures = results.filter(r => r.includes('FAIL'));
     if (failures.length > 0) {
-      return { id: this.id, name: this.name, category: this.category, status: 'fail',
+      const status = failures.length === sites.length ? 'fail' : 'warn';
+      return { id: this.id, name: this.name, category: this.category, status,
         error_type: 'network',
-        message: `DNS 解析失败: ${failures.join(', ')}` };
+        message: `DNS 解析异常: ${failures.join(', ')}`,
+        detail: results.join('\n') };
     }
 
     const avg = results.filter(r => !r.includes('FAIL')).map(r => parseInt(r.split(':')[1])).reduce((a, b) => a + b, 0) / results.filter(r => !r.includes('FAIL')).length;
     return { id: this.id, name: this.name, category: this.category, status: 'pass',
-      message: `DNS 解析正常 (avg ${Math.round(avg)}ms)` };
+      message: `DNS 解析正常 (avg ${Math.round(avg)}ms)`,
+      detail: results.join('\n') };
   },
 };
 registerScanner(scanner);

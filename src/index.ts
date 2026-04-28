@@ -2,10 +2,12 @@
 
 import { scanAll } from './scanners/index';
 import { fixAll, getFixerById, getFixerForScanResult } from './fixers/index';
+import { getFixRiskPresentation, sortIssuesByPriority } from './fixers/presentation';
 import { calculateScore } from './scoring/calculator';
 import { createPayload, saveLocal, stashData, buildClaimUrl, submitFeedback } from './api/aicoevo-client';
 import { getInstallers, getAllowedCommands } from './installers/index';
 import { getAgentLocalStatus, enableAgentExperience, pauseAgentUploads, syncAgentEvents } from './agent/local-state';
+import { shouldUploadScan } from './cli/options';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as http from 'http';
@@ -71,12 +73,19 @@ function renderServePage(): string {
 
   const score = data.score?.score ?? 0;
   const label = data.score?.label ?? '';
-  const issues = data.results.filter(item => item.status === 'fail' || item.status === 'warn');
+  const issues = sortIssuesByPriority(
+    data.results.filter(item => item.status === 'fail' || item.status === 'warn'),
+    item => getFixerForScanResult(item),
+  );
   const cards = issues.map((item) => {
-    const fixable = Boolean(getFixerForScanResult(item));
+    const fixer = getFixerForScanResult(item);
+    const presentation = fixer ? getFixRiskPresentation(fixer) : null;
     const detail = item.detail ? `<pre style="white-space:pre-wrap;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:12px;overflow:auto">${escapeHtml(item.detail)}</pre>` : '';
-    const fixButton = fixable
-      ? `<button onclick="runFix('${escapeHtml(item.id)}', this)" style="margin-top:12px;padding:10px 14px;border-radius:8px;border:0;background:#22c55e;color:#04130a;font-weight:700;cursor:pointer">尝试修复</button>`
+    const riskChip = presentation
+      ? `<span style="display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;font-size:12px;font-weight:700;background:${presentation.background};color:${presentation.text};border:1px solid ${presentation.border}">${escapeHtml(presentation.title)}</span>`
+      : `<span style="display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(148,163,184,.12);color:#cbd5e1;border:1px solid rgba(148,163,184,.25)">仅检测</span>`;
+    const fixButton = presentation
+      ? `<button onclick="runFix('${escapeHtml(item.id)}', this)" style="margin-top:12px;padding:10px 14px;border-radius:8px;border:0;background:${presentation.accent};color:#04130a;font-weight:700;cursor:pointer">${escapeHtml(presentation.buttonLabel)}</button>`
       : `<div style="margin-top:12px;color:#94a3b8;font-size:13px">当前没有自动修复器</div>`;
     return `<section style="border:1px solid #334155;border-radius:12px;padding:16px;background:#111827">
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">
@@ -84,6 +93,7 @@ function renderServePage(): string {
           <div style="font-size:18px;font-weight:700">${escapeHtml(item.name)}</div>
           <div style="font-size:13px;color:#94a3b8">${escapeHtml(item.id)} · ${escapeHtml(item.category)} · ${escapeHtml(item.status)}</div>
         </div>
+        ${riskChip}
       </div>
       <p style="margin:12px 0;color:#e5e7eb">${escapeHtml(item.message)}</p>
       ${detail}
@@ -491,24 +501,32 @@ function serveHttp() {
   });
 }
 
-async function runScan(serve: boolean) {
+async function runScan(serve: boolean, upload: boolean) {
   console.log(`[*] MacAICheck v${VERSION} scanning...\n`);
   const results = await scanAll();
   const score = calculateScore(results);
   // 保存本地 + 上报 aicoevo.net 获取认领 token
   const payload = createPayload(results, score);
   try {
-    saveLocal(payload);
-    stashData(payload)
-      .then(({ token, claim_url }) => {
-        const claimUrl = claim_url || buildClaimUrl(token);
-        console.log('\n[+] 扫描结果已上传，请在浏览器打开认领你的环境报告:');
-        console.log(`    ${claimUrl}\n`);
-      })
-      .catch((err) => {
-        console.error('\n[-] 上传失败:', err instanceof Error ? err.message : String(err));
-        console.error('    扫描结果已保存在本地，请检查网络后重新运行上传\n');
-      });
+    const localPath = saveLocal(payload);
+    if (localPath) {
+      console.log(`[+] 扫描结果已保存到本地: ${localPath}`);
+    }
+
+    if (upload) {
+      stashData(payload)
+        .then(({ token, claim_url }) => {
+          const claimUrl = claim_url || buildClaimUrl(token);
+          console.log('\n[+] 扫描结果已上传，请在浏览器打开认领你的环境报告:');
+          console.log(`    ${claimUrl}\n`);
+        })
+        .catch((err) => {
+          console.error('\n[-] 上传失败:', err instanceof Error ? err.message : String(err));
+          console.error('    扫描结果已保存在本地，请检查网络后重新运行上传\n');
+        });
+    } else {
+      console.log('[i] 默认不上传扫描结果。使用 --upload 或 mac-aicheck upload 获取认领链接。\n');
+    }
   } catch (e) { console.error('[MacAICheck] 保存本地报告失败:', e instanceof Error ? e.message : String(e)); }
   const passed = results.filter(r => r.status === 'pass').length;
   const warn = results.filter(r => r.status === 'warn').length;
@@ -527,12 +545,13 @@ async function runScan(serve: boolean) {
 }
 
 const args = process.argv.slice(2);
+const upload = shouldUploadScan(args);
 if (args.includes('--serve') || args.includes('--web')) {
-  runScan(true).catch(console.error);
+  runScan(true, upload).catch(console.error);
 } else if (args.includes('--json')) {
-  runScan(false).then(r => { if (r) console.log(JSON.stringify(r, null, 2)); }).catch(console.error);
+  runScan(false, upload).then(r => { if (r) console.log(JSON.stringify(r, null, 2)); }).catch(console.error);
 } else if (args.includes('--help')) {
-  console.log('MacAICheck - AI Dev Environment Checker\nUsage:\n  mac-aicheck          Run diagnosis\n  mac-aicheck --serve   Start Web UI\n  mac-aicheck --json    JSON output\n  mac-aicheck agent     Agent Lite commands (enable/install-hook/sync, etc.)');
+  console.log('MacAICheck - AI Dev Environment Checker\nUsage:\n  mac-aicheck           Run diagnosis (local only)\n  mac-aicheck --upload  Run diagnosis and upload for claim link\n  mac-aicheck upload    Upload-enabled diagnosis shortcut\n  mac-aicheck --serve   Start Web UI\n  mac-aicheck --json    JSON output\n  mac-aicheck agent     Agent Lite commands (enable/install-hook/sync, etc.)');
 } else if (args.includes('agent')) {
   // Agent Lite CLI 子命令
   const agentArgs = args.slice(args.indexOf('agent') + 1);
@@ -540,6 +559,8 @@ if (args.includes('--serve') || args.includes('--web')) {
   const agentCmd = path.join(__dirname, '../bin/mac-aicheck-agent');
   const proc = spawnAsync('bash', [agentCmd, ...agentArgs], { stdio: 'inherit' });
   proc.on('close', (code: number | null) => { process.exitCode = code ?? 0; });
+} else if (args.includes('upload')) {
+  runScan(false, true).catch(console.error);
 } else if (args.includes('fix')) {
   const dryRun = args.includes('--dry-run');
   const riskLevel = args.includes('--green') ? 'green' :
@@ -555,10 +576,12 @@ if (args.includes('--serve') || args.includes('--web')) {
     for (const r of result.results) {
       if (r.fixResult) {
         const icon = r.fixResult.success ? '[+]' : '[-]';
-        console.log(`${icon} ${r.scannerId}: ${r.fixResult.message}`);
+        const fixer = r.fixerId ? getFixerById(r.fixerId) : undefined;
+        const riskTag = fixer ? `[${fixer.risk.toUpperCase()}] ` : '';
+        const fixerName = fixer ? ` (${fixer.name})` : '';
+        console.log(`${icon} ${riskTag}${r.scannerId}${fixerName}: ${r.fixResult.message}`);
 
-        if (r.fixerId) {
-          const fixer = getFixerById(r.fixerId);
+        if (fixer) {
           const verificationCmd = fixer?.getVerificationCommand?.();
           if (verificationCmd) {
             const cmds = Array.isArray(verificationCmd) ? verificationCmd : [verificationCmd];
@@ -578,5 +601,5 @@ if (args.includes('--serve') || args.includes('--web')) {
     }
   }).catch(console.error);
 } else {
-  runScan(false).catch(console.error);
+  runScan(false, false).catch(console.error);
 }
