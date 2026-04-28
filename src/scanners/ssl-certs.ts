@@ -6,21 +6,46 @@ const scanner: Scanner = {
   id: 'ssl-certs',
   name: 'SSL 证书',
   category: 'network',
+  affectsScore: false,
 
   async scan(): Promise<ScanResult> {
-    // Mac: 通过 curl 测试 SSL 握手，检测系统 CA 证书是否正常
-    const result = runCommand(
-      'curl -s --connect-timeout 5 -o /dev/null -w "%{http_code}" https://github.com 2>/dev/null || echo "FAIL"',
-      10000
-    );
-    const httpCode = result.stdout.trim();
-    if (httpCode === '200' || httpCode === '301' || httpCode === '302') {
-      return { id: this.id, name: this.name, category: this.category, status: 'pass',
-        message: `SSL 证书正常（github.com HTTPS 正常, HTTP ${httpCode}）` };
+    const sites = [
+      { name: 'github.com', url: 'https://github.com' },
+      { name: 'registry.npmjs.org', url: 'https://registry.npmjs.org' },
+    ];
+
+    const checks = sites.map(site => {
+      const result = runCommand(
+        `curl -s --connect-timeout 5 -o /dev/null -w "%{http_code}" ${site.url} 2>/dev/null`,
+        10000,
+      );
+      const code = result.exitCode === 0 ? result.stdout.trim() : 'FAIL';
+      const ok = code === '200' || code === '301' || code === '302';
+      return { ...site, code, ok };
+    });
+
+    const failed = checks.filter(item => !item.ok);
+    if (failed.length === 0) {
+      return {
+        id: this.id,
+        name: this.name,
+        category: this.category,
+        status: 'pass',
+        message: 'SSL 证书正常（常用 HTTPS 站点握手成功）',
+        detail: checks.map(item => `${item.name}: ${item.code}`).join('\n'),
+      };
     }
-    return { id: this.id, name: this.name, category: this.category, status: 'fail',
-      message: `SSL 证书异常（github.com 返回 ${httpCode}）`,
-      error_type: 'network' };
+
+    const status = failed.length === checks.length ? 'fail' : 'warn';
+    return {
+      id: this.id,
+      name: this.name,
+      category: this.category,
+      status,
+      message: `SSL / HTTPS 握手异常: ${failed.map(item => `${item.name}=${item.code}`).join(', ')}`,
+      detail: checks.map(item => `${item.name}: ${item.code}`).join('\n'),
+      error_type: 'network',
+    };
   },
 };
 registerScanner(scanner);

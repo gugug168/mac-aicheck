@@ -1,17 +1,17 @@
 import type { Scanner, ScanResult } from './types';
-import { runCommand, commandExists } from '../executor/index';
 import { registerScanner } from './registry';
+import { getApplePlatform, hasRosettaInstalled } from './apple-platform';
 
 const scanner: Scanner = {
   id: 'apple-silicon',
   name: 'Apple Silicon 检测',
   category: 'apple',
+  affectsScore: false,
 
   async scan(): Promise<ScanResult> {
-    const uname = runCommand('uname -m', 3000);
-    const isArm = uname.stdout.trim() === 'arm64';
+    const { isAppleSilicon, chip } = getApplePlatform();
 
-    if (!isArm) {
+    if (!isAppleSilicon) {
       return {
         id: this.id, name: this.name, category: this.category,
         status: 'pass',
@@ -19,17 +19,13 @@ const scanner: Scanner = {
       };
     }
 
-    const sysctl = runCommand('sysctl -n machdep.cpu.brand_string', 3000);
-    const chip = sysctl.stdout.trim();
-    const hasRosetta = commandExists('rosetta');
-
     return {
       id: this.id, name: this.name, category: this.category,
-      status: hasRosetta ? 'pass' : 'warn',
-      error_type: hasRosetta ? undefined : 'incompatible',
-      message: hasRosetta
-        ? `Apple Silicon (${chip}) + Rosetta 2 已安装`
-        : `Apple Silicon (${chip})，建议安装 Rosetta 2`,
+      status: 'pass',
+      message: `Apple Silicon (${chip})`,
+      detail: hasRosettaInstalled()
+        ? 'Rosetta 2 已安装，可兼容多数 x86 CLI 工具'
+        : 'Rosetta 2 未安装。仅在需要运行 x86 CLI 工具时再安装即可',
     };
   },
 };

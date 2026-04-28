@@ -13,6 +13,10 @@ import './python-versions';
 import './xcode';
 import './developer-mode';
 import './disk-space';
+import './git-identity';
+import './uv-package-manager';
+import './ai-tools';
+import './guidance';
 
 // Re-export orchestrator (and its types for backward compatibility)
 export {
