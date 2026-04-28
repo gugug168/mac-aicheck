@@ -51,6 +51,25 @@ function createGuidanceFixer(config: GuidanceFixerConfig): Fixer {
 
 [
   createGuidanceFixer({
+    id: 'git-identity-guidance-fixer',
+    scannerId: 'git-identity',
+    name: 'Git 身份配置指引',
+    risk: 'yellow',
+    message: '缺少可复用的 Git 身份信息，请先提供 name/email 后再配置',
+    nextSteps: [
+      '设置环境变量 MAC_AICHECK_GIT_NAME 和 MAC_AICHECK_GIT_EMAIL 后重新执行修复',
+      '或手动运行: git config --global user.name "Your Name"',
+      '或手动运行: git config --global user.email "you@example.com"',
+    ],
+    verifyCommands: [
+      'git config --global user.name',
+      'git config --global user.email',
+    ],
+    notes: [
+      '自动修复只会在能够安全推断出 name/email 时执行，避免写入错误身份',
+    ],
+  }),
+  createGuidanceFixer({
     id: 'git-credential-health-fixer',
     scannerId: 'git-credential-health',
     name: 'Git 凭据链路指引',

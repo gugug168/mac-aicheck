@@ -16,10 +16,10 @@ const scanner: Scanner = {
 
     const checks = sites.map(site => {
       const result = runCommand(
-        `curl -s --connect-timeout 5 -o /dev/null -w "%{http_code}" ${site.url} 2>/dev/null || echo "FAIL"`,
+        `curl -s --connect-timeout 5 -o /dev/null -w "%{http_code}" ${site.url} 2>/dev/null`,
         10000,
       );
-      const code = result.stdout.trim();
+      const code = result.exitCode === 0 ? result.stdout.trim() : 'FAIL';
       const ok = code === '200' || code === '301' || code === '302';
       return { ...site, code, ok };
     });

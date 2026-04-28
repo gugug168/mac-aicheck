@@ -128,7 +128,7 @@ describe('scanner regressions', () => {
   it('ssl-certs downgrades partial HTTPS failures to warn', async () => {
     _test.mockExecSync = (cmd: string) => {
       if (cmd.includes('https://github.com')) return Buffer.from('200');
-      if (cmd.includes('https://registry.npmjs.org')) return Buffer.from('FAIL');
+      if (cmd.includes('https://registry.npmjs.org')) throw commandError(60, '000');
       throw commandError();
     };
 
@@ -139,5 +139,7 @@ describe('scanner regressions', () => {
     expect(result.status).toBe('warn');
     expect(result.message).toContain('握手异常');
     expect(result.detail).toContain('github.com: 200');
+    expect(result.detail).toContain('registry.npmjs.org: FAIL');
+    expect(result.detail).not.toContain('000FAIL');
   });
 });

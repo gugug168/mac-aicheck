@@ -1,10 +1,28 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import '../src/scanners/index'; // register scanners
 import '../src/fixers/index'; // trigger side-effect fixer registrations
 import { registerFixer, getFixers, getFixerById, getFixerForScanResult, getFixerByScannerId, clearFixers } from '../src/fixers/registry';
 import { determineVerificationStatus } from '../src/fixers/verify';
 import type { Fixer } from '../src/fixers/types';
 import type { ScanResult } from '../src/scanners/types';
+import { _test } from '../src/executor/index';
+
+const originalGitName = process.env.MAC_AICHECK_GIT_NAME;
+const originalGitEmail = process.env.MAC_AICHECK_GIT_EMAIL;
+
+afterEach(() => {
+  _test.mockExecSync = null;
+  if (originalGitName === undefined) {
+    delete process.env.MAC_AICHECK_GIT_NAME;
+  } else {
+    process.env.MAC_AICHECK_GIT_NAME = originalGitName;
+  }
+  if (originalGitEmail === undefined) {
+    delete process.env.MAC_AICHECK_GIT_EMAIL;
+  } else {
+    process.env.MAC_AICHECK_GIT_EMAIL = originalGitEmail;
+  }
+});
 
 // Tests that depend on pre-registered fixers: do NOT call clearFixers()
 describe('fixer registry (pre-registered)', () => {
@@ -32,9 +50,37 @@ describe('fixer registry (pre-registered)', () => {
   });
 
   it('git identity 的 warn 状态会匹配到专用 fixer', () => {
+    process.env.MAC_AICHECK_GIT_NAME = 'Test User';
+    process.env.MAC_AICHECK_GIT_EMAIL = 'test@example.com';
+    _test.mockExecSync = (cmd: string) => {
+      if (cmd.includes('which git') || cmd.includes('command -v git')) {
+        return Buffer.from('/usr/bin/git\n');
+      }
+      throw new Error(`unexpected command: ${cmd}`);
+    };
+
     const scanResult: ScanResult = { id: 'git-identity', name: 'Git 身份配置', category: 'toolchain', status: 'warn', message: '' };
     const fixer = getFixerForScanResult(scanResult);
     expect(fixer?.id).toBe('git-identity-fixer');
+  });
+
+  it('git identity 在缺少可用身份信息时回退到指导 fixer', () => {
+    delete process.env.MAC_AICHECK_GIT_NAME;
+    delete process.env.MAC_AICHECK_GIT_EMAIL;
+    _test.mockExecSync = (cmd: string) => {
+      if (cmd.includes('which git') || cmd.includes('command -v git')) {
+        return Buffer.from('/usr/bin/git\n');
+      }
+      if (cmd.includes('git config --global user.name')) return Buffer.from('');
+      if (cmd.includes('git config --global user.email')) return Buffer.from('');
+      if (cmd.includes('id -F')) return Buffer.from('');
+      if (cmd.includes('whoami')) return Buffer.from('');
+      throw new Error(`unexpected command: ${cmd}`);
+    };
+
+    const scanResult: ScanResult = { id: 'git-identity', name: 'Git 身份配置', category: 'toolchain', status: 'warn', message: '' };
+    const fixer = getFixerForScanResult(scanResult);
+    expect(fixer?.id).toBe('git-identity-guidance-fixer');
   });
 
   it('Claude Code 的 warn 状态会匹配到安装 fixer', () => {

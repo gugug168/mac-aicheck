@@ -42,6 +42,11 @@ function resolveGitIdentity(): { name: string | null; email: string | null } {
   return { name, email };
 }
 
+function canAutoConfigureGitIdentity(): boolean {
+  const { name, email } = resolveGitIdentity();
+  return commandExists('git') && Boolean(name && email);
+}
+
 const gitIdentityFixer: Fixer = {
   id: 'git-identity-fixer',
   name: 'Git 身份配置',
@@ -49,7 +54,9 @@ const gitIdentityFixer: Fixer = {
   scannerIds: ['git-identity'],
 
   canFix(scanResult: ScanResult): boolean {
-    return scanResult.id === 'git-identity' && scanResult.status === 'warn';
+    return scanResult.id === 'git-identity'
+      && scanResult.status === 'warn'
+      && canAutoConfigureGitIdentity();
   },
 
   async execute(_scanResult: ScanResult, dryRun?: boolean): Promise<FixResult> {
