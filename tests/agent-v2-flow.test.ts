@@ -511,6 +511,16 @@ describe('worker-on (TASK-091)', () => {
               trigger: 'manual',
               status: 'queued',
             },
+            {
+              id: 'batch_scheduled_1',
+              title: 'Scheduled batch for same profile',
+              profile_id: 'prof_mac',
+              profile_label: 'Mac OpenClaw',
+              draft_count: 1,
+              requested_at: '2026-04-29T08:05:00Z',
+              trigger: 'scheduled',
+              status: 'queued',
+            },
           ],
           timestamp: '2026-04-29T08:00:00Z',
         });
@@ -549,6 +559,7 @@ describe('worker-on (TASK-091)', () => {
     expect(calls.map(call => call.url)).toContain('https://aicoevo.net/api/v2/agent/draft-reconcile-batches/batch_mac_1');
     expect(calls.map(call => call.url)).toContain('https://aicoevo.net/api/v2/agent/draft-reconcile-batches/batch_mac_1/submit');
     expect(calls.some(call => call.url.includes('batch_other_1'))).toBe(false);
+    expect(calls.some(call => call.url.includes('batch_scheduled_1'))).toBe(false);
     expect(calls.find(call => call.url.endsWith('/submit'))?.body).toContain('"draft_id":"draft_mac_1"');
   });
 
