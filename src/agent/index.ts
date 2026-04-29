@@ -23,6 +23,7 @@ function paths() {
     versionCache: join(base, 'version-cache.json'),
     workerState: join(base, 'worker-state.json'),
     workerLock: join(base, 'worker.lock'),
+    draftOrganizerState: join(base, 'draft-organizer-state.json'),
   };
 }
 function ensureDir(dir: string) { if (!existsSync(dir)) mkdirSync(dir, { recursive: true }); }
@@ -81,6 +82,13 @@ type AgentConfig = {
   profileId?: string | null;
   agentType?: string | null;
   confirmedAt?: string;
+  draftOrganizerEnabled?: boolean;
+  draftOrganizerMode?: 'off' | 'dry_run' | 'apply';
+  draftOrganizerTriggerMode?: 'manual_only' | 'scheduled_only' | 'hybrid';
+  draftOrganizerScheduleDays?: 7 | 14;
+  draftOrganizerDeleteAfterDays?: number;
+  draftOrganizerSweepCheckIntervalMs?: number;
+  draftOrganizerMaxPerCycle?: number;
 };
 
 const CONFIG_BOOLEAN_KEYS = ['shareData', 'autoSync', 'paused', 'workerEnabled', 'upgradeNotify', 'autoUpgrade'] as const;
@@ -422,12 +430,57 @@ function loadConfig() {
   if (cfg.workerEnabled === undefined) cfg.workerEnabled = true;
   if (cfg.upgradeNotify === undefined) cfg.upgradeNotify = true;
   if (cfg.autoUpgrade === undefined) cfg.autoUpgrade = false;
+  if (!cfg.profileId && cfg.profile_id) cfg.profileId = String(cfg.profile_id).trim();
   if (!cfg.profileId) cfg.profileId = null;
+  if (cfg.profileId) cfg.profileId = String(cfg.profileId).trim();
   if (!cfg.agentType) cfg.agentType = null;
+  if (cfg.draftOrganizerEnabled === undefined) cfg.draftOrganizerEnabled = true;
+  if (!['off', 'dry_run', 'apply'].includes(String(cfg.draftOrganizerMode || ''))) cfg.draftOrganizerMode = 'apply';
+  if (!['manual_only', 'scheduled_only', 'hybrid'].includes(String(cfg.draftOrganizerTriggerMode || ''))) cfg.draftOrganizerTriggerMode = 'hybrid';
+  const draftScheduleDays = Number(cfg.draftOrganizerScheduleDays);
+  cfg.draftOrganizerScheduleDays = ([7, 14].includes(draftScheduleDays) ? draftScheduleDays : 7) as 7 | 14;
+  const draftDeleteAfterDays = Number(cfg.draftOrganizerDeleteAfterDays);
+  cfg.draftOrganizerDeleteAfterDays = Number.isFinite(draftDeleteAfterDays) && draftDeleteAfterDays > 0 ? draftDeleteAfterDays : 7;
+  const draftSweepIntervalMs = Number(cfg.draftOrganizerSweepCheckIntervalMs);
+  cfg.draftOrganizerSweepCheckIntervalMs = Number.isFinite(draftSweepIntervalMs) && draftSweepIntervalMs > 0 ? draftSweepIntervalMs : 15 * 60 * 1000;
+  const draftMaxPerCycle = Number(cfg.draftOrganizerMaxPerCycle);
+  cfg.draftOrganizerMaxPerCycle = Number.isFinite(draftMaxPerCycle) && draftMaxPerCycle > 0 ? Math.trunc(draftMaxPerCycle) : 10;
   writeJson(p.config, cfg);
   return cfg as AgentConfig;
 }
 function saveConfig(cfg: Record<string, unknown>) { writeJson(paths().config, cfg); }
+
+interface DraftOrganizerState {
+  schemaVersion: number;
+  lastDraftSweepAt: string | null;
+  lastRunAt: string | null;
+  lastRunTrigger: string | null;
+  lastBatchIds: string[];
+  lastResult: Record<string, unknown> | null;
+  consecutiveErrors: number;
+  lastError: string | null;
+}
+
+function defaultDraftOrganizerState(): DraftOrganizerState {
+  return {
+    schemaVersion: 1,
+    lastDraftSweepAt: null,
+    lastRunAt: null,
+    lastRunTrigger: null,
+    lastBatchIds: [],
+    lastResult: null,
+    consecutiveErrors: 0,
+    lastError: null,
+  };
+}
+
+function loadDraftOrganizerState() {
+  return readJson<DraftOrganizerState>(paths().draftOrganizerState, defaultDraftOrganizerState());
+}
+
+function saveDraftOrganizerState(state: DraftOrganizerState) {
+  writeJson(paths().draftOrganizerState, state);
+}
 
 // ── Worker state management ──
 interface WorkerState {
@@ -530,6 +583,14 @@ function computeAgentSuffix(agent: string): string {
 function normalizeDeviceId(deviceId: string, agent?: string): string {
   const base = String(deviceId || '').replace(/(?:_cc|_oc)$/, '');
   return base + computeAgentSuffix(normalizeAgent(agent || ''));
+}
+
+function normalizeDeviceBaseId(value: string): string {
+  return String(value || '').trim().replace(/_(?:cc|oc)$/i, '');
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 function createEvent(input: { agent?: string; message?: string; eventType?: string; severity?: string; occurredAt?: string; fingerprint?: string; eventId?: string }) {
@@ -872,6 +933,203 @@ function loadOwnerVerifySnapshot(bountyId: string, answerId: string) {
   return { ...files, guideSha256, snapshot };
 }
 
+function draftOrganizerOutboxEvents(draft: Record<string, unknown>) {
+  const source = ((draft.source_data as Record<string, unknown> | undefined) || {});
+  const wantedAgent = normalizeAgent(String(source.origin_agent_type || ''));
+  const wantedDevice = normalizeDeviceBaseId(String(source.origin_device_id || ''));
+  const rows = readJsonl(paths().outbox) as Array<Record<string, unknown>>;
+  return rows.filter(event => {
+    const eventAgent = normalizeAgent(String(event.agent || ''));
+    const eventDevice = normalizeDeviceBaseId(String(event.deviceId || ''));
+    if (wantedAgent && wantedAgent !== 'custom' && eventAgent !== wantedAgent) return false;
+    if (wantedDevice && eventDevice !== wantedDevice) return false;
+    return true;
+  }).slice(-20);
+}
+
+function countMatchingOutboxFingerprints(draft: Record<string, unknown>) {
+  return draftOrganizerOutboxEvents(draft).length;
+}
+
+function collectGroupedFingerprints(draft: Record<string, unknown>) {
+  return uniqueStrings(
+    draftOrganizerOutboxEvents(draft)
+      .map(event => String(event.fingerprint || '').trim())
+      .filter(Boolean),
+  ).slice(0, 20);
+}
+
+function collectRecentCommands(draft: Record<string, unknown>) {
+  return uniqueStrings(
+    draftOrganizerOutboxEvents(draft)
+      .map(event => {
+        const toolContext = (event.toolContext as Record<string, unknown> | undefined) || {};
+        return String(toolContext.command || toolContext.original || '').trim();
+      })
+      .filter(Boolean),
+  ).slice(0, 20);
+}
+
+function buildDraftOrganizerEnvironmentFingerprint(config: AgentConfig) {
+  return {
+    host: hostname(),
+    platform: process.platform,
+    node: process.version,
+    client_id: String(config.clientId || ''),
+    device_id: String(config.deviceId || ''),
+    profile_id: String(config.profileId || ''),
+    captured_at: nowIso(),
+  };
+}
+
+function buildDraftOrganizerSummary(draft: Record<string, unknown>) {
+  const source = ((draft.source_data as Record<string, unknown> | undefined) || {});
+  const events = draftOrganizerOutboxEvents(draft).slice(-3);
+  const snippets = events
+    .map(event => String(event.sanitizedMessage || '').split(/\r?\n/)[0].trim())
+    .filter(Boolean)
+    .slice(-2);
+  const lines = [
+    `草稿标题: ${String(draft.title || '未命名草稿')}`,
+    `来源 AI: ${String(source.origin_agent_type || 'unknown')}`,
+    `本地关联事件数: ${events.length}`,
+  ];
+  if (snippets.length > 0) lines.push(`最近现象: ${snippets.join(' | ')}`);
+  let summary = lines.join('；');
+  if (summary.length < 20) summary = `${summary}；等待 AI 进一步整理补全。`;
+  if (summary.length > 3000) summary = `${summary.slice(0, 2997)}...`;
+  return summary;
+}
+
+function draftOrganizerFailure(reason: string, state: DraftOrganizerState) {
+  const nextState: DraftOrganizerState = {
+    ...state,
+    lastRunAt: nowIso(),
+    lastResult: { ok: false, reason },
+    consecutiveErrors: (state.consecutiveErrors || 0) + 1,
+    lastError: reason,
+  };
+  saveDraftOrganizerState(nextState);
+  process.stderr.write(`[DraftOrganizer] ${reason}\n`);
+  return { ok: false, reason, state: nextState };
+}
+
+async function runDraftOrganizerOnce(): Promise<{ ok: boolean; batches?: string[]; submittedCount?: number; skipped?: boolean; reason?: string; state?: DraftOrganizerState }> {
+  const config = loadConfig();
+  const state = loadDraftOrganizerState();
+
+  if (!config.draftOrganizerEnabled || config.draftOrganizerMode === 'off') {
+    const nextState: DraftOrganizerState = {
+      ...state,
+      lastRunAt: nowIso(),
+      lastResult: { ok: true, skipped: true, reason: 'draft organizer disabled' },
+      lastError: null,
+    };
+    saveDraftOrganizerState(nextState);
+    process.stdout.write(`${JSON.stringify({ ok: true, skipped: true, reason: 'draft organizer disabled' }, null, 2)}\n`);
+    return { ok: true, skipped: true, reason: 'draft organizer disabled', state: nextState };
+  }
+
+  const headers = agentApiKeyHeaders(config);
+  if (!headers) return draftOrganizerFailure('missing agent api key', state);
+  if (!config.profileId) return draftOrganizerFailure('missing bound profile id', state);
+
+  const nowMs = Date.now();
+  const lastSweepMs = state.lastDraftSweepAt ? Date.parse(state.lastDraftSweepAt) : Number.NaN;
+  const shouldSchedule = config.draftOrganizerTriggerMode !== 'manual_only' && (
+    !Number.isFinite(lastSweepMs) ||
+    nowMs - lastSweepMs >= Number(config.draftOrganizerScheduleDays || 7) * 24 * 60 * 60 * 1000
+  );
+
+  try {
+    let runTrigger = 'manual';
+    if (shouldSchedule) {
+      const scheduled = await requestJson(`${agentApiBase('v2')}/draft-reconcile/request-scheduled`, {
+        method: 'POST',
+        headers,
+        body: { schedule_days: Number(config.draftOrganizerScheduleDays || 7) },
+      });
+      if (scheduled.status < 200 || scheduled.status >= 300) {
+        throw new Error(`request scheduled failed (${scheduled.status})`);
+      }
+      runTrigger = 'scheduled';
+    }
+
+    const status = await requestJson(`${agentApiBase('v2')}/status`, { headers });
+    if (status.status < 200 || status.status >= 300) {
+      throw new Error(`load draft organizer status failed (${status.status})`);
+    }
+
+    const pending = Array.isArray((status.data as Record<string, unknown>).pending_draft_reconcile_batches)
+      ? (status.data as Record<string, unknown>).pending_draft_reconcile_batches as Array<Record<string, unknown>>
+      : [];
+    const batches = pending
+      .filter(batch => String(batch.profile_id || '') === String(config.profileId || ''))
+      .slice(0, Number(config.draftOrganizerMaxPerCycle || 10));
+
+    const acceptedBatchIds: string[] = [];
+    let submittedCount = 0;
+
+    for (const batch of batches) {
+      const detail = await requestJson(`${agentApiBase('v2')}/draft-reconcile-batches/${String(batch.id)}`, { headers });
+      if (detail.status < 200 || detail.status >= 300) {
+        throw new Error(`load draft reconcile batch failed (${detail.status})`);
+      }
+
+      const detailData = detail.data as Record<string, unknown>;
+      const drafts = Array.isArray(detailData.drafts) ? detailData.drafts as Array<Record<string, unknown>> : [];
+      const items = drafts.map(draft => ({
+        draft_id: String(draft.id || ''),
+        local_repeat_count: countMatchingOutboxFingerprints(draft),
+        grouped_fingerprints: collectGroupedFingerprints(draft),
+        supplement_summary: buildDraftOrganizerSummary(draft),
+        commands_run: collectRecentCommands(draft),
+        environment_fingerprint: buildDraftOrganizerEnvironmentFingerprint(config),
+        proof_payload: {
+          organizer_mode: config.draftOrganizerMode,
+          profile_id: config.profileId,
+        },
+      }));
+
+      if (items.length > 0 && config.draftOrganizerMode === 'apply') {
+        const submit = await requestJson(`${agentApiBase('v2')}/draft-reconcile-batches/${String(batch.id)}/submit`, {
+          method: 'POST',
+          headers,
+          body: { items },
+        });
+        if (submit.status < 200 || submit.status >= 300) {
+          throw new Error(`submit draft reconcile batch failed (${submit.status})`);
+        }
+        submittedCount += items.length;
+      }
+
+      acceptedBatchIds.push(String(batch.id));
+    }
+
+    const finishedAt = nowIso();
+    const nextState: DraftOrganizerState = {
+      ...state,
+      lastDraftSweepAt: shouldSchedule ? finishedAt : state.lastDraftSweepAt,
+      lastRunAt: finishedAt,
+      lastRunTrigger: runTrigger,
+      lastBatchIds: acceptedBatchIds,
+      lastResult: {
+        ok: true,
+        mode: config.draftOrganizerMode,
+        batchCount: acceptedBatchIds.length,
+        submittedCount,
+      },
+      consecutiveErrors: 0,
+      lastError: null,
+    };
+    saveDraftOrganizerState(nextState);
+    process.stdout.write(`${JSON.stringify({ ok: true, mode: config.draftOrganizerMode, batches: acceptedBatchIds, submittedCount }, null, 2)}\n`);
+    return { ok: true, batches: acceptedBatchIds, submittedCount, state: nextState };
+  } catch (error: unknown) {
+    return draftOrganizerFailure(error instanceof Error ? error.message : String(error), state);
+  }
+}
+
 function resolveCommand(cmd: string) { try { return execFileSync('command', ['-v', cmd], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean)[0] || cmd; } catch { return cmd; } }
 function defaultProfilePaths() { const h = getHome(); return [join(h, '.zshrc'), join(h, '.bashrc'), join(h, '.bash_profile')]; }
 
@@ -1192,13 +1450,17 @@ async function runWorkerDaemon(args: Record<string, unknown>): Promise<number> {
   const rawInterval = Number(args.workerInterval || args.interval || WORKER_DEFAULT_INTERVAL_MS);
   const interval = (isNaN(rawInterval) || rawInterval <= 0) ? WORKER_DEFAULT_INTERVAL_MS : rawInterval;
   const maxPerCycle = Number(args.maxParallelTasks || args.limit || WORKER_MAX_PARALLEL);
+  const runOnce = Boolean(args.runOnce);
   const headers = { ...apiKey, 'Content-Type': 'application/json' };
+  let exitCode = 0;
 
   const state = loadWorkerState();
   state.enabled = true;
   state.status = 'running';
   state.pid = process.pid;
   state.startedAt = state.startedAt || nowIso();
+  state.lastError = null;
+  state.consecutiveErrors = 0;
   saveWorkerState(state);
   process.stdout.write(`[Worker] 启动 (间隔 ${Math.round(interval / 1000)}s, 每轮最多 ${maxPerCycle})\n`);
 
@@ -1232,6 +1494,10 @@ async function runWorkerDaemon(args: Record<string, unknown>): Promise<number> {
             if (submitResult.status >= 200 && submitResult.status < 300) solved++;
           }
         }
+        if (currentCfg.draftOrganizerEnabled && currentCfg.profileId) {
+          const draftResult = await runDraftOrganizerOnce();
+          if (!draftResult.ok) throw new Error(draftResult.reason || 'draft organizer failed');
+        }
         const updated = loadWorkerState();
         updated.lastCycleAt = nowIso();
         updated.lastCycleResult = { solved, skipped, total: items.length };
@@ -1251,7 +1517,9 @@ async function runWorkerDaemon(args: Record<string, unknown>): Promise<number> {
         failed.nextCycleAt = new Date(Date.now() + backoff).toISOString();
         saveWorkerState(failed);
         process.stdout.write(`[Worker] 循环错误: ${failed.lastError}\n`);
+        if (runOnce) exitCode = 1;
       }
+      if (runOnce) break;
       const st = loadWorkerState();
       const sleepMs = st.consecutiveErrors > 0
         ? Math.min(interval * Math.pow(2, st.consecutiveErrors - 1), 60 * 60 * 1000)
@@ -1266,7 +1534,7 @@ async function runWorkerDaemon(args: Record<string, unknown>): Promise<number> {
     saveWorkerState(finalState);
     releaseWorkerLock();
   }
-  return 0;
+  return exitCode;
 }
 
 export async function main(argv: string[]) {
@@ -1285,7 +1553,8 @@ export async function main(argv: string[]) {
   mac-aicheck agent pause|resume
   mac-aicheck agent disable                       — 彻底禁用 Worker 互助循环
   mac-aicheck agent worker-enable                 — 重新启用 Worker 互助循环
-  mac-aicheck agent worker start|stop|status      — Worker 后台循环控制
+  mac-aicheck agent worker start|stop|status|daemon [--run-once] — Worker 后台循环控制
+  mac-aicheck agent draft-organizer status|run-once|enable|disable
   mac-aicheck agent advice --format json|markdown
   mac-aicheck agent diagnose          分析失败模式，类比 Evolver 信号诊断
   mac-aicheck agent bind [--agent claude-code|openclaw]  绑定设备（自动打开浏览器确认）
@@ -1507,8 +1776,9 @@ export async function main(argv: string[]) {
         return 1;
       }
 
-      const { api_key } = result.data as Record<string, unknown>;
+      const { api_key, profile_id } = result.data as Record<string, unknown>;
       config.authToken = api_key as string;
+      if (profile_id) config.profileId = String(profile_id).trim();
       config.shareData = true;
       config.autoSync = true;
       config.paused = false;
@@ -1579,6 +1849,7 @@ export async function main(argv: string[]) {
       if (pollData.status === 'confirmed' && pollData.api_key) {
         process.stdout.write('\n\n');
         config.authToken = pollData.api_key as string;
+        if (pollData.profile_id) config.profileId = String(pollData.profile_id).trim();
         config.shareData = true;
         config.autoSync = true;
         config.paused = false;
@@ -1720,6 +1991,41 @@ export async function main(argv: string[]) {
       process.stdout.write(JSON.stringify(result.data, null, 2) + '\n');
     } catch (e: unknown) { process.stdout.write(`获取悬赏列表失败: ${(e as Error).message}\n`); return 1; }
     return 0;
+  }
+
+  if (command === 'draft-organizer') {
+    const [subcommand] = rest;
+    const cfg = loadConfig();
+    if (!subcommand || subcommand === 'status') {
+      process.stdout.write(JSON.stringify({
+        ok: true,
+        enabled: cfg.draftOrganizerEnabled,
+        mode: cfg.draftOrganizerMode,
+        triggerMode: cfg.draftOrganizerTriggerMode,
+        scheduleDays: cfg.draftOrganizerScheduleDays,
+        profileId: cfg.profileId || null,
+        worker: loadDraftOrganizerState(),
+      }, null, 2) + '\n');
+      return 0;
+    }
+    if (subcommand === 'enable') {
+      cfg.draftOrganizerEnabled = true;
+      saveConfig(cfg);
+      process.stdout.write('draft organizer enabled\n');
+      return 0;
+    }
+    if (subcommand === 'disable') {
+      cfg.draftOrganizerEnabled = false;
+      saveConfig(cfg);
+      process.stdout.write('draft organizer disabled\n');
+      return 0;
+    }
+    if (subcommand === 'run-once') {
+      const result = await runDraftOrganizerOnce();
+      return result.ok ? 0 : 1;
+    }
+    process.stdout.write('用法: mac-aicheck agent draft-organizer status|run-once|enable|disable\n');
+    return 1;
   }
 
   // ── Worker commands ──
@@ -2145,6 +2451,9 @@ export const _testHelpers = {
   saveConfig,
   loadWorkerState,
   saveWorkerState,
+  loadDraftOrganizerState,
+  saveDraftOrganizerState,
+  runDraftOrganizerOnce,
 };
 
 if (require.main === module) {
