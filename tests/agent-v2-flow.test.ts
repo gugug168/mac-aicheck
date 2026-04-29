@@ -473,6 +473,117 @@ describe('worker-on (TASK-091)', () => {
     expect(output).toContain('"status": "stopped"');
   });
 
+  it('draft-organizer run-once fetches only the current profile batch and submits one reconcile payload', async () => {
+    seedConfig({
+      profileId: 'prof_mac',
+      draftOrganizerEnabled: true,
+      draftOrganizerMode: 'apply',
+      draftOrganizerTriggerMode: 'manual_only',
+      draftOrganizerScheduleDays: 7,
+    });
+
+    const calls: Array<{ url: string; body?: string }> = [];
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      calls.push({ url, body: init?.body ? String(init.body) : undefined });
+      if (url.endsWith('/api/v2/agent/status')) {
+        return mockResponse({
+          owner_metrics: {},
+          worker_metrics: {},
+          pending_owner_verifications: [],
+          pending_draft_reconcile_batches: [
+            {
+              id: 'batch_mac_1',
+              title: 'Mac OpenClaw draft reconcile',
+              profile_id: 'prof_mac',
+              profile_label: 'Mac OpenClaw',
+              draft_count: 1,
+              requested_at: '2026-04-29T08:00:00Z',
+              trigger: 'manual',
+              status: 'queued',
+            },
+            {
+              id: 'batch_other_1',
+              title: 'Other profile batch',
+              profile_id: 'prof_other',
+              profile_label: 'Other profile',
+              draft_count: 1,
+              requested_at: '2026-04-29T08:00:00Z',
+              trigger: 'manual',
+              status: 'queued',
+            },
+            {
+              id: 'batch_scheduled_1',
+              title: 'Scheduled batch for same profile',
+              profile_id: 'prof_mac',
+              profile_label: 'Mac OpenClaw',
+              draft_count: 1,
+              requested_at: '2026-04-29T08:05:00Z',
+              trigger: 'scheduled',
+              status: 'queued',
+            },
+          ],
+          timestamp: '2026-04-29T08:00:00Z',
+        });
+      }
+      if (url.endsWith('/api/v2/agent/draft-reconcile-batches/batch_mac_1')) {
+        return mockResponse({
+          id: 'batch_mac_1',
+          profile_id: 'prof_mac',
+          drafts: [
+            {
+              id: 'draft_mac_1',
+              title: 'Mac draft',
+              source_data: {
+                origin_profile_id: 'prof_mac',
+                origin_device_id: 'device-test',
+                origin_agent_type: 'openclaw',
+                event_ids: ['evt_mac_1'],
+              },
+            },
+          ],
+        });
+      }
+      if (url.endsWith('/api/v2/agent/draft-reconcile-batches/batch_mac_1/submit')) {
+        return mockResponse({ ok: true, accepted: 1 });
+      }
+      throw new Error(`unexpected request ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const capture = captureOutput();
+    const code = await agentMain(['draft-organizer', 'run-once']);
+    capture.spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(calls.map(call => call.url)).toContain('https://aicoevo.net/api/v2/agent/status');
+    expect(calls.map(call => call.url)).toContain('https://aicoevo.net/api/v2/agent/draft-reconcile-batches/batch_mac_1');
+    expect(calls.map(call => call.url)).toContain('https://aicoevo.net/api/v2/agent/draft-reconcile-batches/batch_mac_1/submit');
+    expect(calls.some(call => call.url.includes('batch_other_1'))).toBe(false);
+    expect(calls.some(call => call.url.includes('batch_scheduled_1'))).toBe(false);
+    expect(calls.find(call => call.url.endsWith('/submit'))?.body).toContain('"draft_id":"draft_mac_1"');
+  });
+
+  it('draft-organizer status shows config summary', async () => {
+    seedConfig({
+      profileId: 'prof_mac',
+      draftOrganizerEnabled: true,
+      draftOrganizerMode: 'dry_run',
+      draftOrganizerTriggerMode: 'hybrid',
+      draftOrganizerScheduleDays: 14,
+    });
+
+    vi.stubGlobal('fetch', vi.fn());
+    const capture = captureOutput();
+    const code = await agentMain(['draft-organizer', 'status']);
+    capture.spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(capture.output).toContain('"enabled": true');
+    expect(capture.output).toContain('"mode": "dry_run"');
+    expect(capture.output).toContain('"scheduleDays": 14');
+    expect(capture.output).toContain('"profileId": "prof_mac"');
+  });
+
   it('worker lock rejects a live foreign pid and replaces stale locks', async () => {
     const home = seedConfig();
     const lockPath = path.join(home, '.mac-aicheck', 'worker.lock');
@@ -614,7 +725,7 @@ describe('worker-on (TASK-091)', () => {
     seedConfig({ authToken: undefined });
     const spawn = createSpawnStub();
     (globalThis as { __MAC_AICHECK_TEST_SPAWN__?: unknown }).__MAC_AICHECK_TEST_SPAWN__ = spawn.spawnImpl;
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse({ api_key: 'ak_test_123' })));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse({ api_key: 'ak_test_123', profile_id: 'prof_mac' })));
     const capture = captureOutput();
     const { spy } = capture;
     const code = await agentMain(['bind', '--code', '123456']);
@@ -625,5 +736,6 @@ describe('worker-on (TASK-091)', () => {
     expect(capture.output).toContain('Worker 互助循环: 已启动');
     expect(spawn.calls).toHaveLength(1);
     expect(spawn.calls[0]?.args.join(' ')).toContain('worker daemon');
+    expect(_testHelpers.loadConfig().profileId).toBe('prof_mac');
   });
 });
