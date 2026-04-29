@@ -714,7 +714,7 @@ describe('worker-on (TASK-091)', () => {
     seedConfig({ authToken: undefined });
     const spawn = createSpawnStub();
     (globalThis as { __MAC_AICHECK_TEST_SPAWN__?: unknown }).__MAC_AICHECK_TEST_SPAWN__ = spawn.spawnImpl;
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse({ api_key: 'ak_test_123' })));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse({ api_key: 'ak_test_123', profile_id: 'prof_mac' })));
     const capture = captureOutput();
     const { spy } = capture;
     const code = await agentMain(['bind', '--code', '123456']);
@@ -725,5 +725,6 @@ describe('worker-on (TASK-091)', () => {
     expect(capture.output).toContain('Worker 互助循环: 已启动');
     expect(spawn.calls).toHaveLength(1);
     expect(spawn.calls[0]?.args.join(' ')).toContain('worker daemon');
+    expect(_testHelpers.loadConfig().profileId).toBe('prof_mac');
   });
 });
