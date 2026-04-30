@@ -232,6 +232,16 @@ describe('agent v2 flow', () => {
           solution_summary: 'Run npm cache clean --force',
           submitted_at: '2026-04-26T00:00:00Z',
           deadline_at: '2026-04-28T00:00:00Z',
+          execution_decision: {
+            decision: 'ask_user_run',
+            phase: 'owner_verification',
+            current_profile_is_target: true,
+            target_route: {
+              profile_id: 'prof_001',
+              device_id: 'device_001',
+              agent_type: 'claude-code',
+            },
+          },
         }],
         timestamp: '2026-04-26T00:00:00Z',
       }),
@@ -250,6 +260,8 @@ describe('agent v2 flow', () => {
     expect(output).toContain('a_001');
     expect(output).toContain('npm install fails');
     expect(output).toContain('owner-verify');
+    expect(output).toContain('执行决策: ask_user_run');
+    expect(output).toContain('目标机器: profile=prof_001 / device=device_001 / agent=claude-code');
     expect(output).toContain('自动验证: blocked');
     expect(output).toContain('阻塞原因: missing_validation_command');
     const guidePath = path.join(home, '.mac-aicheck', 'owner-verify', 'b_001__a_001.md');
@@ -1089,6 +1101,64 @@ describe('worker-on (TASK-091)', () => {
     const body = JSON.parse(requests[3]?.body || '{}');
     expect(body.artifacts.owner_reproduction_project_dir).toBe(projectRoot);
     expect(body.proof_payload.after_context.local_context.project_dir).toBe(projectRoot);
+  });
+
+  it('worker daemon writes owner prompt when platform routes execution back to the origin machine', async () => {
+    seedConfig();
+    const requests: string[] = [];
+    let fetchCount = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      requests.push(url);
+      fetchCount++;
+      if (fetchCount >= 2) {
+        const cfg = _testHelpers.loadConfig();
+        cfg.workerEnabled = false;
+        _testHelpers.saveConfig(cfg);
+      }
+      if (url.includes('/heartbeat')) return mockResponse({ recommended_bounties: [] });
+      if (url.includes('/status')) {
+        return mockResponse({
+          pending_owner_verifications: [{
+            bounty_id: 'b_owner_prompt',
+            answer_id: 'a_owner_prompt',
+            title: 'prompt owner on origin machine',
+            solution_summary: 'Please verify on the original machine',
+            submitted_at: '2026-04-30T00:00:00Z',
+            deadline_at: '2026-05-02T00:00:00Z',
+            execution_decision: {
+              decision: 'ask_user_run',
+              phase: 'owner_verification',
+              current_profile_is_target: true,
+              target_route: {
+                profile_id: 'prof-owner',
+                device_id: 'device-owner',
+                agent_type: 'claude-code',
+              },
+            },
+          }],
+        });
+      }
+      return mockResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const execSpy = vi.fn();
+    (globalThis as {
+      __MAC_AICHECK_TEST_EXEC__?: (command: string) => { exitCode: number; stdout?: string; stderr?: string };
+    }).__MAC_AICHECK_TEST_EXEC__ = (command: string) => {
+      execSpy(command);
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+
+    const capture = captureOutput();
+    const code = await agentMain(['worker', 'daemon', '--worker-interval', '10']);
+    capture.spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(execSpy).not.toHaveBeenCalled();
+    expect(requests.some(url => url.includes('/owner-verify'))).toBe(false);
+    expect(capture.output).toContain('owner-prompt 待人工确认 b_owner_prompt/a_owner_prompt');
+    const wState = _testHelpers.loadWorkerState();
+    expect(wState.totalOwnerSkipped).toBeGreaterThanOrEqual(1);
   });
 
   it('worker daemon skips owner verification when only unsafe commands are available', async () => {
