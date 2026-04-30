@@ -43,6 +43,7 @@ describe('agent v2 flow', () => {
     vi.unstubAllGlobals();
     delete (globalThis as { __MAC_AICHECK_TEST_SPAWN__?: unknown }).__MAC_AICHECK_TEST_SPAWN__;
     delete (globalThis as { __MAC_AICHECK_TEST_DNS_LOOKUP__?: unknown }).__MAC_AICHECK_TEST_DNS_LOOKUP__;
+    delete (globalThis as { __MAC_AICHECK_TEST_EXEC__?: unknown }).__MAC_AICHECK_TEST_EXEC__;
     restoreEnv('HOME', originalHome);
     restoreEnv('AICOEVO_BASE_URL', originalBaseUrl);
     restoreEnv('AICOEVO_API_BASE', originalApiBase);
@@ -116,6 +117,41 @@ describe('agent v2 flow', () => {
     ]);
     expect(calls[1]?.body).toBe('{}');
     expect(output).toContain('lease_1');
+  });
+
+  it('bounty-submit forwards validation contract fields when provided', async () => {
+    seedConfig();
+    const calls: Array<{ url: string; body?: string }> = [];
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      calls.push({ url, body: init?.body ? String(init.body) : undefined });
+      return mockResponse({ id: 'ans_submit_1' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const code = await agentMain([
+      'bounty-submit',
+      'bounty_1',
+      '--content',
+      'Use pytest to verify',
+      '--cmd',
+      'pytest -q',
+      '--validation-cmd',
+      'pytest -q',
+      '--expected-output',
+      '3 passed',
+      '--summary',
+      'Run tests after fix',
+    ]);
+    stdout.mockRestore();
+
+    expect(code).toBe(0);
+    expect(calls[0]?.url).toBe('https://aicoevo.net/api/v2/agent/bounties/bounty_1/submit');
+    const body = JSON.parse(calls[0]?.body || '{}');
+    expect(body.commands_run).toEqual(['pytest -q']);
+    expect(body.proof_payload.validation_cmd).toBe('pytest -q');
+    expect(body.proof_payload.expected_output).toBe('3 passed');
+    expect(body.proof_payload.summary).toBe('Run tests after fix');
   });
 
   it('blocks loopback, link-local and IPv6 private API bases', () => {
@@ -214,6 +250,8 @@ describe('agent v2 flow', () => {
     expect(output).toContain('a_001');
     expect(output).toContain('npm install fails');
     expect(output).toContain('owner-verify');
+    expect(output).toContain('自动验证: blocked');
+    expect(output).toContain('阻塞原因: missing_validation_command');
     const guidePath = path.join(home, '.mac-aicheck', 'owner-verify', 'b_001__a_001.md');
     const snapshotPath = path.join(home, '.mac-aicheck', 'owner-verify', 'b_001__a_001.json');
     expect(existsSync(guidePath)).toBe(true);
@@ -242,6 +280,79 @@ describe('agent v2 flow', () => {
 
     expect(code).toBe(0);
     expect(output).toContain('没有待复现确认');
+  });
+
+  it('review-list keeps the matched project directory instead of walking to a parent folder', async () => {
+    const home = seedConfig();
+    const projectDir = path.join(home, 'repo');
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(path.join(projectDir, 'test_review_ready.py'), '# smoke\n', 'utf8');
+    const outboxPath = path.join(home, '.mac-aicheck', 'outbox', 'events.jsonl');
+    mkdirSync(path.dirname(outboxPath), { recursive: true });
+    writeFileSync(
+      outboxPath,
+      JSON.stringify({
+        fingerprint: 'fp_review_ready_1',
+        eventType: 'post_tool_error',
+        agent: 'claude-code',
+        deviceId: 'device-test',
+        occurredAt: '2026-04-30T00:00:00Z',
+        toolContext: {
+          command: 'pytest -q',
+          filePath: path.join(projectDir, 'test_review_ready.py'),
+          fileName: 'test_review_ready.py',
+          cwd: projectDir,
+        },
+        localContext: {
+          cwdHash: 'cwdhash-review-ready-1',
+        },
+      }) + '\n',
+      'utf8',
+    );
+
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockResponse({
+        items: [
+          {
+            assignment_id: 'lease_1',
+            answer: { id: 'a_ready_1', content: 'Fix review ready issue' },
+            submission_run: {
+              proof_payload: {
+                validation_cmd: 'pytest -q',
+                expected_output: '3 passed',
+                summary: 'Dependency mismatch resolved',
+              },
+              commands_run: ['pytest -q'],
+            },
+            project_hint: {
+              fingerprint: 'fp_review_ready_1',
+              event_type: 'post_tool_error',
+              cwd_hash: 'cwdhash-review-ready-1',
+              origin_device_id: 'device-test',
+              origin_agent_type: 'claude-code',
+              tool_context: {
+                command: 'pytest -q',
+                fileName: 'test_review_ready.py',
+              },
+            },
+          },
+        ],
+        total: 1,
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const code = await agentMain(['review-list']);
+    const output = stdout.mock.calls.map(call => String(call[0])).join('');
+    stdout.mockRestore();
+
+    expect(code).toBe(0);
+    const data = JSON.parse(output) as {
+      items: Array<{ local_automation_readiness: { status: string; suggested_project_dir: string } }>;
+    };
+    expect(data.items[0]?.local_automation_readiness.status).toBe('ready');
+    expect(data.items[0]?.local_automation_readiness.suggested_project_dir).toBe(projectDir);
   });
 
   it('owner-verify submits verification result to endpoint', async () => {
@@ -471,6 +582,8 @@ describe('worker-on (TASK-091)', () => {
     expect(code).toBe(0);
     expect(output).toContain('"workerEnabled": true');
     expect(output).toContain('"status": "stopped"');
+    expect(output).toContain('"api_key_bound": true');
+    expect(output).toContain('"hook_not_configured"');
   });
 
   it('draft-organizer run-once fetches only the current profile batch and submits one reconcile payload', async () => {
@@ -636,6 +749,48 @@ describe('worker-on (TASK-091)', () => {
     expect(wState.totalSolved).toBeGreaterThanOrEqual(1);
   });
 
+  it('worker daemon skips strict submission bounties before auto-solve', async () => {
+    seedConfig();
+    const requests: Array<{ url: string; body?: string }> = [];
+    let fetchCount = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      requests.push({ url, body: init?.body ? String(init.body) : undefined });
+      fetchCount++;
+      if (fetchCount >= 3) {
+        const cfg = _testHelpers.loadConfig();
+        cfg.workerEnabled = false;
+        _testHelpers.saveConfig(cfg);
+      }
+      if (url.includes('/heartbeat')) {
+        return mockResponse({
+          recommended_bounties: [
+            {
+              id: 'bounty_strict_1',
+              submission_auto_contract_required: true,
+              submission_automation_policy: 'strict',
+            },
+          ],
+        });
+      }
+      if (url.includes('/reviews/recommended')) return mockResponse({ items: [] });
+      if (url.includes('/status')) return mockResponse({ pending_owner_verifications: [] });
+      return mockResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const capture = captureOutput();
+    const code = await agentMain(['worker', 'daemon', '--worker-interval', '10']);
+    capture.spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(requests[0]?.url).toContain('/heartbeat');
+    expect(requests.some(req => req.url.includes('/auto-solve'))).toBe(false);
+    expect(requests.some(req => req.url.includes('/claim-and-submit'))).toBe(false);
+    expect(capture.output).toContain('平台要求严格自动化契约');
+    const wState = _testHelpers.loadWorkerState();
+    expect(wState.totalSkipped).toBeGreaterThanOrEqual(1);
+  });
+
   it('disable sets workerEnabled to false and persists', async () => {
     seedConfig();
     vi.stubGlobal('fetch', vi.fn());
@@ -688,6 +843,515 @@ describe('worker-on (TASK-091)', () => {
     const wState = _testHelpers.loadWorkerState();
     expect(wState.totalSolved).toBe(0);
     expect(wState.totalSkipped).toBeGreaterThanOrEqual(2);
+  });
+
+  it('worker daemon auto-submits owner verification with a safe validation command', async () => {
+    const home = seedConfig();
+    const projectRoot = path.join(home, 'demo-owner-project');
+    const projectFile = path.join(projectRoot, 'tests', 'test_owner_auto.py');
+    mkdirSync(path.dirname(projectFile), { recursive: true });
+    writeFileSync(path.join(projectRoot, 'pyproject.toml'), '[project]\nname="demo-owner"\n', 'utf8');
+    writeFileSync(projectFile, 'print("ok")\n', 'utf8');
+    const outboxPath = path.join(home, '.mac-aicheck', 'outbox', 'events.jsonl');
+    mkdirSync(path.dirname(outboxPath), { recursive: true });
+    writeFileSync(outboxPath, `${JSON.stringify({
+      eventId: 'evt_owner_auto_1',
+      deviceId: 'device-test_cc',
+      agent: 'claude-code',
+      fingerprint: 'fp_owner_auto_1',
+      eventType: 'post_tool_error',
+      occurredAt: '2026-04-30T00:00:00Z',
+      sanitizedMessage: 'pytest failed in test_owner_auto.py',
+      toolContext: { filePath: projectFile, command: 'pytest -q' },
+    })}\n`, 'utf8');
+    const requests: Array<{ url: string; body?: string }> = [];
+    let fetchCount = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      requests.push({ url, body: init?.body ? String(init.body) : undefined });
+      fetchCount++;
+      if (fetchCount >= 3) {
+        const cfg = _testHelpers.loadConfig();
+        cfg.workerEnabled = false;
+        _testHelpers.saveConfig(cfg);
+      }
+      if (url.includes('/heartbeat')) return mockResponse({ recommended_bounties: [] });
+      if (url.includes('/status')) {
+        return mockResponse({
+          pending_owner_verifications: [{
+            bounty_id: 'b_owner_1',
+            answer_id: 'a_owner_1',
+            title: 'pytest owner auto',
+            solution_summary: 'Run tests again',
+            submitted_at: '2026-04-30T00:00:00Z',
+            deadline_at: '2026-05-02T00:00:00Z',
+            validation_cmd: 'pytest -q',
+            expected_output: '3 passed',
+            commands_run: ['pip install -r requirements.txt', 'pytest -q'],
+            project_hint: {
+              fingerprint: 'fp_owner_auto_1',
+              event_type: 'post_tool_error',
+              origin_device_id: 'device-test',
+              origin_agent_type: 'claude-code',
+              tool_context: { fileName: 'test_owner_auto.py', command: 'pytest -q' },
+            },
+            automation_contract: { mode: 'auto', auto_run_allowed: true },
+            automation_readiness: { status: 'ready', selected_command: 'pytest -q' },
+          }],
+        });
+      }
+      if (url.includes('/owner-verify')) return mockResponse({ review_status: 'pending_review', owner_score: 60, total_score: 60, threshold: 70 });
+      return mockResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    (globalThis as {
+      __MAC_AICHECK_TEST_EXEC__?: (command: string, options?: { cwd?: string }) => { exitCode: number; stdout?: string; stderr?: string };
+    }).__MAC_AICHECK_TEST_EXEC__ = (command: string, options?: { cwd?: string }) => {
+      expect(command).toBe('pytest -q');
+      expect(options?.cwd).toBe(projectRoot);
+      return { exitCode: 0, stdout: '3 passed', stderr: '' };
+    };
+
+    const { spy } = captureOutput();
+    const code = await agentMain(['worker', 'daemon', '--worker-interval', '10']);
+    spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(requests[0]?.url).toContain('/heartbeat');
+    expect(requests[1]?.url).toContain('/reviews/recommended');
+    expect(requests[2]?.url).toContain('/status');
+    expect(requests[3]?.url).toContain('/owner-verify');
+    const body = JSON.parse(requests[3]?.body || '{}');
+    expect(body.result).toBe('success');
+    expect(body.commands_run).toEqual(['pytest -q']);
+    expect(body.proof_payload.validation_cmd).toBe('pytest -q');
+    expect(body.proof_payload.after_context.confirmation_mode).toBe('worker_auto');
+    expect(body.artifacts.owner_reproduction_project_dir).toBe(projectRoot);
+    expect(body.stdout_digest).toContain('3 passed');
+    const wState = _testHelpers.loadWorkerState();
+    expect(wState.totalOwnerVerified).toBeGreaterThanOrEqual(1);
+  });
+
+  it('worker daemon auto-submits reviewer verification with a safe validation command', async () => {
+    const home = seedConfig();
+    const projectRoot = path.join(home, 'demo-review-project');
+    const projectFile = path.join(projectRoot, 'tests', 'test_review_auto.py');
+    mkdirSync(path.dirname(projectFile), { recursive: true });
+    writeFileSync(path.join(projectRoot, 'pyproject.toml'), '[project]\nname="demo-review"\n', 'utf8');
+    writeFileSync(projectFile, 'print("ok")\n', 'utf8');
+    const outboxPath = path.join(home, '.mac-aicheck', 'outbox', 'events.jsonl');
+    mkdirSync(path.dirname(outboxPath), { recursive: true });
+    writeFileSync(outboxPath, `${JSON.stringify({
+      eventId: 'evt_review_auto_1',
+      deviceId: 'device-test_cc',
+      agent: 'claude-code',
+      fingerprint: 'fp_review_auto_1',
+      eventType: 'post_tool_error',
+      occurredAt: '2026-04-30T00:00:00Z',
+      sanitizedMessage: 'pytest failed in test_review_auto.py',
+      toolContext: { filePath: projectFile, command: 'pytest -q' },
+    })}\n`, 'utf8');
+    const requests: Array<{ url: string; body?: string }> = [];
+    let fetchCount = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      requests.push({ url, body: init?.body ? String(init.body) : undefined });
+      fetchCount++;
+      if (fetchCount >= 4) {
+        const cfg = _testHelpers.loadConfig();
+        cfg.workerEnabled = false;
+        _testHelpers.saveConfig(cfg);
+      }
+      if (url.includes('/heartbeat')) return mockResponse({ recommended_bounties: [] });
+      if (url.includes('/reviews/recommended')) {
+        return mockResponse({
+          items: [{
+            assignment_id: 'lease_review_1',
+            answer: { id: 'a_review_1', content: 'Review me' },
+            submission_run: {
+              proof_payload: { summary: 'Run tests', validation_cmd: 'pytest -q', expected_output: '3 passed' },
+              commands_run: ['pip install -r requirements.txt', 'pytest -q'],
+            },
+              project_hint: {
+                fingerprint: 'fp_review_auto_1',
+                event_type: 'post_tool_error',
+                origin_device_id: 'device-test',
+                origin_agent_type: 'claude-code',
+                tool_context: { fileName: 'test_review_auto.py', command: 'pytest -q' },
+              },
+              automation_contract: { mode: 'auto', auto_run_allowed: true },
+              automation_readiness: { status: 'ready', selected_command: 'pytest -q' },
+            }],
+            total: 1,
+          });
+        }
+      if (url.includes('/reviews/lease_review_1/submit')) return mockResponse({ ok: true });
+      if (url.includes('/status')) return mockResponse({ pending_owner_verifications: [] });
+      return mockResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    (globalThis as {
+      __MAC_AICHECK_TEST_EXEC__?: (command: string, options?: { cwd?: string }) => { exitCode: number; stdout?: string; stderr?: string };
+    }).__MAC_AICHECK_TEST_EXEC__ = (command: string, options?: { cwd?: string }) => {
+      expect(command).toBe('pytest -q');
+      expect(options?.cwd).toBe(projectRoot);
+      return { exitCode: 0, stdout: '3 passed', stderr: '' };
+    };
+
+    const { spy } = captureOutput();
+    const code = await agentMain(['worker', 'daemon', '--worker-interval', '10']);
+    spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(requests[1]?.url).toContain('/reviews/recommended');
+    expect(requests[2]?.url).toContain('/reviews/lease_review_1/submit');
+    const body = JSON.parse(requests[2]?.body || '{}');
+    expect(body.result).toBe('success');
+    expect(body.method).toBe('execution');
+    expect(body.commands_run).toEqual(['pytest -q']);
+    expect(body.proof_payload.validation_cmd).toBe('pytest -q');
+    expect(body.proof_payload.after_context.review_mode).toBe('worker_auto');
+    expect(body.proof_payload.after_context.validation_cwd).toBe(projectRoot);
+    expect(body.artifacts.validation_workdir).toBe(projectRoot);
+    const wState = _testHelpers.loadWorkerState();
+    expect(wState.totalReviewsSubmitted).toBeGreaterThanOrEqual(1);
+  });
+
+  it('worker daemon auto-submits owner verification from captured cwd when file path is missing', async () => {
+    const home = seedConfig();
+    const projectRoot = path.join(home, 'demo-owner-cwd-project');
+    mkdirSync(path.join(projectRoot, 'tests'), { recursive: true });
+    writeFileSync(path.join(projectRoot, 'pyproject.toml'), '[project]\nname="demo-owner-cwd"\n', 'utf8');
+    const outboxPath = path.join(home, '.mac-aicheck', 'outbox', 'events.jsonl');
+    mkdirSync(path.dirname(outboxPath), { recursive: true });
+    writeFileSync(outboxPath, `${JSON.stringify({
+      eventId: 'evt_owner_auto_cwd_1',
+      deviceId: 'device-test_cc',
+      agent: 'claude-code',
+      fingerprint: 'fp_owner_auto_cwd_1',
+      eventType: 'post_tool_error',
+      occurredAt: '2026-04-30T00:00:00Z',
+      sanitizedMessage: 'pytest failed in current workspace',
+      localContext: { cwdHash: 'cwdhash-owner-auto-1' },
+      toolContext: { cwd: projectRoot, command: 'pytest -q' },
+    })}\n`, 'utf8');
+    const requests: Array<{ url: string; body?: string }> = [];
+    let fetchCount = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      requests.push({ url, body: init?.body ? String(init.body) : undefined });
+      fetchCount++;
+      if (fetchCount >= 3) {
+        const cfg = _testHelpers.loadConfig();
+        cfg.workerEnabled = false;
+        _testHelpers.saveConfig(cfg);
+      }
+      if (url.includes('/heartbeat')) return mockResponse({ recommended_bounties: [] });
+      if (url.includes('/status')) {
+        return mockResponse({
+          pending_owner_verifications: [{
+            bounty_id: 'b_owner_cwd_1',
+            answer_id: 'a_owner_cwd_1',
+            title: 'pytest owner auto via cwd',
+            solution_summary: 'Run tests again',
+            submitted_at: '2026-04-30T00:00:00Z',
+            deadline_at: '2026-05-02T00:00:00Z',
+            validation_cmd: 'pytest -q',
+            expected_output: '3 passed',
+            commands_run: ['pytest -q'],
+            project_hint: {
+              fingerprint: 'fp_owner_auto_cwd_1',
+              event_type: 'post_tool_error',
+              cwd_hash: 'cwdhash-owner-auto-1',
+              origin_agent_type: 'claude-code',
+              tool_context: { command: 'pytest -q' },
+            },
+            automation_contract: { mode: 'auto', auto_run_allowed: true },
+            automation_readiness: { status: 'ready', selected_command: 'pytest -q' },
+          }],
+        });
+      }
+      if (url.includes('/owner-verify')) return mockResponse({ review_status: 'pending_review', owner_score: 60, total_score: 60, threshold: 70 });
+      return mockResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    (globalThis as {
+      __MAC_AICHECK_TEST_EXEC__?: (command: string, options?: { cwd?: string }) => { exitCode: number; stdout?: string; stderr?: string };
+    }).__MAC_AICHECK_TEST_EXEC__ = (command: string, options?: { cwd?: string }) => {
+      expect(command).toBe('pytest -q');
+      expect(options?.cwd).toBe(projectRoot);
+      return { exitCode: 0, stdout: '3 passed', stderr: '' };
+    };
+
+    const { spy } = captureOutput();
+    const code = await agentMain(['worker', 'daemon', '--worker-interval', '10']);
+    spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(requests[3]?.url).toContain('/owner-verify');
+    const body = JSON.parse(requests[3]?.body || '{}');
+    expect(body.artifacts.owner_reproduction_project_dir).toBe(projectRoot);
+    expect(body.proof_payload.after_context.local_context.project_dir).toBe(projectRoot);
+  });
+
+  it('worker daemon skips owner verification when only unsafe commands are available', async () => {
+    seedConfig();
+    const requests: string[] = [];
+    let fetchCount = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      requests.push(url);
+      fetchCount++;
+      if (fetchCount >= 2) {
+        const cfg = _testHelpers.loadConfig();
+        cfg.workerEnabled = false;
+        _testHelpers.saveConfig(cfg);
+      }
+      if (url.includes('/heartbeat')) return mockResponse({ recommended_bounties: [] });
+      if (url.includes('/status')) {
+        return mockResponse({
+          pending_owner_verifications: [{
+            bounty_id: 'b_owner_unsafe',
+            answer_id: 'a_owner_unsafe',
+            title: 'unsafe owner auto',
+            solution_summary: 'Validation command: npm install left-pad',
+            submitted_at: '2026-04-30T00:00:00Z',
+            deadline_at: '2026-05-02T00:00:00Z',
+            validation_cmd: 'npm install left-pad',
+            commands_run: ['npm install left-pad'],
+          }],
+        });
+      }
+      return mockResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const execSpy = vi.fn();
+    (globalThis as {
+      __MAC_AICHECK_TEST_EXEC__?: (command: string) => { exitCode: number; stdout?: string; stderr?: string };
+    }).__MAC_AICHECK_TEST_EXEC__ = (command: string) => {
+      execSpy(command);
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+
+    const capture = captureOutput();
+    const code = await agentMain(['worker', 'daemon', '--worker-interval', '10']);
+    capture.spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(execSpy).not.toHaveBeenCalled();
+    expect(requests.some(url => url.includes('/owner-verify'))).toBe(false);
+    expect(capture.output).toContain('无可自动执行的验证命令');
+    const wState = _testHelpers.loadWorkerState();
+    expect(wState.totalOwnerSkipped).toBeGreaterThanOrEqual(1);
+  });
+
+  it('worker daemon skips owner verification when command is safe but not a real validation', async () => {
+    seedConfig();
+    const requests: string[] = [];
+    let fetchCount = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      requests.push(url);
+      fetchCount++;
+      if (fetchCount >= 2) {
+        const cfg = _testHelpers.loadConfig();
+        cfg.workerEnabled = false;
+        _testHelpers.saveConfig(cfg);
+      }
+      if (url.includes('/heartbeat')) return mockResponse({ recommended_bounties: [] });
+      if (url.includes('/status')) {
+        return mockResponse({
+          pending_owner_verifications: [{
+            bounty_id: 'b_owner_safe_skip',
+            answer_id: 'a_owner_safe_skip',
+            title: 'safe but meaningless owner auto',
+            solution_summary: 'Validation command: python --version',
+            submitted_at: '2026-04-30T00:00:00Z',
+            deadline_at: '2026-05-02T00:00:00Z',
+            validation_cmd: 'python --version',
+            commands_run: ['python --version'],
+          }],
+        });
+      }
+      return mockResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const execSpy = vi.fn();
+    (globalThis as {
+      __MAC_AICHECK_TEST_EXEC__?: (command: string) => { exitCode: number; stdout?: string; stderr?: string };
+    }).__MAC_AICHECK_TEST_EXEC__ = (command: string) => {
+      execSpy(command);
+      return { exitCode: 0, stdout: 'Python 3.12.0', stderr: '' };
+    };
+
+    const capture = captureOutput();
+    const code = await agentMain(['worker', 'daemon', '--worker-interval', '10']);
+    capture.spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(execSpy).not.toHaveBeenCalled();
+    expect(requests.some(url => url.includes('/owner-verify'))).toBe(false);
+    expect(capture.output).toContain('无可自动执行的验证命令');
+    const wState = _testHelpers.loadWorkerState();
+    expect(wState.totalOwnerSkipped).toBeGreaterThanOrEqual(1);
+  });
+
+  it('worker daemon skips owner verification when platform marks the answer as manual-only', async () => {
+    seedConfig();
+    const requests: string[] = [];
+    let fetchCount = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      requests.push(url);
+      fetchCount++;
+      if (fetchCount >= 2) {
+        const cfg = _testHelpers.loadConfig();
+        cfg.workerEnabled = false;
+        _testHelpers.saveConfig(cfg);
+      }
+      if (url.includes('/heartbeat')) return mockResponse({ recommended_bounties: [] });
+      if (url.includes('/status')) {
+        return mockResponse({
+          pending_owner_verifications: [{
+            bounty_id: 'b_owner_manual_only',
+            answer_id: 'a_owner_manual_only',
+            title: 'manual only owner auto',
+            solution_summary: 'Run tests again',
+            submitted_at: '2026-04-30T00:00:00Z',
+            deadline_at: '2026-05-02T00:00:00Z',
+            validation_cmd: 'pytest -q',
+            commands_run: ['pytest -q'],
+            automation_contract: { mode: 'manual_only', auto_run_allowed: false },
+            automation_readiness: {
+              status: 'degraded',
+              selected_command: 'pytest -q',
+              warning_reasons: ['missing_project_locator_hint'],
+            },
+          }],
+        });
+      }
+      return mockResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const execSpy = vi.fn();
+    (globalThis as {
+      __MAC_AICHECK_TEST_EXEC__?: (command: string) => { exitCode: number; stdout?: string; stderr?: string };
+    }).__MAC_AICHECK_TEST_EXEC__ = (command: string) => {
+      execSpy(command);
+      return { exitCode: 0, stdout: '3 passed', stderr: '' };
+    };
+
+    const capture = captureOutput();
+    const code = await agentMain(['worker', 'daemon', '--worker-interval', '10']);
+    capture.spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(execSpy).not.toHaveBeenCalled();
+    expect(requests.some(url => url.includes('/owner-verify'))).toBe(false);
+    expect(capture.output).toContain('平台已标记为 manual-only');
+  });
+
+  it('worker daemon skips reviewer verification when command is safe but not a real validation', async () => {
+    seedConfig();
+    const requests: Array<{ url: string; body?: string }> = [];
+    let fetchCount = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      requests.push({ url, body: init?.body ? String(init.body) : undefined });
+      fetchCount++;
+      if (fetchCount >= 3) {
+        const cfg = _testHelpers.loadConfig();
+        cfg.workerEnabled = false;
+        _testHelpers.saveConfig(cfg);
+      }
+      if (url.includes('/heartbeat')) return mockResponse({ recommended_bounties: [] });
+      if (url.includes('/reviews/recommended')) {
+        return mockResponse({
+          items: [{
+            assignment_id: 'lease_review_safe_skip',
+            answer: { id: 'a_review_safe_skip', content: 'Review me safely' },
+            submission_run: {
+              proof_payload: {
+                summary: 'Use python --version',
+                validation_cmd: 'python --version',
+                expected_output: 'Python 3.12.0',
+              },
+              commands_run: ['python --version'],
+            },
+          }],
+          total: 1,
+        });
+      }
+      if (url.includes('/status')) return mockResponse({ pending_owner_verifications: [] });
+      return mockResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const execSpy = vi.fn();
+    (globalThis as {
+      __MAC_AICHECK_TEST_EXEC__?: (command: string) => { exitCode: number; stdout?: string; stderr?: string };
+    }).__MAC_AICHECK_TEST_EXEC__ = (command: string) => {
+      execSpy(command);
+      return { exitCode: 0, stdout: 'Python 3.12.0', stderr: '' };
+    };
+
+    const capture = captureOutput();
+    const code = await agentMain(['worker', 'daemon', '--worker-interval', '10']);
+    capture.spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(execSpy).not.toHaveBeenCalled();
+    expect(requests.some(req => req.url.includes('/reviews/lease_review_safe_skip/submit'))).toBe(false);
+    expect(capture.output).toContain('无可自动执行的验证命令');
+    const wState = _testHelpers.loadWorkerState();
+    expect(wState.totalReviewSkipped).toBeGreaterThanOrEqual(1);
+  });
+
+  it('worker daemon skips reviewer verification when platform marks the answer as manual-only', async () => {
+    seedConfig();
+    const requests: Array<{ url: string; body?: string }> = [];
+    let fetchCount = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      requests.push({ url, body: init?.body ? String(init.body) : undefined });
+      fetchCount++;
+      if (fetchCount >= 3) {
+        const cfg = _testHelpers.loadConfig();
+        cfg.workerEnabled = false;
+        _testHelpers.saveConfig(cfg);
+      }
+      if (url.includes('/heartbeat')) return mockResponse({ recommended_bounties: [] });
+      if (url.includes('/reviews/recommended')) {
+        return mockResponse({
+          items: [{
+            assignment_id: 'lease_review_manual_only',
+            answer: { id: 'a_review_manual_only', content: 'Review me manually' },
+            submission_run: {
+              proof_payload: { validation_cmd: 'pytest -q', expected_output: '3 passed' },
+              commands_run: ['pytest -q'],
+            },
+            project_hint: {},
+            automation_contract: { mode: 'manual_only', auto_run_allowed: false },
+            automation_readiness: {
+              status: 'degraded',
+              selected_command: 'pytest -q',
+              warning_reasons: ['missing_project_locator_hint'],
+            },
+          }],
+          total: 1,
+        });
+      }
+      if (url.includes('/status')) return mockResponse({ pending_owner_verifications: [] });
+      return mockResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const execSpy = vi.fn();
+    (globalThis as {
+      __MAC_AICHECK_TEST_EXEC__?: (command: string) => { exitCode: number; stdout?: string; stderr?: string };
+    }).__MAC_AICHECK_TEST_EXEC__ = (command: string) => {
+      execSpy(command);
+      return { exitCode: 0, stdout: '3 passed', stderr: '' };
+    };
+
+    const capture = captureOutput();
+    const code = await agentMain(['worker', 'daemon', '--worker-interval', '10']);
+    capture.spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(execSpy).not.toHaveBeenCalled();
+    expect(requests.some(({ url }) => url.includes('/reviews/lease_review_manual_only/submit'))).toBe(false);
+    expect(capture.output).toContain('平台已标记为 manual-only');
   });
 
   it('enable waits for binding before auto-starting worker', async () => {

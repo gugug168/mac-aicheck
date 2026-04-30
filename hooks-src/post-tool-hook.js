@@ -109,6 +109,10 @@ function handleToolResult(data) {
   const toolContext = { toolName: data.toolName || 'unknown' };
   if (toolInput.command) toolContext.command = String(toolInput.command).slice(0, 500);
   if (toolInput.file_path) toolContext.filePath = String(toolInput.file_path).slice(0, 300);
+  const workingDir = String(
+    toolInput.cwd || toolInput.working_directory || data.cwd || process.cwd() || ''
+  ).trim();
+  if (workingDir) toolContext.cwd = workingDir.slice(0, 300);
   if (exitCode !== undefined) toolContext.exitCode = exitCode;
 
   // Create event

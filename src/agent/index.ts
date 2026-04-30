@@ -1,6 +1,6 @@
 // Agent Lite CLI - 简洁实现
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, appendFileSync, unlinkSync, openSync, closeSync } from 'fs';
-import { join } from 'path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, appendFileSync, unlinkSync, openSync, closeSync, statSync } from 'fs';
+import { basename, dirname, join } from 'path';
 import { homedir, hostname } from 'os';
 import { execFileSync, spawn } from 'child_process';
 import crypto from 'node:crypto';
@@ -490,16 +490,20 @@ interface WorkerState {
   pid: number | null;
   startedAt: string | null;
   lastCycleAt: string | null;
-  lastCycleResult: { solved: number; skipped: number; total: number } | null;
+  lastCycleResult: { solved: number; skipped: number; total: number; reviewsSubmitted?: number; reviewSkipped?: number; ownerVerified?: number; ownerSkipped?: number } | null;
   nextCycleAt: string | null;
   totalCycles: number;
   totalSolved: number;
   totalSkipped: number;
+  totalReviewsSubmitted: number;
+  totalReviewSkipped: number;
+  totalOwnerVerified: number;
+  totalOwnerSkipped: number;
   consecutiveErrors: number;
   lastError: string | null;
 }
 function defaultWorkerState(): WorkerState {
-  return { schemaVersion: 1, enabled: false, status: 'stopped', pid: null, startedAt: null, lastCycleAt: null, lastCycleResult: null, nextCycleAt: null, totalCycles: 0, totalSolved: 0, totalSkipped: 0, consecutiveErrors: 0, lastError: null };
+  return { schemaVersion: 1, enabled: false, status: 'stopped', pid: null, startedAt: null, lastCycleAt: null, lastCycleResult: null, nextCycleAt: null, totalCycles: 0, totalSolved: 0, totalSkipped: 0, totalReviewsSubmitted: 0, totalReviewSkipped: 0, totalOwnerVerified: 0, totalOwnerSkipped: 0, consecutiveErrors: 0, lastError: null };
 }
 function loadWorkerState(): WorkerState { return readJson<WorkerState>(paths().workerState, defaultWorkerState()); }
 function saveWorkerState(state: WorkerState) { writeJson(paths().workerState, state); }
@@ -878,10 +882,662 @@ function ownerVerifyLocalContext(config: Record<string, unknown>) {
   };
 }
 
-function writeOwnerVerifyGuide(item: Record<string, string>, config: Record<string, unknown>) {
+const VALIDATION_PROJECT_ROOT_MARKERS = [
+  '.git',
+  'package.json',
+  'pnpm-workspace.yaml',
+  'bunfig.toml',
+  'turbo.json',
+  'pyproject.toml',
+  'requirements.txt',
+  'setup.py',
+  'Pipfile',
+  'Cargo.toml',
+  'go.mod',
+  'pom.xml',
+  'build.gradle',
+  'build.gradle.kts',
+  'settings.gradle',
+  'settings.gradle.kts',
+];
+
+function hasValidationProjectRootMarker(dir: string) {
+  return VALIDATION_PROJECT_ROOT_MARKERS.some((marker) => existsSync(join(dir, marker)));
+}
+
+function resolveValidationProjectDir(filePath: unknown) {
+  const raw = String(filePath || '').trim();
+  if (!raw) return '';
+  let current = raw;
+  try {
+    if (existsSync(current) && !statSync(current).isDirectory()) current = dirname(current);
+    else if (!existsSync(current)) current = dirname(current);
+  } catch {
+    current = dirname(current);
+  }
+  if (!current || current === '.' || !existsSync(current)) return '';
+  let dir = current;
+  let best = current;
+  while (dir && dir !== dirname(dir)) {
+    if (hasValidationProjectRootMarker(dir)) return dir;
+    dir = dirname(dir);
+  }
+  return hasValidationProjectRootMarker(dir) ? dir : best;
+}
+
+function validationProjectHint(item: Record<string, unknown>) {
+  const hint = item.project_hint;
+  return hint && typeof hint === 'object' ? hint as Record<string, unknown> : {};
+}
+
+function validationProjectHintToolContext(item: Record<string, unknown>) {
+  const hint = validationProjectHint(item);
+  const toolContext = hint.tool_context;
+  return toolContext && typeof toolContext === 'object' ? toolContext as Record<string, unknown> : {};
+}
+
+function tokenizeValidationHint(value: unknown) {
+  return String(value || '')
+    .toLowerCase()
+    .split(/[^a-z0-9._-]+/i)
+    .filter((token) => token.length >= 3);
+}
+
+function validationTokenOverlap(a: string[], b: string[]) {
+  if (!a.length || !b.length) return 0;
+  const right = new Set(b);
+  let score = 0;
+  for (const token of a) {
+    if (right.has(token)) score++;
+  }
+  return score;
+}
+
+function buildValidationAutomationAssessment(item: Record<string, unknown>) {
+  const selectedCommand = selectOwnerValidationCommand(item);
+  const workdirMatch = resolveValidationWorkdir(item);
+  const blockingReasons: string[] = [];
+  const warningReasons: string[] = [];
+  if (!selectedCommand) blockingReasons.push('missing_validation_command');
+  if (selectedCommand && !workdirMatch?.cwd) warningReasons.push('missing_local_project_match');
+  const status = blockingReasons.length > 0 ? 'blocked' : warningReasons.length > 0 ? 'degraded' : 'ready';
+  return {
+    status,
+    ready: status === 'ready',
+    selected_command: selectedCommand,
+    suggested_project_dir: String(workdirMatch?.cwd || '').trim(),
+    blocking_reasons: blockingReasons,
+    warning_reasons: warningReasons,
+  };
+}
+
+function buildReviewAutomationTarget(item: Record<string, unknown>) {
+  const answer = ((item.answer as Record<string, unknown> | undefined) || {});
+  const submissionRun = ((item.submission_run as Record<string, unknown> | undefined) || {});
+  const proofPayload = ((submissionRun.proof_payload as Record<string, unknown> | undefined) || {});
+  return {
+    validation_cmd: proofPayload.validation_cmd,
+    commands_run: Array.isArray(submissionRun.commands_run) ? submissionRun.commands_run : [],
+    solution_summary: proofPayload.summary || answer.content || '',
+    expected_output: proofPayload.expected_output || '',
+    project_hint: item.project_hint,
+  } satisfies Record<string, unknown>;
+}
+
+function serverAutomationMode(item: Record<string, unknown>) {
+  const contract = item.automation_contract;
+  if (contract && typeof contract === 'object') {
+    const mode = String((contract as Record<string, unknown>).mode || '').trim();
+    if (mode) return mode;
+  }
+  const readiness = item.automation_readiness;
+  if (readiness && typeof readiness === 'object') {
+    return String((readiness as Record<string, unknown>).status || '').trim() === 'ready'
+      ? 'auto'
+      : 'manual_only';
+  }
+  return 'manual_only';
+}
+
+function serverAutomationReady(item: Record<string, unknown>) {
+  return serverAutomationMode(item) === 'auto';
+}
+
+function requiresStrictSubmissionAutoContract(item: Record<string, unknown>) {
+  if (item.submission_auto_contract_required === true) return true;
+  return String(item.submission_automation_policy || '').trim() === 'strict';
+}
+
+function claudeSettingsHookStatus() {
+  const settingsFile = join(getHome(), '.claude', 'settings.json');
+  const hooksDir = join(getHome(), '.claude', 'hooks');
+  const sessionHookFile = join(hooksDir, 'mac-aicheck-session-start.js');
+  const postToolHookFile = join(hooksDir, 'mac-aicheck-post-tool.js');
+  let settings: Record<string, unknown> = {};
+  try {
+    if (existsSync(settingsFile)) settings = JSON.parse(readFileSync(settingsFile, 'utf-8'));
+  } catch {}
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {};
+  const sessionEntries = Array.isArray(hooks.SessionStart) ? hooks.SessionStart as Array<Record<string, unknown>> : [];
+  const postToolEntries = Array.isArray(hooks.PostToolUse) ? hooks.PostToolUse as Array<Record<string, unknown>> : [];
+  const hasSessionHook = sessionEntries.some((entry) =>
+    Array.isArray(entry.hooks)
+    && (entry.hooks as Array<Record<string, unknown>>).some((hook) =>
+      String(hook.command || '').includes('mac-aicheck-session-start.js') || String(hook.command || '').includes('mac-aicheck')
+    )
+  );
+  const hasPostToolHook = postToolEntries.some((entry) =>
+    Array.isArray(entry.hooks)
+    && (entry.hooks as Array<Record<string, unknown>>).some((hook) =>
+      String(hook.command || '').includes('mac-aicheck-post-tool.js') || String(hook.command || '').includes('mac-aicheck')
+    )
+  );
+  return {
+    settings_file: settingsFile,
+    session_hook_configured: hasSessionHook,
+    post_tool_hook_configured: hasPostToolHook,
+    session_hook_file_present: existsSync(sessionHookFile),
+    post_tool_hook_file_present: existsSync(postToolHookFile),
+  };
+}
+
+function buildWorkerAutomationStatus(config: AgentConfig, state: WorkerState) {
+  const hookStatus = claudeSettingsHookStatus();
+  const apiKeyBound = !!agentApiKeyHeaders(config);
+  const workerEnabled = config.workerEnabled !== false;
+  const workerRunning = state.status === 'running' && !!state.pid;
+  const blockers: string[] = [];
+  const warnings: string[] = [];
+  if (!apiKeyBound) blockers.push('missing_api_key');
+  if (!workerEnabled) blockers.push('worker_disabled');
+  if (!hookStatus.session_hook_configured || !hookStatus.post_tool_hook_configured) {
+    blockers.push('hook_not_configured');
+  }
+  if (!hookStatus.session_hook_file_present || !hookStatus.post_tool_hook_file_present) {
+    blockers.push('hook_script_missing');
+  }
+  if (blockers.length === 0 && !workerRunning) warnings.push('worker_not_running');
+  const status = blockers.length > 0 ? 'blocked' : warnings.length > 0 ? 'degraded' : 'ready';
+  return {
+    status,
+    ready_for_auto_loop: status === 'ready',
+    api_key_bound: apiKeyBound,
+    worker_enabled: workerEnabled,
+    worker_running: workerRunning,
+    hook_status: hookStatus,
+    blocking_reasons: blockers,
+    warning_reasons: warnings,
+  };
+}
+
+function validationEventLocalContext(event: Record<string, unknown>) {
+  const localContext = event.localContext || event.local_context;
+  return localContext && typeof localContext === 'object'
+    ? localContext as Record<string, unknown>
+    : {};
+}
+
+function resolveValidationProjectCandidate(toolContext: Record<string, unknown>) {
+  for (const value of [
+    toolContext.filePath,
+    toolContext.file_path,
+    toolContext.cwd,
+    toolContext.workingDirectory,
+    toolContext.working_directory,
+    toolContext.projectDir,
+    toolContext.projectRoot,
+  ]) {
+    const cwd = resolveValidationProjectDir(value);
+    if (cwd) return cwd;
+  }
+  return '';
+}
+
+function resolveValidationWorkdir(item: Record<string, unknown>) {
+  const hint = validationProjectHint(item);
+  const toolContext = validationProjectHintToolContext(item);
+  const wantedFingerprint = String(hint.fingerprint || '').trim();
+  const wantedEventType = String(hint.event_type || '').trim();
+  const wantedCwdHash = String(hint.cwd_hash || '').trim();
+  const wantedDevice = normalizeDeviceBaseId(String(hint.origin_device_id || ''));
+  const wantedAgent = normalizeAgent(String(hint.origin_agent_type || ''));
+  const wantedFileName = String(toolContext.fileName || '').trim().toLowerCase();
+  const wantedCommand = String(toolContext.command || '').trim().toLowerCase();
+  const wantedCommandTokens = tokenizeValidationHint(wantedCommand);
+  const byDir = new Map<string, { cwd: string; score: number; occurredAt: string; filePath: string }>();
+  const rows = (readJsonl(paths().outbox) as Array<Record<string, unknown>>).slice(-200);
+
+  for (const event of rows) {
+    const eventToolContext = ((event.toolContext as Record<string, unknown> | undefined) || (event.tool_context as Record<string, unknown> | undefined) || {});
+    const eventLocalContext = validationEventLocalContext(event);
+    const eventCwdHash = String(eventLocalContext.cwdHash || eventLocalContext.cwd_hash || '').trim();
+    const filePath = String(eventToolContext.filePath || eventToolContext.file_path || '').trim();
+    const cwd = resolveValidationProjectCandidate(eventToolContext);
+    if (!cwd) continue;
+
+    let score = 0;
+    if (wantedFingerprint && String(event.fingerprint || '').trim() === wantedFingerprint) score += 20;
+    if (wantedEventType && String(event.eventType || event.event_type || '').trim() === wantedEventType) score += 4;
+    if (wantedCwdHash && eventCwdHash && eventCwdHash === wantedCwdHash) score += 10;
+    if (wantedAgent && normalizeAgent(String(event.agent || '')) === wantedAgent) score += 3;
+    if (wantedDevice && normalizeDeviceBaseId(String(event.deviceId || '') || String(event.device_id || '')) === wantedDevice) score += 3;
+
+    const eventFileName = basename(filePath).toLowerCase();
+    if (wantedFileName && eventFileName === wantedFileName) score += 8;
+
+    const eventCommand = String(eventToolContext.command || '').trim().toLowerCase();
+    if (wantedCommand && eventCommand) {
+      if (eventCommand === wantedCommand) score += 6;
+      else if (eventCommand.includes(wantedCommand) || wantedCommand.includes(eventCommand)) score += 4;
+      else score += Math.min(3, validationTokenOverlap(wantedCommandTokens, tokenizeValidationHint(eventCommand)));
+    }
+
+    if (score <= 0) continue;
+    const previous = byDir.get(cwd);
+    const occurredAt = String(event.occurredAt || event.occurred_at || '');
+    if (!previous || score > previous.score || (score === previous.score && occurredAt > previous.occurredAt)) {
+      byDir.set(cwd, { cwd, score, occurredAt, filePath });
+    }
+  }
+
+  return [...byDir.values()].sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return String(b.occurredAt).localeCompare(String(a.occurredAt));
+  })[0] || null;
+}
+
+function trimOwnerValidationDigest(text: unknown, limit = 4000) {
+  const value = String(text || '').trim();
+  if (value.length <= limit) return value;
+  return `${value.slice(0, limit)}\n<TRUNCATED>`;
+}
+
+function normalizeOwnerValidationCommand(raw: unknown) {
+  return String(raw || '').trim().replace(/^`+|`+$/g, '');
+}
+
+function ownerValidationCommandToken(command: string) {
+  const match = command.trim().match(/^(?:"([^"]+)"|'([^']+)'|(\S+))/);
+  const raw = String(match?.[1] || match?.[2] || match?.[3] || '').trim();
+  const parts = raw.split(/[\\/]/).filter(Boolean);
+  return String(parts[parts.length - 1] || raw).toLowerCase();
+}
+
+function extractValidationCommands(text: string) {
+  const candidates: string[] = [];
+  const push = (value: unknown) => {
+    const normalized = normalizeOwnerValidationCommand(value);
+    if (normalized) candidates.push(normalized);
+  };
+  for (const regex of [
+    /validation command[:：]\s*`?([^\n`]+)`?/gim,
+    /验证命令[:：]\s*`?([^\n`]+)`?/gim,
+    /(?:^|\n)\s*命令[:：]\s*`?([^\n`]+)`?/gim,
+  ]) {
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) push(match[1]);
+  }
+  const fenced = /```(?:\w+)?\s*\n([^`\n]+)\n```/g;
+  let block: RegExpExecArray | null;
+  while ((block = fenced.exec(text)) !== null) push(block[1]);
+  return [...new Set(candidates)];
+}
+
+function isSafeOwnerValidationCommand(command: string) {
+  const normalized = normalizeOwnerValidationCommand(command);
+  if (!normalized) return false;
+  if (/[\r\n]/.test(normalized)) return false;
+  if (/[|&;<>`]/.test(normalized) || normalized.includes('&&') || normalized.includes('||')) return false;
+  const lower = normalized.toLowerCase();
+  if (
+    lower.startsWith('bash ')
+    || lower.startsWith('sh ')
+    || lower.startsWith('zsh ')
+    || lower.startsWith('cmd ')
+    || lower.startsWith('powershell ')
+    || lower.startsWith('pwsh ')
+    || lower.startsWith('python -c ')
+    || lower.startsWith('python3 -c ')
+    || lower.startsWith('py -c ')
+    || lower.startsWith('node -e ')
+  ) {
+    return false;
+  }
+  for (const blocked of [
+    ' npm install',
+    ' pnpm install',
+    ' yarn add',
+    ' bun add',
+    ' pip install',
+    ' pip3 install',
+    ' conda install',
+    ' brew install',
+    ' rm ',
+    ' rmdir ',
+    ' del ',
+    ' erase ',
+    ' move ',
+    ' copy ',
+    ' curl ',
+    ' wget ',
+    ' invoke-webrequest ',
+    ' git reset',
+    ' git clean',
+    ' git checkout',
+    ' git switch',
+    ' git pull',
+    ' git push',
+    ' chmod ',
+    ' chown ',
+  ]) {
+    if (` ${lower}`.includes(blocked)) return false;
+  }
+  const token = ownerValidationCommandToken(normalized);
+  if (!new Set([
+    'pytest', 'python', 'python3', 'py', 'npm', 'pnpm', 'yarn', 'bun',
+    'node', 'uv', 'go', 'cargo', 'dotnet', 'npx', 'bunx',
+    'mvn', 'mvnw', 'gradle', 'gradlew', 'ctest',
+  ]).has(token)) {
+    return false;
+  }
+  return true;
+}
+
+function isMeaningfulOwnerValidationCommand(command: string) {
+  const normalized = normalizeOwnerValidationCommand(command).toLowerCase();
+  if (!normalized) return false;
+  return [
+    /^(?:uv\s+run\s+)?pytest(?:\s|$)/,
+    /^(?:uv\s+run\s+)?(?:python|python3|py)\s+-m\s+pytest(?:\s|$)/,
+    /^(?:python|python3|py)\s+\S*(?:test|tests|check|verify|spec|e2e)\S*(?:\s|$)/,
+    /^(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|check|verify|e2e|spec)(?:\s|$)/,
+    /^(?:npx|bunx)\s+\S*(?:vitest|jest|playwright|cypress|mocha|ava|tap|check|verify|test|spec)\S*(?:\s|$)/,
+    /^(?:node|bun)\s+\S*(?:test|tests|check|verify|spec|e2e)\S*(?:\s|$)/,
+    /^go\s+test(?:\s|$)/,
+    /^cargo\s+test(?:\s|$)/,
+    /^dotnet\s+test(?:\s|$)/,
+    /^(?:mvn|mvnw)\s+(?:-\S+\s+)*(?:test|verify)(?:\s|$)/,
+    /^(?:gradle|gradlew)\s+(?:test|check)(?:\s|$)/,
+    /^ctest(?:\s|$)/,
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function ownerValidationCandidates(item: Record<string, unknown>) {
+  const candidates: string[] = [];
+  const push = (value: unknown) => {
+    const normalized = normalizeOwnerValidationCommand(value);
+    if (normalized) candidates.push(normalized);
+  };
+  push(item.validation_cmd);
+  if (Array.isArray(item.commands_run)) item.commands_run.forEach(push);
+  extractValidationCommands(String(item.solution_summary || '')).forEach(push);
+  return [...new Set(candidates)];
+}
+
+function selectOwnerValidationCommand(item: Record<string, unknown>) {
+  return ownerValidationCandidates(item).find(
+    (command) => isSafeOwnerValidationCommand(command) && isMeaningfulOwnerValidationCommand(command),
+  ) || '';
+}
+
+function runOwnerValidationCommand(command: string, cwd = '') {
+  const override = (globalThis as {
+    __MAC_AICHECK_TEST_EXEC__?: (command: string, options?: { cwd?: string }) => { exitCode: number; stdout?: string; stderr?: string };
+  }).__MAC_AICHECK_TEST_EXEC__;
+  if (override) {
+    const result = override(command, cwd ? { cwd } : {});
+    return {
+      ok: result.exitCode === 0,
+      exitCode: result.exitCode,
+      stdout: trimOwnerValidationDigest(result.stdout),
+      stderr: trimOwnerValidationDigest(result.stderr),
+    };
+  }
+  try {
+    const shell = process.platform === 'darwin' ? '/bin/zsh' : '/bin/sh';
+    const stdout = execFileSync(shell, ['-lc', command], {
+      encoding: 'utf-8',
+      timeout: 120000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      ...(cwd ? { cwd } : {}),
+    });
+    return { ok: true, exitCode: 0, stdout: trimOwnerValidationDigest(stdout), stderr: '' };
+  } catch (error: unknown) {
+    const err = error as { stdout?: string | Buffer; stderr?: string | Buffer; message?: string; status?: number };
+    const stdout = Buffer.isBuffer(err.stdout) ? err.stdout.toString('utf-8') : String(err.stdout || '');
+    const stderr = Buffer.isBuffer(err.stderr) ? err.stderr.toString('utf-8') : String(err.stderr || '');
+    return {
+      ok: false,
+      exitCode: Number.isFinite(err.status) ? Number(err.status) : 1,
+      stdout: trimOwnerValidationDigest(stdout),
+      stderr: trimOwnerValidationDigest(stderr || err.message || 'validation command failed'),
+    };
+  }
+}
+
+async function submitOwnerVerification(params: {
+  bountyId: string;
+  answerId: string;
+  resultValue: 'success' | 'partial' | 'failed';
+  notes: string;
+  commandsRun: string[];
+  guideRecord: ReturnType<typeof loadOwnerVerifySnapshot> | ReturnType<typeof writeOwnerVerifyGuide>;
+  config: Record<string, unknown>;
+  headers: Record<string, string>;
+  confirmationMode: string;
+  expectedOutput?: string;
+  stdoutDigest?: string;
+  stderrDigest?: string;
+  artifacts?: Record<string, unknown>;
+}) {
+  const submittedAt = nowIso();
+  const suggestedProjectDir = String(
+    (params.guideRecord.snapshot as Record<string, unknown> | null)?.suggestedProjectDir || ''
+  ).trim();
+  const afterContext = {
+    submitted_at: submittedAt,
+    confirmation_mode: params.confirmationMode,
+    result: params.resultValue,
+    notes: params.notes,
+    commands_run: params.commandsRun,
+    local_context: {
+      ...ownerVerifyLocalContext(params.config),
+      ...(suggestedProjectDir ? { project_dir: suggestedProjectDir } : {}),
+    },
+  };
+  return requestJson(`${agentApiBase('v2')}/bounties/${params.bountyId}/owner-verify`, {
+    method: 'POST',
+    headers: params.headers,
+    body: {
+      answer_id: params.answerId,
+      result: params.resultValue,
+      notes: params.notes,
+      commands_run: params.commandsRun,
+      proof_payload: {
+        summary: `Owner verification for ${params.bountyId}/${params.answerId}`,
+        steps: [
+          `读取本地指南: ${params.guideRecord.guideMd}`,
+          params.commandsRun.length
+            ? `本地执行验证命令: ${params.commandsRun.join(' ; ')}`
+            : '按本地指南手动确认问题是否消失。',
+          `确认模式: ${params.confirmationMode}`,
+          `用户确认结果: ${params.resultValue}`,
+        ],
+        before_context: params.guideRecord.snapshot || {},
+        after_context: afterContext,
+        validation_cmd: params.commandsRun[0] || '',
+        expected_output:
+          params.expectedOutput
+          || (params.resultValue === 'success'
+            ? '问题已消失或行为符合预期'
+            : params.resultValue === 'partial'
+              ? '问题部分缓解，但仍有残留'
+              : '问题仍然可复现'),
+      },
+      artifacts: {
+        owner_reproduction_guide_path: params.guideRecord.guideMd,
+        owner_reproduction_snapshot_path: params.guideRecord.snapshotJson,
+        owner_reproduction_guide_sha256: params.guideRecord.guideSha256,
+        owner_reproduction_snapshot_generated_at: (params.guideRecord.snapshot as Record<string, unknown> | null)?.generatedAt || '',
+        ...(suggestedProjectDir ? { owner_reproduction_project_dir: suggestedProjectDir } : {}),
+        ...(params.artifacts || {}),
+      },
+      stdout_digest: params.stdoutDigest || '',
+      stderr_digest: params.stderrDigest || '',
+    },
+  });
+}
+
+async function processPendingReviewAssignments(headers: Record<string, string>) {
+  const result = await requestJson(`${agentApiBase('v2')}/reviews/recommended`, { headers });
+  if (result.status !== 200) throw new Error(`获取评审任务失败: ${result.status}`);
+  const items = Array.isArray((result.data as Record<string, unknown>).items)
+    ? (result.data as Record<string, unknown>).items as Array<Record<string, unknown>>
+    : [];
+  let reviewed = 0, skipped = 0;
+  for (const item of items) {
+    const assignmentId = String(item.assignment_id || '').trim();
+    const answer = ((item.answer as Record<string, unknown> | undefined) || {});
+    const submissionRun = ((item.submission_run as Record<string, unknown> | undefined) || {});
+    const proofPayload = ((submissionRun.proof_payload as Record<string, unknown> | undefined) || {});
+    const reviewTarget = buildReviewAutomationTarget(item);
+    const localAutomation = buildValidationAutomationAssessment(reviewTarget);
+    if (!assignmentId || !localAutomation.selected_command) {
+      process.stdout.write(`[Worker] review-auto 跳过 ${assignmentId || 'unknown'}: 无可自动执行的验证命令\n`);
+      skipped++;
+      continue;
+    }
+    if (!serverAutomationReady(item)) {
+      process.stdout.write(`[Worker] review-auto 跳过 ${assignmentId}: 平台已标记为 manual-only\n`);
+      skipped++;
+      continue;
+    }
+    if (localAutomation.status !== 'ready') {
+      process.stdout.write(`[Worker] review-auto 跳过 ${assignmentId}: 本地未匹配到可自动执行的项目目录\n`);
+      skipped++;
+      continue;
+    }
+    const validationCmd = localAutomation.selected_command;
+    const execution = runOwnerValidationCommand(validationCmd, localAutomation.suggested_project_dir || '');
+    const reviewResult = execution.ok ? 'success' : 'failed';
+    const submit = await requestJson(`${agentApiBase('v2')}/reviews/${assignmentId}/submit`, {
+      method: 'POST',
+      headers,
+      body: {
+        result: reviewResult,
+        method: 'execution',
+        notes: execution.ok
+          ? `review auto validation passed via ${validationCmd}`
+          : `review auto validation failed via ${validationCmd} (exit ${execution.exitCode})`,
+        confidence: execution.ok ? 1.0 : 0.2,
+        review_score: execution.ok ? 1.0 : 0.0,
+        review_summary: execution.ok ? `Auto review passed via ${validationCmd}` : `Auto review failed via ${validationCmd}`,
+        execution_mode: 'agent',
+        proof_payload: {
+          summary: `Auto review for ${String(answer.id || assignmentId)}`,
+          validation_cmd: validationCmd,
+          expected_output: String(proofPayload.expected_output || ''),
+          before_context: submissionRun,
+          after_context: {
+            reviewed_at: nowIso(),
+            review_mode: 'worker_auto',
+            result: reviewResult,
+            ...(localAutomation.suggested_project_dir ? { validation_cwd: localAutomation.suggested_project_dir } : {}),
+          },
+        },
+        commands_run: [validationCmd],
+        artifacts: {
+          reviewer_auto_mode: true,
+          ...(localAutomation.suggested_project_dir ? { validation_workdir: localAutomation.suggested_project_dir } : {}),
+        },
+        stdout_digest: execution.stdout,
+        stderr_digest: execution.stderr,
+      },
+    });
+    if (submit.status !== 200) {
+      process.stdout.write(`[Worker] review-auto 提交失败 ${assignmentId}: ${submit.status}\n`);
+      skipped++;
+      continue;
+    }
+    process.stdout.write(`[Worker] review-auto 已提交 ${assignmentId}: ${reviewResult}\n`);
+    reviewed++;
+  }
+  return { reviewed, skipped, total: items.length };
+}
+
+async function processPendingOwnerVerifications(headers: Record<string, string>, config: Record<string, unknown>) {
+  const result = await requestJson(`${agentApiBase('v2')}/status`, { headers });
+  if (result.status !== 200) throw new Error(`获取待复现列表失败: ${result.status}`);
+  const pending = Array.isArray((result.data as Record<string, unknown>).pending_owner_verifications)
+    ? (result.data as Record<string, unknown>).pending_owner_verifications as Array<Record<string, unknown>>
+    : [];
+  let verified = 0, skipped = 0;
+  for (const item of pending) {
+    const bountyId = String(item.bounty_id || '').trim();
+    const answerId = String(item.answer_id || '').trim();
+    if (!bountyId || !answerId) { skipped++; continue; }
+    const guideRecord = writeOwnerVerifyGuide(item, config);
+    const localAutomation = buildValidationAutomationAssessment(item);
+    if (!localAutomation.selected_command) {
+      process.stdout.write(`[Worker] owner-auto 跳过 ${bountyId}/${answerId}: 无可自动执行的验证命令\n`);
+      skipped++;
+      continue;
+    }
+    if (!serverAutomationReady(item)) {
+      process.stdout.write(`[Worker] owner-auto 跳过 ${bountyId}/${answerId}: 平台已标记为 manual-only\n`);
+      skipped++;
+      continue;
+    }
+    if (localAutomation.status !== 'ready') {
+      process.stdout.write(`[Worker] owner-auto 跳过 ${bountyId}/${answerId}: 本地未匹配到可自动执行的项目目录\n`);
+      skipped++;
+      continue;
+    }
+    const validationCmd = localAutomation.selected_command;
+    const suggestedProjectDir = String(
+      localAutomation.suggested_project_dir
+      || (guideRecord.snapshot as Record<string, unknown> | null)?.suggestedProjectDir
+      || ''
+    ).trim();
+    const execution = runOwnerValidationCommand(validationCmd, suggestedProjectDir);
+    const verifyResult = execution.ok ? 'success' : 'failed';
+    const submitResult = await submitOwnerVerification({
+      bountyId,
+      answerId,
+      resultValue: verifyResult,
+      notes: execution.ok
+        ? `worker auto validation passed via ${validationCmd}`
+        : `worker auto validation failed via ${validationCmd} (exit ${execution.exitCode})`,
+      commandsRun: [validationCmd],
+      guideRecord,
+      config,
+      headers,
+      confirmationMode: 'worker_auto',
+      expectedOutput: String(item.expected_output || ''),
+      stdoutDigest: execution.stdout,
+      stderrDigest: execution.stderr,
+      artifacts: { owner_auto_mode: true },
+    });
+    if (submitResult.status !== 200) {
+      process.stdout.write(`[Worker] owner-auto 提交失败 ${bountyId}/${answerId}: ${submitResult.status}\n`);
+      skipped++;
+      continue;
+    }
+    process.stdout.write(`[Worker] owner-auto 已提交 ${bountyId}/${answerId}: ${verifyResult}\n`);
+    verified++;
+  }
+  return { verified, skipped, total: pending.length };
+}
+
+function writeOwnerVerifyGuide(item: Record<string, unknown>, config: Record<string, unknown>) {
   const files = ownerVerifyFiles(String(item.bounty_id || ''), String(item.answer_id || ''));
   const generatedAt = nowIso();
   const localContext = ownerVerifyLocalContext(config);
+  const suggestedValidationCmd = selectOwnerValidationCommand(item);
+  const workdirMatch = resolveValidationWorkdir(item);
+  const suggestedProjectDir = String(workdirMatch?.cwd || '').trim();
   const verifyCommand = `mac-aicheck agent owner-verify ${item.bounty_id} --answer ${item.answer_id} --result success|partial|failed --cmd "<local validation command>"`;
   const lines = [
     '# AICOEVO 发起者复现指南',
@@ -896,6 +1552,9 @@ function writeOwnerVerifyGuide(item: Record<string, string>, config: Record<stri
     '',
     item.solution_summary || '暂无方案摘要。',
     '',
+    ...(suggestedProjectDir ? ['## 建议项目目录', '', `\`${suggestedProjectDir}\``, ''] : []),
+    ...(suggestedValidationCmd ? ['## 推荐验证命令', '', `\`${suggestedValidationCmd}\``, ''] : []),
+    ...(item.expected_output ? ['## 期望结果', '', String(item.expected_output), ''] : []),
     '## 建议操作',
     '',
     '1. 在你自己的本地环境里手动复现原问题。',
@@ -917,6 +1576,10 @@ function writeOwnerVerifyGuide(item: Record<string, string>, config: Record<stri
     item,
     localContext,
     verifyCommand,
+    validationCmd: suggestedValidationCmd,
+    expectedOutput: String(item.expected_output || ''),
+    suggestedProjectDir,
+    projectHint: validationProjectHint(item),
   };
   writeJson(files.snapshotJson, snapshot);
   return {
@@ -1489,13 +2152,25 @@ async function runWorkerDaemon(args: Record<string, unknown>): Promise<number> {
       }
       try {
         const heartbeat = await heartbeatAgentV2(headers, { max_parallel_tasks: maxPerCycle, worker_status: 'active' });
-        const recData = heartbeat.data as { recommended_bounties?: Array<{ id: string; recommended_env_id?: string }> };
+        const recData = heartbeat.data as {
+          recommended_bounties?: Array<{
+            id: string;
+            recommended_env_id?: string;
+            submission_auto_contract_required?: boolean;
+            submission_automation_policy?: string;
+          }>;
+        };
         const items = (recData.recommended_bounties || []).slice(0, maxPerCycle);
-        let solved = 0, skipped = 0;
+        let solved = 0, skipped = 0, reviewsSubmitted = 0, reviewSkipped = 0, ownerVerified = 0, ownerSkipped = 0;
         if (items.length > 0) {
           process.stdout.write(`[Worker] 发现 ${items.length} 个推荐任务\n`);
           for (const item of items) {
             if (!/^[a-zA-Z0-9_-]+$/.test(item.id)) { skipped++; continue; }
+            if (requiresStrictSubmissionAutoContract(item as unknown as Record<string, unknown>)) {
+              process.stdout.write(`[Worker] auto-submit 跳过 ${item.id}: 平台要求严格自动化契约\n`);
+              skipped++;
+              continue;
+            }
             const solveResult = await requestJson(`${agentApiBase('v1')}/bounties/${item.id}/auto-solve`, { method: 'POST', headers });
             const solveData = solveResult.data as { matched?: boolean; answer?: string; confidence?: number; _raw?: string };
             if ((solveData as Record<string, unknown>)._raw) { process.stdout.write(`[Worker] auto-solve 返回非 JSON 响应，跳过 ${item.id}\n`); skipped++; continue; }
@@ -1507,16 +2182,26 @@ async function runWorkerDaemon(args: Record<string, unknown>): Promise<number> {
             if (submitResult.status >= 200 && submitResult.status < 300) solved++;
           }
         }
+        const reviewResult = await processPendingReviewAssignments(headers);
+        reviewsSubmitted = reviewResult.reviewed;
+        reviewSkipped = reviewResult.skipped;
+        const ownerResult = await processPendingOwnerVerifications(headers, currentCfg);
+        ownerVerified = ownerResult.verified;
+        ownerSkipped = ownerResult.skipped;
         if (currentCfg.draftOrganizerEnabled && currentCfg.profileId) {
           const draftResult = await runDraftOrganizerOnce();
           if (!draftResult.ok) throw new Error(draftResult.reason || 'draft organizer failed');
         }
         const updated = loadWorkerState();
         updated.lastCycleAt = nowIso();
-        updated.lastCycleResult = { solved, skipped, total: items.length };
+        updated.lastCycleResult = { solved, skipped, total: items.length, reviewsSubmitted, reviewSkipped, ownerVerified, ownerSkipped };
         updated.totalCycles = (updated.totalCycles || 0) + 1;
         updated.totalSolved = (updated.totalSolved || 0) + solved;
         updated.totalSkipped = (updated.totalSkipped || 0) + skipped;
+        updated.totalReviewsSubmitted = (updated.totalReviewsSubmitted || 0) + reviewsSubmitted;
+        updated.totalReviewSkipped = (updated.totalReviewSkipped || 0) + reviewSkipped;
+        updated.totalOwnerVerified = (updated.totalOwnerVerified || 0) + ownerVerified;
+        updated.totalOwnerSkipped = (updated.totalOwnerSkipped || 0) + ownerSkipped;
         updated.consecutiveErrors = 0;
         updated.lastError = null;
         updated.nextCycleAt = new Date(Date.now() + interval).toISOString();
@@ -2047,7 +2732,13 @@ export async function main(argv: string[]) {
     if (subcommand === 'status') {
       const cfg = loadConfig();
       const wState = loadWorkerState();
-      process.stdout.write(JSON.stringify({ ok: true, workerEnabled: cfg.workerEnabled, paused: cfg.paused, worker: wState }, null, 2) + '\n');
+      process.stdout.write(JSON.stringify({
+        ok: true,
+        workerEnabled: cfg.workerEnabled,
+        paused: cfg.paused,
+        worker: wState,
+        automation: buildWorkerAutomationStatus(cfg, wState),
+      }, null, 2) + '\n');
       return 0;
     }
     if (subcommand === 'start') {
@@ -2159,7 +2850,14 @@ export async function main(argv: string[]) {
     if (!headers) { process.stdout.write('悬赏命令需要 Agent API Key，请先运行 mac-aicheck agent bind\n'); return 1; }
     const id = (args._ as string[])[0];
     const content = String(args.content || '');
-    if (!id || !content) { process.stdout.write('用法: mac-aicheck agent bounty-submit <id> --content <text>\n'); return 1; }
+    if (!id || !content) {
+      process.stdout.write('用法: mac-aicheck agent bounty-submit <id> --content <text> [--cmd "pytest -q"] [--validation-cmd "pytest -q"] [--expected-output "3 passed"] [--summary "..."]\n');
+      return 1;
+    }
+    const commandsRun = String(args.cmd || '').split(',').map(v => v.trim()).filter(Boolean);
+    const validationCmd = String(args.validationCmd || '').trim() || commandsRun[0] || '';
+    const expectedOutput = String(args.expectedOutput || '').trim();
+    const summary = String(args.summary || '').trim();
     try {
       const result = await requestJson(`${agentApiBase('v2')}/bounties/${id}/submit`, {
         method: 'POST',
@@ -2169,6 +2867,12 @@ export async function main(argv: string[]) {
           source: String(args.source || 'manual'),
           confidence: Number(args.confidence || 0),
           execution_mode: String(args.executionMode || 'agent'),
+          commands_run: commandsRun,
+          proof_payload: {
+            ...(summary ? { summary } : {}),
+            ...(validationCmd ? { validation_cmd: validationCmd } : {}),
+            ...(expectedOutput ? { expected_output: expectedOutput } : {}),
+          },
         },
       });
       if (result.status >= 400) { process.stdout.write(`提交失败: ${JSON.stringify(result.data)}\n`); return 1; }
@@ -2215,7 +2919,13 @@ export async function main(argv: string[]) {
       try {
         // 1. 心跳
         const recResult = await heartbeatAgentV2(hdr, { max_parallel_tasks: maxPerCycle });
-        const recData = recResult.data as { recommended_bounties?: Array<Record<string, unknown> & { recommended_env_id?: string }> };
+        const recData = recResult.data as {
+          recommended_bounties?: Array<Record<string, unknown> & {
+            recommended_env_id?: string;
+            submission_auto_contract_required?: boolean;
+            submission_automation_policy?: string;
+          }>;
+        };
         const items = (recData.recommended_bounties || []).slice(0, maxPerCycle);
 
         if (items.length === 0) {
@@ -2225,6 +2935,10 @@ export async function main(argv: string[]) {
           let solved = 0;
 
           for (const item of items) {
+            if (requiresStrictSubmissionAutoContract(item)) {
+              process.stdout.write(`  [${item.id}] 平台要求严格自动化契约，跳过纯 KB 自动提交\n`);
+              continue;
+            }
             // 3. KB 匹配
             const solveResult = await requestJson(`${agentApiBase('v1')}/bounties/${item.id}/auto-solve`, {
               method: 'POST', headers: hdr,
@@ -2277,7 +2991,16 @@ export async function main(argv: string[]) {
       const result = await requestJson(`${agentApiBase('v2')}/reviews/recommended`, {
         headers,
       });
-      process.stdout.write(JSON.stringify(result.data, null, 2) + '\n');
+      const data = (result.data && typeof result.data === 'object') ? result.data as Record<string, unknown> : {};
+      const items = Array.isArray(data.items)
+        ? (data.items as Array<Record<string, unknown>>).map((item) => ({
+            ...item,
+            local_automation_readiness: buildValidationAutomationAssessment(
+              buildReviewAutomationTarget(item),
+            ),
+          }))
+        : [];
+      process.stdout.write(JSON.stringify({ ...data, items }, null, 2) + '\n');
     } catch (e: unknown) { process.stdout.write(`获取评审任务失败: ${(e as Error).message}\n`); return 1; }
     return 0;
   }
@@ -2321,7 +3044,7 @@ export async function main(argv: string[]) {
     try {
       const result = await requestJson(`${agentApiBase('v2')}/status`, { headers });
       if (result.status !== 200) { process.stdout.write(`获取状态失败: ${result.status}\n`); return 1; }
-      const pending = (result.data as Record<string, unknown>).pending_owner_verifications as Array<Record<string, string>> || [];
+      const pending = (result.data as Record<string, unknown>).pending_owner_verifications as Array<Record<string, unknown>> || [];
       if (pending.length === 0) {
         process.stdout.write('没有待复现确认的方案。\n');
         return 0;
@@ -2329,12 +3052,22 @@ export async function main(argv: string[]) {
       process.stdout.write(`待复现确认 (${pending.length}):\n\n`);
       for (const item of pending) {
         const guide = writeOwnerVerifyGuide(item, cfg);
+        const automation = buildValidationAutomationAssessment(item);
         process.stdout.write(`## ${item.title || '(无标题)'}\n`);
         process.stdout.write(`  Bounty:   ${item.bounty_id}\n`);
         process.stdout.write(`  Answer:   ${item.answer_id}\n`);
         process.stdout.write(`  方案摘要: ${item.solution_summary}\n`);
         process.stdout.write(`  提交时间: ${item.submitted_at}\n`);
         process.stdout.write(`  截止时间: ${item.deadline_at}\n\n`);
+        if (item.validation_cmd) process.stdout.write(`  验证命令: ${item.validation_cmd}\n`);
+        if ((guide.snapshot as Record<string, unknown> | null)?.suggestedProjectDir) {
+          process.stdout.write(`  项目目录: ${String((guide.snapshot as Record<string, unknown>).suggestedProjectDir)}\n`);
+        }
+        process.stdout.write(`  自动验证: ${automation.status}\n`);
+        if (automation.selected_command) process.stdout.write(`  自动命令: ${automation.selected_command}\n`);
+        if (automation.suggested_project_dir) process.stdout.write(`  自动目录: ${automation.suggested_project_dir}\n`);
+        if (automation.blocking_reasons.length > 0) process.stdout.write(`  阻塞原因: ${automation.blocking_reasons.join(', ')}\n`);
+        if (automation.warning_reasons.length > 0) process.stdout.write(`  注意事项: ${automation.warning_reasons.join(', ')}\n`);
         process.stdout.write(`  指南:     ${guide.guideMd}\n`);
         process.stdout.write(`  快照:     ${guide.snapshotJson}\n\n`);
         process.stdout.write(`  → mac-aicheck agent owner-verify ${item.bounty_id} --answer ${item.answer_id} --result success|partial|failed\n\n`);
@@ -2388,49 +3121,16 @@ export async function main(argv: string[]) {
     }
 
     try {
-      const submittedAt = nowIso();
-      const afterContext = {
-        submitted_at: submittedAt,
-        confirmation_mode: skipPrompt ? 'flag_yes' : 'interactive_prompt',
-        result: resultValue,
+      const result = await submitOwnerVerification({
+        bountyId,
+        answerId,
+        resultValue: resultValue as 'success' | 'partial' | 'failed',
         notes,
-        commands_run: commandsRun,
-        local_context: ownerVerifyLocalContext(cfg),
-      };
-      const result = await requestJson(`${agentApiBase('v2')}/bounties/${bountyId}/owner-verify`, {
-        method: 'POST',
+        commandsRun,
+        guideRecord,
+        config: cfg,
         headers,
-        body: {
-          answer_id: answerId,
-          result: resultValue,
-          notes,
-          commands_run: commandsRun,
-          proof_payload: {
-            summary: `Owner verification for ${bountyId}/${answerId}`,
-            steps: [
-              `读取本地指南: ${guideRecord.guideMd}`,
-              commandsRun.length
-                ? `本地执行验证命令: ${commandsRun.join(' ; ')}`
-                : '按本地指南手动确认问题是否消失。',
-              `用户确认结果: ${resultValue}`,
-            ],
-            before_context: guideRecord.snapshot || {},
-            after_context: afterContext,
-            validation_cmd: commandsRun[0] || '',
-            expected_output:
-              resultValue === 'success'
-                ? '问题已消失或行为符合预期'
-                : resultValue === 'partial'
-                  ? '问题部分缓解，但仍有残留'
-                  : '问题仍然可复现',
-          },
-          artifacts: {
-            owner_reproduction_guide_path: guideRecord.guideMd,
-            owner_reproduction_snapshot_path: guideRecord.snapshotJson,
-            owner_reproduction_guide_sha256: guideRecord.guideSha256,
-            owner_reproduction_snapshot_generated_at: (guideRecord.snapshot as Record<string, unknown> | null)?.generatedAt || '',
-          },
-        },
+        confirmationMode: skipPrompt ? 'flag_yes' : 'interactive_prompt',
       });
       if (result.status !== 200) {
         process.stdout.write(`提交失败 (${result.status}): ${JSON.stringify(result.data)}\n`);
