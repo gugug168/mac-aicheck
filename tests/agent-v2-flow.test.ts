@@ -1472,4 +1472,47 @@ describe('worker-on (TASK-091)', () => {
     expect(spawn.calls[0]?.args.join(' ')).toContain('worker daemon');
     expect(_testHelpers.loadConfig().profileId).toBe('prof_mac');
   });
+
+  it('device-flow bind polls profile_id and saves it to config', async () => {
+    seedConfig({ authToken: undefined, profileId: null });
+    const spawn = createSpawnStub();
+    (globalThis as { __MAC_AICHECK_TEST_SPAWN__?: unknown }).__MAC_AICHECK_TEST_SPAWN__ = spawn.spawnImpl;
+
+    const requests: Array<{ url: string; method: string }> = [];
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      requests.push({ url, method: String(init?.method || 'GET') });
+      if (url.includes('/bind/request')) {
+        return mockResponse({
+          request_token: 'req_tok_123',
+          confirm_url: 'https://aicoevo.net/bind?t=req_tok_123',
+          expires_in: 9,
+        });
+      }
+      if (url.includes('/bind/poll')) {
+        return mockResponse({
+          status: 'confirmed',
+          api_key: 'ak_device_flow_123',
+          profile_id: 'prof_device_flow_mac',
+        });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const capture = captureOutput();
+    const code = await agentMain(['bind', '--agent', 'claude-code']);
+    capture.spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(requests[0]?.method).toBe('POST');
+    expect(requests[0]?.url).toContain('/bind/request?');
+    expect(requests[0]?.url).toContain('agent_type=claude-code');
+    expect(requests[0]?.url).toContain('device_id=device-test');
+    expect(requests.some(req => req.url.includes('/bind/poll?request_token=req_tok_123'))).toBe(true);
+    expect(capture.output).toContain('绑定成功');
+    expect(capture.output).toContain('Worker 互助循环: 已启动');
+    expect(spawn.calls).toHaveLength(1);
+    expect(_testHelpers.loadConfig().authToken).toBe('ak_device_flow_123');
+    expect(_testHelpers.loadConfig().profileId).toBe('prof_device_flow_mac');
+  });
 });
