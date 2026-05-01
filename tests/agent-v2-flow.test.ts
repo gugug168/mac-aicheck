@@ -242,6 +242,17 @@ describe('agent v2 flow', () => {
               agent_type: 'claude-code',
             },
           },
+          user_authorization_gate: {
+            allow_safe_validation_autorun: false,
+            require_web_confirmation_for_validation: true,
+          },
+          web_confirmation: {
+            confirmed: false,
+          },
+          prepare_state: {
+            prepared: false,
+            prepared_action: 'manual_confirm_only',
+          },
         }],
         timestamp: '2026-04-26T00:00:00Z',
       }),
@@ -263,6 +274,9 @@ describe('agent v2 flow', () => {
     expect(output).toContain('执行决策: ask_user_run');
     expect(output).toContain('目标机器: profile=prof_001 / device=device_001 / agent=claude-code');
     expect(output).toContain('自动验证: blocked');
+    expect(output).toContain('平台放行: manual_confirm_only');
+    expect(output).toContain('自动运行授权: 未开启');
+    expect(output).toContain('网站确认: 待确认');
     expect(output).toContain('阻塞原因: missing_validation_command');
     const guidePath = path.join(home, '.mac-aicheck', 'owner-verify', 'b_001__a_001.md');
     const snapshotPath = path.join(home, '.mac-aicheck', 'owner-verify', 'b_001__a_001.json');
@@ -911,6 +925,13 @@ describe('worker-on (TASK-091)', () => {
           }],
         });
       }
+      if (url.includes('/owner-validation-tasks/prepare')) {
+        return mockResponse({
+          prepared: true,
+          prepared_action: 'run_validation_now',
+          prepare_state: { prepared: true, prepared_action: 'run_validation_now' },
+        });
+      }
       if (url.includes('/owner-verify')) return mockResponse({ review_status: 'pending_review', owner_score: 60, total_score: 60, threshold: 70 });
       return mockResponse({});
     });
@@ -931,8 +952,11 @@ describe('worker-on (TASK-091)', () => {
     expect(requests[0]?.url).toContain('/heartbeat');
     expect(requests[1]?.url).toContain('/reviews/recommended');
     expect(requests[2]?.url).toContain('/status');
-    expect(requests[3]?.url).toContain('/owner-verify');
-    const body = JSON.parse(requests[3]?.body || '{}');
+    expect(requests[3]?.url).toContain('/owner-validation-tasks/prepare');
+    expect(requests[4]?.url).toContain('/owner-verify');
+    const prepareBody = JSON.parse(requests[3]?.body || '{}');
+    expect(prepareBody.answer_id).toBe('a_owner_1');
+    const body = JSON.parse(requests[4]?.body || '{}');
     expect(body.result).toBe('success');
     expect(body.commands_run).toEqual(['pytest -q']);
     expect(body.proof_payload.validation_cmd).toBe('pytest -q');
@@ -1080,6 +1104,13 @@ describe('worker-on (TASK-091)', () => {
           }],
         });
       }
+      if (url.includes('/owner-validation-tasks/prepare')) {
+        return mockResponse({
+          prepared: true,
+          prepared_action: 'run_validation_now',
+          prepare_state: { prepared: true, prepared_action: 'run_validation_now' },
+        });
+      }
       if (url.includes('/owner-verify')) return mockResponse({ review_status: 'pending_review', owner_score: 60, total_score: 60, threshold: 70 });
       return mockResponse({});
     });
@@ -1097,10 +1128,178 @@ describe('worker-on (TASK-091)', () => {
     spy.mockRestore();
 
     expect(code).toBe(0);
-    expect(requests[3]?.url).toContain('/owner-verify');
-    const body = JSON.parse(requests[3]?.body || '{}');
+    expect(requests[3]?.url).toContain('/owner-validation-tasks/prepare');
+    expect(requests[4]?.url).toContain('/owner-verify');
+    const body = JSON.parse(requests[4]?.body || '{}');
     expect(body.artifacts.owner_reproduction_project_dir).toBe(projectRoot);
     expect(body.proof_payload.after_context.local_context.project_dir).toBe(projectRoot);
+  });
+
+  it('worker daemon waits for website confirmation before owner auto validation', async () => {
+    const home = seedConfig();
+    const projectRoot = path.join(home, 'demo-owner-web-confirm-project');
+    mkdirSync(path.join(projectRoot, 'tests'), { recursive: true });
+    writeFileSync(path.join(projectRoot, 'pyproject.toml'), '[project]\nname="demo-owner-web-confirm"\n', 'utf8');
+    const outboxPath = path.join(home, '.mac-aicheck', 'outbox', 'events.jsonl');
+    mkdirSync(path.dirname(outboxPath), { recursive: true });
+    writeFileSync(outboxPath, `${JSON.stringify({
+      eventId: 'evt_owner_web_gate_1',
+      deviceId: 'device-test_cc',
+      agent: 'claude-code',
+      fingerprint: 'fp_owner_web_gate',
+      eventType: 'post_tool_error',
+      occurredAt: '2026-04-30T00:00:00Z',
+      sanitizedMessage: 'pytest failed before web confirm',
+      toolContext: { cwd: projectRoot, command: 'pytest -q' },
+    })}\n`, 'utf8');
+    const requests: string[] = [];
+    let fetchCount = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      requests.push(url);
+      fetchCount++;
+      if (fetchCount >= 3) {
+        const cfg = _testHelpers.loadConfig();
+        cfg.workerEnabled = false;
+        _testHelpers.saveConfig(cfg);
+      }
+      if (url.includes('/heartbeat')) return mockResponse({ recommended_bounties: [] });
+      if (url.includes('/status')) {
+        return mockResponse({
+          pending_owner_verifications: [{
+            bounty_id: 'b_owner_web_gate',
+            answer_id: 'a_owner_web_gate',
+            title: 'owner web confirmation required',
+            solution_summary: 'Run tests again',
+            submitted_at: '2026-04-30T00:00:00Z',
+            deadline_at: '2026-05-02T00:00:00Z',
+            validation_cmd: 'pytest -q',
+            commands_run: ['pytest -q'],
+            project_hint: {
+              fingerprint: 'fp_owner_web_gate',
+              event_type: 'post_tool_error',
+              cwd_hash: '',
+              origin_agent_type: 'claude-code',
+              tool_context: { command: 'pytest -q' },
+            },
+            automation_contract: { mode: 'auto', auto_run_allowed: true },
+            automation_readiness: { status: 'ready', selected_command: 'pytest -q' },
+          }],
+        });
+      }
+      if (url.includes('/owner-validation-tasks/prepare')) {
+        return mockResponse({
+          prepared: false,
+          prepared_action: 'confirm_on_web_then_run',
+          prepare_state: {
+            prepared: false,
+            prepared_action: 'confirm_on_web_then_run',
+            web_confirmation_required: true,
+            web_confirmation_recorded: false,
+          },
+        });
+      }
+      return mockResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const execSpy = vi.fn();
+    (globalThis as {
+      __MAC_AICHECK_TEST_EXEC__?: (command: string) => { exitCode: number; stdout?: string; stderr?: string };
+    }).__MAC_AICHECK_TEST_EXEC__ = (command: string) => {
+      execSpy(command);
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+
+    const capture = captureOutput();
+    const code = await agentMain(['worker', 'daemon', '--worker-interval', '10']);
+    capture.spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(execSpy).not.toHaveBeenCalled();
+    expect(requests.some(url => url.includes('/owner-validation-tasks/prepare'))).toBe(true);
+    expect(requests.some(url => url.includes('/owner-verify'))).toBe(false);
+    expect(capture.output).toContain('需要先在网站确认后再运行');
+  });
+
+  it('worker daemon skips owner auto validation when platform prepare stays manual only', async () => {
+    const home = seedConfig();
+    const projectRoot = path.join(home, 'demo-owner-prepare-manual-project');
+    mkdirSync(path.join(projectRoot, 'tests'), { recursive: true });
+    writeFileSync(path.join(projectRoot, 'pyproject.toml'), '[project]\nname="demo-owner-manual"\n', 'utf8');
+    const outboxPath = path.join(home, '.mac-aicheck', 'outbox', 'events.jsonl');
+    mkdirSync(path.dirname(outboxPath), { recursive: true });
+    writeFileSync(outboxPath, `${JSON.stringify({
+      eventId: 'evt_owner_prepare_manual_1',
+      deviceId: 'device-test_cc',
+      agent: 'claude-code',
+      fingerprint: 'fp_owner_prepare_manual',
+      eventType: 'post_tool_error',
+      occurredAt: '2026-04-30T00:00:00Z',
+      sanitizedMessage: 'pytest failed before prepare manual',
+      toolContext: { cwd: projectRoot, command: 'pytest -q' },
+    })}\n`, 'utf8');
+    const requests: string[] = [];
+    let fetchCount = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      requests.push(url);
+      fetchCount++;
+      if (fetchCount >= 3) {
+        const cfg = _testHelpers.loadConfig();
+        cfg.workerEnabled = false;
+        _testHelpers.saveConfig(cfg);
+      }
+      if (url.includes('/heartbeat')) return mockResponse({ recommended_bounties: [] });
+      if (url.includes('/status')) {
+        return mockResponse({
+          pending_owner_verifications: [{
+            bounty_id: 'b_owner_prepare_manual',
+            answer_id: 'a_owner_prepare_manual',
+            title: 'owner prepare manual only',
+            solution_summary: 'Run tests again',
+            submitted_at: '2026-04-30T00:00:00Z',
+            deadline_at: '2026-05-02T00:00:00Z',
+            validation_cmd: 'pytest -q',
+            commands_run: ['pytest -q'],
+            project_hint: {
+              fingerprint: 'fp_owner_prepare_manual',
+              event_type: 'post_tool_error',
+              origin_agent_type: 'claude-code',
+              tool_context: { command: 'pytest -q' },
+            },
+            automation_contract: { mode: 'auto', auto_run_allowed: true },
+            automation_readiness: { status: 'ready', selected_command: 'pytest -q' },
+          }],
+        });
+      }
+      if (url.includes('/owner-validation-tasks/prepare')) {
+        return mockResponse({
+          prepared: false,
+          prepared_action: 'manual_confirm_only',
+          prepare_state: {
+            prepared: false,
+            prepared_action: 'manual_confirm_only',
+          },
+        });
+      }
+      return mockResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const execSpy = vi.fn();
+    (globalThis as {
+      __MAC_AICHECK_TEST_EXEC__?: (command: string) => { exitCode: number; stdout?: string; stderr?: string };
+    }).__MAC_AICHECK_TEST_EXEC__ = (command: string) => {
+      execSpy(command);
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+
+    const capture = captureOutput();
+    const code = await agentMain(['worker', 'daemon', '--worker-interval', '10']);
+    capture.spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(execSpy).not.toHaveBeenCalled();
+    expect(requests.some(url => url.includes('/owner-validation-tasks/prepare'))).toBe(true);
+    expect(requests.some(url => url.includes('/owner-verify'))).toBe(false);
+    expect(capture.output).toContain('平台未放行自动执行');
   });
 
   it('worker daemon writes owner prompt when platform routes execution back to the origin machine', async () => {
