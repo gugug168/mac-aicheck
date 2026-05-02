@@ -1220,6 +1220,102 @@ describe('worker-on (TASK-091)', () => {
     expect(capture.output).toContain('需要先在网站确认后再运行');
   });
 
+  it('worker daemon blocks Mac L2 owner repair before backup rollback parity', async () => {
+    seedConfig();
+    const requests: string[] = [];
+    let fetchCount = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      requests.push(url);
+      fetchCount++;
+      if (fetchCount >= 3) {
+        const cfg = _testHelpers.loadConfig();
+        cfg.workerEnabled = false;
+        _testHelpers.saveConfig(cfg);
+      }
+      if (url.includes('/heartbeat')) return mockResponse({ recommended_bounties: [] });
+      if (url.includes('/status')) {
+        return mockResponse({
+          pending_owner_verifications: [{
+            bounty_id: 'b_mac_repair',
+            answer_id: 'a_mac_repair',
+            title: 'mac repair should block',
+            solution_summary: 'Attempt L2 repair',
+            validation_cmd: 'pytest -q',
+            execution_decision: {
+              phase: 'owner_verification',
+              decision: 'auto_validate',
+              current_profile_is_target: true,
+            },
+            execution_task: {
+              kind: 'owner_repair',
+              risk_level: 'L2',
+              recommended_action: 'run_repair_now',
+              auto_run_allowed: true,
+              validation_cmd: 'pytest -q',
+              repair_capability: {
+                scanner_id: 'npm-mirror',
+                backup_available: true,
+                rollback_available: true,
+              },
+              rollback_state: { available: true },
+              rollback_ready: true,
+            },
+            prepare_state: {
+              prepared: true,
+              prepared_action: 'run_repair_now',
+              consent_state: 'granted',
+              rollback_ready: true,
+            },
+          }],
+        });
+      }
+      if (url.includes('/owner-validation-tasks/prepare')) {
+        return mockResponse({
+          prepared: true,
+          prepared_action: 'run_repair_now',
+          execution_task: {
+            kind: 'owner_repair',
+            risk_level: 'L2',
+            recommended_action: 'run_repair_now',
+            auto_run_allowed: true,
+            repair_capability: {
+              scanner_id: 'npm-mirror',
+              backup_available: true,
+              rollback_available: true,
+            },
+            rollback_state: { available: true },
+            rollback_ready: true,
+          },
+          prepare_state: {
+            prepared: true,
+            prepared_action: 'run_repair_now',
+            consent_state: 'granted',
+            rollback_ready: true,
+          },
+        });
+      }
+      return mockResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const execSpy = vi.fn();
+    (globalThis as {
+      __MAC_AICHECK_TEST_EXEC__?: (command: string) => { exitCode: number; stdout?: string; stderr?: string };
+    }).__MAC_AICHECK_TEST_EXEC__ = (command: string) => {
+      execSpy(command);
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+
+    const capture = captureOutput();
+    const code = await agentMain(['worker', 'daemon', '--worker-interval', '10']);
+    capture.spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(execSpy).not.toHaveBeenCalled();
+    expect(requests.some(url => url.includes('/owner-validation-tasks/prepare'))).toBe(true);
+    expect(requests.some(url => url.includes('/owner-verify'))).toBe(false);
+    expect(capture.output).toContain('MacAICheck 暂未开放 L2 自动修复');
+  });
+
   it('worker daemon skips owner auto validation when platform prepare stays manual only', async () => {
     const home = seedConfig();
     const projectRoot = path.join(home, 'demo-owner-prepare-manual-project');

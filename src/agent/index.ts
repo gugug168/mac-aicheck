@@ -1068,6 +1068,23 @@ function ownerValidationGateDetails(payload: unknown) {
   };
 }
 
+function ownerRepairExecutionTask(item: Record<string, unknown>, prepareData: unknown) {
+  const prepared = prepareData && typeof prepareData === 'object'
+    ? prepareData as Record<string, unknown>
+    : {};
+  const preparedTask = prepared.execution_task && typeof prepared.execution_task === 'object'
+    ? prepared.execution_task as Record<string, unknown>
+    : {};
+  const itemTask = item.execution_task && typeof item.execution_task === 'object'
+    ? item.execution_task as Record<string, unknown>
+    : {};
+  return { ...itemTask, ...preparedTask };
+}
+
+function isOwnerRepairTask(task: Record<string, unknown>) {
+  return String(task.kind || '').trim() === 'owner_repair';
+}
+
 function shouldPromptCurrentMachine(decision: ReturnType<typeof serverExecutionDecision>) {
   return decision.phase === 'owner_verification' && decision.current_profile_is_target !== false;
 }
@@ -1566,6 +1583,10 @@ async function processPendingOwnerVerifications(headers: Record<string, string>,
     const serverDecision = serverExecutionDecision(item, 'owner_verification');
     const promptCurrentMachine = shouldPromptCurrentMachine(serverDecision);
     const routeLabel = formatExecutionRoute(serverDecision);
+    const itemExecutionTask = item.execution_task && typeof item.execution_task === 'object'
+      ? item.execution_task as Record<string, unknown>
+      : {};
+    const itemIsOwnerRepair = isOwnerRepairTask(itemExecutionTask);
     if (serverDecision.decision === 'ask_user_run') {
       if (promptCurrentMachine) {
         process.stdout.write(
@@ -1576,6 +1597,33 @@ async function processPendingOwnerVerifications(headers: Record<string, string>,
           `[Worker] owner-auto 跳过 ${bountyId}/${answerId}: 已路由回原机器${routeLabel ? ` (${routeLabel})` : ''}\n`,
         );
       }
+      skipped++;
+      continue;
+    }
+    if (itemIsOwnerRepair) {
+      if (!serverAutomationReady(item, 'owner_verification')) {
+        process.stdout.write(`[Worker] owner-repair 跳过 ${bountyId}/${answerId}: 平台已标记为 manual-only\n`);
+        skipped++;
+        continue;
+      }
+      const prepareResult = await prepareOwnerValidationTask(headers, answerId);
+      if (prepareResult.status !== 200) {
+        process.stdout.write(`[Worker] owner-repair 跳过 ${bountyId}/${answerId}: 平台 prepare 失败 (${prepareResult.status})\n`);
+        skipped++;
+        continue;
+      }
+      const prepareGate = ownerValidationGateDetails(prepareResult.data);
+      const repairTask = ownerRepairExecutionTask(item, prepareResult.data);
+      if (!prepareGate.prepared) {
+        process.stdout.write(
+          `[Worker] owner-repair 跳过 ${bountyId}/${answerId}: 平台未放行自动修复 (${prepareGate.prepared_action || 'not_prepared'})\n`,
+        );
+        skipped++;
+        continue;
+      }
+      process.stdout.write(
+        `[Worker] owner-repair 跳过 ${bountyId}/${answerId}: MacAICheck 暂未开放 L2 自动修复，需等待 backup/rollback parity (${String(repairTask.risk_level || 'L2')})\n`,
+      );
       skipped++;
       continue;
     }

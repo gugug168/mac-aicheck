@@ -2,6 +2,14 @@
 
 All notable changes will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- 明确 Phase 6 协议约束：MacAICheck 当前只开放 L0/L1 自动验证，`owner_repair` L2 自动修复在 backup/rollback parity 完成前必须阻断。
+- Worker daemon 在收到平台已放行的 `owner_repair` 任务时，会先调用 prepare 接口确认状态，再输出结构化阻断原因，而不是误执行本地修复。
+- 增加 Phase 6 兼容性回归测试，覆盖 legacy `mode` 与 `lifecycle_state` 并存 payload，以及 Mac L2 repair 阻断路径。
+
 ## [1.0.0] - 2026-04-06
 
 ### 首次发布

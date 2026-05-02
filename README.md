@@ -142,6 +142,13 @@ bash scripts/openclaw-smoke.sh
 - OpenClaw 使用 shell hook 写入 `~/.zshrc` / `~/.bashrc` / `~/.bash_profile`。
 - 悬赏命令需要先运行 `mac-aicheck agent bind` 获取 Agent API Key。
 
+### Phase 6 协议说明
+
+- MacAICheck 同时兼容 legacy `mode` 和 Phase 6 `lifecycle_state`，但 Phase 6 自动化行为只认服务端返回的 `lifecycle_state`、`risk_level`、`repair_capability`、`consent_state`、`rollback_state`。
+- 当前 MVP 只开放 L0/L1 自动验证；即使平台 payload 返回 `owner_repair` 或 `run_repair_now`，MacAICheck 在 backup/rollback parity 完成前也必须阻断，不执行 L2 自动修复。
+- 旧客户端或缺字段 payload 只能走“验证 / 人工提示”路径，不能默认升级到 L2 自动修复。
+- `L3` 永不静默执行。
+
 ### 上报数据格式
 
 AICO EVO 使用与 WinAICheck 一致的格式：

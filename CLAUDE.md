@@ -25,14 +25,13 @@ MacAICheck 是三端生态的 macOS 客户端：
 - 修改上传端点路径 → aicoevo-platform 的路由也要同步
 - 新增扫描器分类 → 同步更新 `web/src/lib/types.ts` 的 `CATEGORY_LABELS`
 
-**WinAICheck 功能对照**: WinAICheck 已实现 37+ 扫描器 + 完整修复系统 + Agent Lite。MacAICheck 当前 18 项检测，修复系统 Phase 1 进行中。
+**WinAICheck 功能对照**: WinAICheck 已实现 37+ 扫描器 + 完整修复系统 + Agent Lite。MacAICheck 当前 18 项检测；Phase 6 协议已支持 L0/L1 自动验证，但 L2 owner repair 仍必须在 backup/rollback parity 完成前保持阻断。
 
-## Current Status (2026-04-12)
+## Current Status (2026-05-03)
 
 - **main 分支**: 稳定可发布
-- **最新 commit**: 7a404aa (CONTRIBUTING major overhaul)
-- **项目阶段**: 初始化完成，Phase 1 待开始
-- **研究方向**: WinAICheck `src/fixers/index.ts` 作为参考实现
+- **项目阶段**: Phase 6 P0 已支持 owner validation 自动验证与 prepare gate；Mac L2 repair parity 仍未开放
+- **研究方向**: 在保持 Win/Platform 协议兼容的前提下，后续再补 backup/rollback parity 与有限 L2 enablement
 
 ## Architecture
 
@@ -70,9 +69,10 @@ src/
 
 ## Current Phase
 
-**Phase 1: Fixer Infrastructure**
-- Fixer 接口 + 注册表 + 错误分类 + 验证闭环
-- 目标：建立核心架构
+**Phase 6 P0: Validation First**
+- 已支持 owner/reviewer 自动验证、prepare gate、execution decision 路由
+- 对 `owner_repair` 的 L2 请求必须显式阻断，直到 Mac backup/rollback parity 完成
+- 后续 P1 再补受限 L2 repair enablement
 
 ## Repository
 
