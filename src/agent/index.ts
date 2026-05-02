@@ -1068,6 +1068,51 @@ function ownerValidationGateDetails(payload: unknown) {
   };
 }
 
+function ownerTaskPhaseDetails(payload: unknown) {
+  const data = payload && typeof payload === 'object'
+    ? payload as Record<string, unknown>
+    : {};
+  const executionTask = data.execution_task && typeof data.execution_task === 'object'
+    ? data.execution_task as Record<string, unknown>
+    : {};
+  const repairCapability = data.repair_capability && typeof data.repair_capability === 'object'
+    ? data.repair_capability as Record<string, unknown>
+    : {};
+  const consentState = data.consent_state && typeof data.consent_state === 'object'
+    ? data.consent_state as Record<string, unknown>
+    : {};
+  const rollbackState = data.rollback_state && typeof data.rollback_state === 'object'
+    ? data.rollback_state as Record<string, unknown>
+    : {};
+  const prepareState = data.prepare_state && typeof data.prepare_state === 'object'
+    ? data.prepare_state as Record<string, unknown>
+    : {};
+  const lifecycleState = String(data.lifecycle_state || '').trim();
+  const riskLevel = String(data.risk_level || '').trim();
+  const executionTaskKind = String(executionTask.kind || '').trim();
+  const repairCapabilityMode = String(repairCapability.mode || '').trim();
+  const consentStatus = String(consentState.status || '').trim();
+  const rollbackStatus = String(rollbackState.status || '').trim();
+  const prepareStatus = String(prepareState.status || '').trim();
+  const requiresRollbackParityBlock = executionTaskKind === 'owner_repair';
+  return {
+    lifecycle_state: lifecycleState,
+    risk_level: riskLevel,
+    execution_task: executionTask,
+    execution_task_kind: executionTaskKind,
+    repair_capability: repairCapability,
+    repair_capability_mode: repairCapabilityMode,
+    consent_state: consentState,
+    consent_status: consentStatus,
+    rollback_state: rollbackState,
+    rollback_status: rollbackStatus,
+    prepare_state: prepareState,
+    prepare_status: prepareStatus,
+    requires_rollback_parity_block: requiresRollbackParityBlock,
+    block_reason: requiresRollbackParityBlock ? 'blocked_pending_rollback_parity' : '',
+  };
+}
+
 function shouldPromptCurrentMachine(decision: ReturnType<typeof serverExecutionDecision>) {
   return decision.phase === 'owner_verification' && decision.current_profile_is_target !== false;
 }
@@ -1563,9 +1608,18 @@ async function processPendingOwnerVerifications(headers: Record<string, string>,
     if (!bountyId || !answerId) { skipped++; continue; }
     const guideRecord = writeOwnerVerifyGuide(item, config);
     const localAutomation = buildValidationAutomationAssessment(item);
+    const phaseDetails = ownerTaskPhaseDetails(item);
     const serverDecision = serverExecutionDecision(item, 'owner_verification');
     const promptCurrentMachine = shouldPromptCurrentMachine(serverDecision);
     const routeLabel = formatExecutionRoute(serverDecision);
+    if (phaseDetails.requires_rollback_parity_block) {
+      const reason = phaseDetails.block_reason || 'blocked_pending_rollback_parity';
+      process.stdout.write(
+        `[Worker] owner-auto 跳过 ${bountyId}/${answerId}: ${reason} (task=${phaseDetails.execution_task_kind || 'unknown'}, risk=${phaseDetails.risk_level || 'unknown'})\n`,
+      );
+      skipped++;
+      continue;
+    }
     if (serverDecision.decision === 'ask_user_run') {
       if (promptCurrentMachine) {
         process.stdout.write(
@@ -3185,6 +3239,7 @@ export async function main(argv: string[]) {
         const decision = serverExecutionDecision(item, 'owner_verification');
         const routeLabel = formatExecutionRoute(decision);
         const gate = ownerValidationGateDetails(item);
+        const phaseDetails = ownerTaskPhaseDetails(item);
         process.stdout.write(`## ${item.title || '(无标题)'}\n`);
         process.stdout.write(`  Bounty:   ${item.bounty_id}\n`);
         process.stdout.write(`  Answer:   ${item.answer_id}\n`);
@@ -3192,6 +3247,13 @@ export async function main(argv: string[]) {
         process.stdout.write(`  提交时间: ${item.submitted_at}\n`);
         process.stdout.write(`  截止时间: ${item.deadline_at}\n\n`);
         if (item.validation_cmd) process.stdout.write(`  验证命令: ${item.validation_cmd}\n`);
+        if (phaseDetails.lifecycle_state) process.stdout.write(`  生命周期: ${phaseDetails.lifecycle_state}\n`);
+        if (phaseDetails.risk_level) process.stdout.write(`  风险等级: ${phaseDetails.risk_level}\n`);
+        if (phaseDetails.execution_task_kind) process.stdout.write(`  执行任务: ${phaseDetails.execution_task_kind}\n`);
+        if (phaseDetails.repair_capability_mode) process.stdout.write(`  修复能力: ${phaseDetails.repair_capability_mode}\n`);
+        if (phaseDetails.consent_status) process.stdout.write(`  授权状态: ${phaseDetails.consent_status}\n`);
+        if (phaseDetails.rollback_status) process.stdout.write(`  回滚状态: ${phaseDetails.rollback_status}\n`);
+        if (phaseDetails.prepare_status) process.stdout.write(`  准备状态: ${phaseDetails.prepare_status}\n`);
         if ((guide.snapshot as Record<string, unknown> | null)?.suggestedProjectDir) {
           process.stdout.write(`  项目目录: ${String((guide.snapshot as Record<string, unknown>).suggestedProjectDir)}\n`);
         }
@@ -3216,6 +3278,7 @@ export async function main(argv: string[]) {
         }
         if (automation.selected_command) process.stdout.write(`  自动命令: ${automation.selected_command}\n`);
         if (automation.suggested_project_dir) process.stdout.write(`  自动目录: ${automation.suggested_project_dir}\n`);
+        if (phaseDetails.block_reason) process.stdout.write(`  协议阻塞: ${phaseDetails.block_reason}\n`);
         if (automation.blocking_reasons.length > 0) process.stdout.write(`  阻塞原因: ${automation.blocking_reasons.join(', ')}\n`);
         if (automation.warning_reasons.length > 0) process.stdout.write(`  注意事项: ${automation.warning_reasons.join(', ')}\n`);
         process.stdout.write(`  指南:     ${guide.guideMd}\n`);
@@ -3317,6 +3380,7 @@ export const _testHelpers = {
   loadDraftOrganizerState,
   saveDraftOrganizerState,
   runDraftOrganizerOnce,
+  ownerTaskPhaseDetails,
 };
 
 if (require.main === module) {

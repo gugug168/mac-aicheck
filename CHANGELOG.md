@@ -2,6 +2,13 @@
 
 All notable changes will be documented in this file.
 
+## [1.0.7] - 2026-05-02
+
+### Changed
+
+- Agent Protocol V2 现已在 MacAICheck 中解析 `lifecycle_state`、`risk_level`、`execution_task.kind`、`repair_capability`、`consent_state`、`rollback_state`、`prepare_state`。
+- Mac worker 保持 P0 安全边界：继续支持 L0/L1 owner validation 自动验证，但在缺少 backup/rollback parity 时显式阻断 `owner_repair`，返回 `blocked_pending_rollback_parity`，且不会触发本地执行或 owner verify 提交。
+
 ## [1.0.0] - 2026-04-06
 
 ### 首次发布

@@ -1514,6 +1514,104 @@ describe('worker-on (TASK-091)', () => {
     expect(capture.output).toContain('平台已标记为 manual-only');
   });
 
+  it('worker daemon blocks owner_repair tasks until rollback parity is implemented', async () => {
+    const home = seedConfig();
+    const projectDir = path.join(home, 'repo');
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(path.join(projectDir, 'package.json'), JSON.stringify({ name: 'owner-repair-fixture' }), 'utf8');
+    const outboxPath = path.join(home, '.mac-aicheck', 'outbox', 'events.jsonl');
+    mkdirSync(path.dirname(outboxPath), { recursive: true });
+    writeFileSync(
+      outboxPath,
+      JSON.stringify({
+        fingerprint: 'fp_owner_repair_block_1',
+        eventType: 'post_tool_error',
+        agent: 'claude-code',
+        deviceId: 'device-test',
+        occurredAt: '2026-05-01T00:00:00Z',
+        toolContext: {
+          command: 'npm test',
+          filePath: path.join(projectDir, 'package.json'),
+          fileName: 'package.json',
+          cwd: projectDir,
+        },
+        localContext: {
+          cwdHash: 'cwdhash-owner-repair-block-1',
+        },
+      }) + '\n',
+      'utf8',
+    );
+
+    const requests: string[] = [];
+    let fetchCount = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      requests.push(url);
+      fetchCount++;
+      if (fetchCount >= 2) {
+        const cfg = _testHelpers.loadConfig();
+        cfg.workerEnabled = false;
+        _testHelpers.saveConfig(cfg);
+      }
+      if (url.includes('/heartbeat')) return mockResponse({ recommended_bounties: [] });
+      if (url.includes('/status')) {
+        return mockResponse({
+          pending_owner_verifications: [{
+            bounty_id: 'b_owner_repair_block',
+            answer_id: 'a_owner_repair_block',
+            title: 'block owner repair before parity',
+            solution_summary: 'Validation command: npm test',
+            submitted_at: '2026-05-01T00:00:00Z',
+            deadline_at: '2026-05-03T00:00:00Z',
+            validation_cmd: 'npm test',
+            commands_run: ['npm test'],
+            lifecycle_state: 'awaiting_owner',
+            risk_level: 'L2',
+            execution_task: { kind: 'owner_repair' },
+            repair_capability: { available: false, mode: 'blocked' },
+            consent_state: { status: 'granted' },
+            rollback_state: { status: 'missing' },
+            prepare_state: { prepared: true, prepared_action: 'run_validation_now' },
+            automation_contract: { mode: 'auto', auto_run_allowed: true },
+            automation_readiness: {
+              status: 'ready',
+              selected_command: 'npm test',
+            },
+            project_hint: {
+              fingerprint: 'fp_owner_repair_block_1',
+              event_type: 'post_tool_error',
+              cwd_hash: 'cwdhash-owner-repair-block-1',
+              origin_device_id: 'device-test',
+              origin_agent_type: 'claude-code',
+              tool_context: {
+                command: 'npm test',
+                fileName: 'package.json',
+              },
+            },
+          }],
+        });
+      }
+      return mockResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const execSpy = vi.fn();
+    (globalThis as {
+      __MAC_AICHECK_TEST_EXEC__?: (command: string) => { exitCode: number; stdout?: string; stderr?: string };
+    }).__MAC_AICHECK_TEST_EXEC__ = (command: string) => {
+      execSpy(command);
+      return { exitCode: 0, stdout: '1 passed', stderr: '' };
+    };
+
+    const capture = captureOutput();
+    const code = await agentMain(['worker', 'daemon', '--worker-interval', '10']);
+    capture.spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(execSpy).not.toHaveBeenCalled();
+    expect(requests.some(url => url.includes('/owner-validation-tasks/prepare'))).toBe(false);
+    expect(requests.some(url => url.includes('/owner-verify'))).toBe(false);
+    expect(capture.output).toContain('blocked_pending_rollback_parity');
+  });
+
   it('worker daemon skips reviewer verification when command is safe but not a real validation', async () => {
     seedConfig();
     const requests: Array<{ url: string; body?: string }> = [];
