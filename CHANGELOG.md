@@ -2,6 +2,16 @@
 
 All notable changes will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- 同步 `TASK-230` 最新生产 smoke 事实：平台侧 `auto_scan -> reviewer quorum -> solved_confirmed -> owner_rescan -> failed final rescan -> reopen original problem` 已在 2026-05-03 最新生产部署上重新跑通，当前 MacAICheck 不再被平台 reviewer 可见性或 final-rescan surfaced 问题阻断。
+
+### Notes
+
+- `TASK-230` 对 MacAICheck 的剩余真实门槛仍是客户端侧真机证据，而不是平台链路：需要补齐 Mac 真机 L0/L1 validation 命令摘要与 payload snapshot，并继续保留 `owner_repair` 的 L2 blocked 真实证据，直到 backup/rollback parity 完成前都不能对外表述为 Mac L2 自动修复已就绪。
+
 ## [1.0.7] - 2026-05-02
 
 ### Changed
