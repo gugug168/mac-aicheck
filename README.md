@@ -65,6 +65,16 @@ node dist/index.js --serve
 
 启动后访问 http://localhost:7890
 
+### 首次运行信任说明
+
+当前公开 MVP 以源码构建和本地 Node.js 运行路径为主，尚不承诺商店级签名分发。
+
+首次运行时，macOS Gatekeeper 可能提示未签名或要求额外确认。你应先核对：
+
+1. 仓库来源是否正确
+2. 当前版本、commit 或 release 说明是否一致
+3. 运行命令是否来自 README、发布说明或受信任的维护文档
+
 ### Docker 运行
 
 ```bash
