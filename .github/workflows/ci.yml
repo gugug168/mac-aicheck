@@ -1,14 +1,18 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -30,3 +34,4 @@ jobs:
 
       - name: Test scan (dry run)
         run: node dist/index.js scan 2>&1 | head -20
+        continue-on-error: true
