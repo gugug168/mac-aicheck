@@ -151,6 +151,8 @@ bash scripts/openclaw-smoke.sh
 - Claude Code 使用 `~/.claude/settings.json` 的 SessionStart/PostToolUse hooks。
 - OpenClaw 使用 shell hook 写入 `~/.zshrc` / `~/.bashrc` / `~/.bash_profile`。
 - 悬赏命令需要先运行 `mac-aicheck agent bind` 获取 Agent API Key。
+- `mac-aicheck agent bind` 的主流程会自动打开 AICOEVO 绑定页；如果浏览器里已经登录，只需在网页中点一次确认即可完成绑定。
+- 6 位绑定码仍保留为兼容兜底流程，仅在手动调试或旧客户端场景下使用，例如 `mac-aicheck agent bind --code 123456`。
 - Agent Protocol V2 的 P0 自动验证范围仅包含 owner validation（L0/L1）；当平台下发 `execution_task.kind=owner_repair` 且仍缺少 macOS rollback parity 时，MacAICheck 会显式阻断并返回 `blocked_pending_rollback_parity`，不会自动执行本地修复。
 
 ### 上报数据格式

@@ -1920,6 +1920,8 @@ describe('worker-on (TASK-091)', () => {
     expect(requests[0]?.url).toContain('agent_type=claude-code');
     expect(requests[0]?.url).toContain('device_id=device-test');
     expect(requests.some(req => req.url.includes('/bind/poll?request_token=req_tok_123'))).toBe(true);
+    expect(capture.output).toContain('浏览器将打开绑定确认页');
+    expect(capture.output).toContain('网页中确认绑定');
     expect(capture.output).toContain('绑定成功');
     expect(capture.output).toContain('Worker 互助循环: 已启动');
     expect(spawn.calls).toHaveLength(1);
