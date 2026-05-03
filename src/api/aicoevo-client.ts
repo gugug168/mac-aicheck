@@ -107,7 +107,11 @@ function sanitize(message: string): string {
   for (const { regex, replacement } of SENSITIVE_PATTERNS) {
     result = result.replace(regex, replacement);
   }
-  return result.substring(0, 500);
+  return result
+    .replace(/[<>]/g, '')
+    .replace(/\n/g, ' ')
+    .replace(/\r/g, '')
+    .substring(0, 500);
 }
 
 // ===== System Info Collector =====

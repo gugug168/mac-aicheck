@@ -134,21 +134,6 @@ export async function fixAll(options: FixAllOptions = {}): Promise<FixAllResult>
           fixResult.success = false;
         }
         fixResult.nextSteps = buildNextSteps(status, fixer.risk, fixResult.message);
-
-        // Rollback on verification failure (TASK-190 Phase B)
-        if (!fixResult.success && backupData && fixer.rollback) {
-          try {
-            await fixer.rollback(backupData);
-            fixResult.rolledBack = true;
-            fixResult.rollback = { available: true, attempted: true, result: 'success' };
-          } catch (rollbackErr) {
-            fixResult.rolledBack = false;
-            fixResult.rollback = {
-              available: true, attempted: true, result: 'failed',
-              message: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr),
-            };
-          }
-        }
       } else {
         fixResult.verified = false;
         fixResult.nextSteps = buildNextSteps(
@@ -156,6 +141,21 @@ export async function fixAll(options: FixAllOptions = {}): Promise<FixAllResult>
           fixer.risk,
           fixResult.message
         );
+      }
+
+      // Rollback on failure for any risk level (TASK-190 Phase B)
+      if (!fixResult.success && backupData && fixer.rollback) {
+        try {
+          await fixer.rollback(backupData);
+          fixResult.rolledBack = true;
+          fixResult.rollback = { available: true, attempted: true, result: 'success' };
+        } catch (rollbackErr) {
+          fixResult.rolledBack = false;
+          fixResult.rollback = {
+            available: true, attempted: true, result: 'failed',
+            message: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr),
+          };
+        }
       }
 
       // Fill structured summaries (TASK-190 Phase B)
@@ -195,12 +195,25 @@ export async function fixAll(options: FixAllOptions = {}): Promise<FixAllResult>
         rollbackSummary: fixResult.rollback,
       });
     } catch (err: any) {
-      results.push({
+      const entry: FixerExecutionResult = {
         scannerId: scanResult.id,
         fixerId: fixer.id,
         originalStatus: scanResult.status,
         error: err.message,
-      });
+      };
+      // Attempt rollback if backup exists and fixer partially applied changes
+      if (backupData && fixer.rollback) {
+        try {
+          await fixer.rollback(backupData);
+          entry.rollbackSummary = { available: true, attempted: true, result: 'success' };
+        } catch (rbErr) {
+          entry.rollbackSummary = {
+            available: true, attempted: true, result: 'failed',
+            message: rbErr instanceof Error ? rbErr.message : String(rbErr),
+          };
+        }
+      }
+      results.push(entry);
     }
   }
 

@@ -54,21 +54,26 @@ const gitIdentityFixer: Fixer = {
   scannerIds: ['git-identity'],
 
   async backup(_scanResult: ScanResult): Promise<BackupData> {
-    const name = readGitConfig('user.name') || '';
-    const email = readGitConfig('user.email') || '';
+    const name = readGitConfig('user.name');
+    const email = readGitConfig('user.email');
     return {
       scannerId: 'git-identity',
       timestamp: Date.now(),
-      data: { 'user.name': name, 'user.email': email },
+      data: {
+        'user.name': name ?? '<UNSET>',
+        'user.email': email ?? '<UNSET>',
+      },
     };
   },
 
   async rollback(backup: BackupData): Promise<void> {
-    if (backup.data['user.name']) {
-      runCommand(`git config --global user.name ${escapeShellArg(backup.data['user.name'])}`, 5000);
-    }
-    if (backup.data['user.email']) {
-      runCommand(`git config --global user.email ${escapeShellArg(backup.data['user.email'])}`, 5000);
+    for (const key of ['user.name', 'user.email'] as const) {
+      const val = backup.data[key];
+      if (val === '<UNSET>') {
+        runCommand(`git config --global --unset ${key} 2>/dev/null || true`, 5000);
+      } else if (val) {
+        runCommand(`git config --global ${key} ${escapeShellArg(val)}`, 5000);
+      }
     }
   },
 

@@ -1612,6 +1612,120 @@ describe('worker-on (TASK-091)', () => {
     expect(capture.output).toContain('blocked_pending_rollback_parity');
   });
 
+  it('owner_repair for allowlisted scanner with rollback_ready is NOT blocked', async () => {
+    const home = seedConfig();
+    const projectDir = path.join(home, 'repo');
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(path.join(projectDir, 'package.json'), JSON.stringify({ name: 'allowlist-fixture' }), 'utf8');
+
+    let fetchCount = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      fetchCount++;
+      if (fetchCount >= 3) {
+        const cfg = _testHelpers.loadConfig();
+        cfg.workerEnabled = false;
+        _testHelpers.saveConfig(cfg);
+      }
+      if (url.includes('/heartbeat')) return mockResponse({ recommended_bounties: [] });
+      if (url.includes('/status')) {
+        return mockResponse({
+          pending_owner_verifications: [{
+            bounty_id: 'b_npm_mirror',
+            answer_id: 'a_npm_mirror',
+            title: 'npm mirror repair',
+            solution_summary: 'npm config set registry https://registry.npmmirror.com',
+            submitted_at: '2026-05-01T00:00:00Z',
+            deadline_at: '2026-05-03T00:00:00Z',
+            validation_cmd: 'npm config get registry',
+            commands_run: [],
+            lifecycle_state: 'awaiting_owner',
+            risk_level: 'L2',
+            execution_task: { kind: 'owner_repair', scanner_id: 'npm-mirror' },
+            repair_capability: { available: true, mode: 'auto' },
+            consent_state: { status: 'granted' },
+            rollback_state: { status: 'ready' },
+            prepare_state: { prepared: true, prepared_action: 'run_validation_now' },
+            automation_contract: { mode: 'auto', auto_run_allowed: true },
+            automation_readiness: { status: 'ready', selected_command: 'npm config get registry' },
+            project_hint: {
+              fingerprint: 'fp_allowlist_1',
+              event_type: 'post_tool_error',
+              cwd_hash: 'cwdhash-allowlist-1',
+              origin_device_id: 'device-test',
+              origin_agent_type: 'claude-code',
+            },
+          }],
+        });
+      }
+      return mockResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const capture = captureOutput();
+    const code = await agentMain(['worker', 'daemon', '--worker-interval', '10']);
+    capture.spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(capture.output).not.toContain('blocked_pending_rollback_parity');
+  });
+
+  it('owner_repair for allowlisted scanner WITHOUT rollback_ready is still blocked', async () => {
+    const home = seedConfig();
+    const projectDir = path.join(home, 'repo');
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(path.join(projectDir, 'package.json'), JSON.stringify({ name: 'allowlist-no-rollback' }), 'utf8');
+
+    let fetchCount = 0;
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      fetchCount++;
+      if (fetchCount >= 2) {
+        const cfg = _testHelpers.loadConfig();
+        cfg.workerEnabled = false;
+        _testHelpers.saveConfig(cfg);
+      }
+      if (url.includes('/heartbeat')) return mockResponse({ recommended_bounties: [] });
+      if (url.includes('/status')) {
+        return mockResponse({
+          pending_owner_verifications: [{
+            bounty_id: 'b_git_identity',
+            answer_id: 'a_git_identity',
+            title: 'git identity repair',
+            solution_summary: 'git config --global user.name',
+            submitted_at: '2026-05-01T00:00:00Z',
+            deadline_at: '2026-05-03T00:00:00Z',
+            validation_cmd: 'git config --global user.name',
+            commands_run: [],
+            lifecycle_state: 'awaiting_owner',
+            risk_level: 'L2',
+            execution_task: { kind: 'owner_repair', scanner_id: 'git-identity' },
+            repair_capability: { available: false, mode: 'blocked' },
+            consent_state: { status: 'granted' },
+            rollback_state: { status: 'missing' },
+            prepare_state: { prepared: true, prepared_action: 'run_validation_now' },
+            automation_contract: { mode: 'auto', auto_run_allowed: true },
+            automation_readiness: { status: 'ready', selected_command: 'git config --global user.name' },
+            project_hint: {
+              fingerprint: 'fp_allowlist_no_rollback',
+              event_type: 'post_tool_error',
+              cwd_hash: 'cwdhash-allowlist-no-rollback',
+              origin_device_id: 'device-test',
+              origin_agent_type: 'claude-code',
+            },
+          }],
+        });
+      }
+      return mockResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const capture = captureOutput();
+    const code = await agentMain(['worker', 'daemon', '--worker-interval', '10']);
+    capture.spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(capture.output).toContain('blocked_pending_rollback_parity');
+  });
+
   it('worker daemon skips reviewer verification when command is safe but not a real validation', async () => {
     seedConfig();
     const requests: Array<{ url: string; body?: string }> = [];

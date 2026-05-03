@@ -25,7 +25,7 @@ const npmMirrorFixer: Fixer = {
   async rollback(backup: BackupData): Promise<void> {
     const oldRegistry = backup.data.registry;
     if (oldRegistry) {
-      runCommand(`npm config set registry ${oldRegistry}`, 5000);
+      runCommand(`npm config set registry '${oldRegistry.replace(/'/g, `'\"'\"'`)}'`, 5000);
     }
   },
 
