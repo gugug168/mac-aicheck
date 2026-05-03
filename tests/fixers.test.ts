@@ -3,7 +3,7 @@ import '../src/scanners/index'; // register scanners
 import '../src/fixers/index'; // trigger side-effect fixer registrations
 import { registerFixer, getFixers, getFixerById, getFixerForScanResult, getFixerByScannerId, clearFixers } from '../src/fixers/registry';
 import { determineVerificationStatus } from '../src/fixers/verify';
-import type { Fixer } from '../src/fixers/types';
+import type { Fixer, BackupData } from '../src/fixers/types';
 import type { ScanResult } from '../src/scanners/types';
 import { _test } from '../src/executor/index';
 
@@ -53,7 +53,16 @@ describe('fixer registry (pre-registered)', () => {
     process.env.MAC_AICHECK_GIT_NAME = 'Test User';
     process.env.MAC_AICHECK_GIT_EMAIL = 'test@example.com';
     _test.mockExecSync = (cmd: string) => {
-      if (cmd.includes('which git') || cmd.includes('command -v git')) {
+      if (cmd.includes('git --version')) {
+        return Buffer.from('git version 2.45.0\n');
+      }
+      if (cmd.includes('git config --global user.name')) {
+        return Buffer.from('Test User\n');
+      }
+      if (cmd.includes('git config --global user.email')) {
+        return Buffer.from('test@example.com\n');
+      }
+      if (cmd.includes('where.exe git') || cmd.includes('which git') || cmd.includes('command -v git')) {
         return Buffer.from('/usr/bin/git\n');
       }
       throw new Error(`unexpected command: ${cmd}`);
@@ -68,7 +77,10 @@ describe('fixer registry (pre-registered)', () => {
     delete process.env.MAC_AICHECK_GIT_NAME;
     delete process.env.MAC_AICHECK_GIT_EMAIL;
     _test.mockExecSync = (cmd: string) => {
-      if (cmd.includes('which git') || cmd.includes('command -v git')) {
+      if (cmd.includes('git --version')) {
+        return Buffer.from('git version 2.45.0\n');
+      }
+      if (cmd.includes('where.exe git') || cmd.includes('which git') || cmd.includes('command -v git')) {
         return Buffer.from('/usr/bin/git\n');
       }
       if (cmd.includes('git config --global user.name')) return Buffer.from('');
@@ -97,6 +109,85 @@ describe('fixer registry (pre-registered)', () => {
 
   it('验证状态 fail→fail 不再误判为 warn', () => {
     expect(determineVerificationStatus('fail', 'fail')).toBe('fail');
+  });
+
+  // Backup/rollback parity tests (TASK-190 Phase B)
+  it('npm-mirror fixer has backup and rollback methods', () => {
+    const fixer = getFixerById('npm-mirror-fixer');
+    expect(fixer).toBeDefined();
+    expect(fixer?.backup).toBeDefined();
+    expect(typeof fixer?.backup).toBe('function');
+    expect(fixer?.rollback).toBeDefined();
+    expect(typeof fixer?.rollback).toBe('function');
+  });
+
+  it('npm-mirror backup returns BackupData with registry key', async () => {
+    _test.mockExecSync = (cmd: string) => {
+      if (cmd.includes('npm config get registry')) return Buffer.from('https://registry.npmjs.org/\n');
+      return Buffer.from('');
+    };
+    const fixer = getFixerById('npm-mirror-fixer')!;
+    const scanResult: ScanResult = { id: 'npm-mirror', name: 'npm 镜像', category: 'toolchain', status: 'warn', message: '' };
+    const backup = await fixer.backup!(scanResult);
+    expect(backup.scannerId).toBe('npm-mirror');
+    expect(backup.timestamp).toBeGreaterThan(0);
+    expect(backup.data.registry).toBeDefined();
+    expect(typeof backup.data.registry).toBe('string');
+  });
+
+  it('npm-mirror rollback restores old registry', async () => {
+    const commands: string[] = [];
+    _test.mockExecSync = (cmd: string) => {
+      commands.push(cmd);
+      if (cmd.includes('npm config get registry')) return Buffer.from('https://registry.npmjs.org/\n');
+      return Buffer.from('');
+    };
+    const fixer = getFixerById('npm-mirror-fixer')!;
+    const backup: BackupData = {
+      scannerId: 'npm-mirror',
+      timestamp: Date.now(),
+      data: { registry: 'https://old-registry.example.com/' },
+    };
+    await fixer.rollback!(backup);
+    expect(commands.some(c => c.includes('npm config set registry') && c.includes('old-registry.example.com'))).toBe(true);
+  });
+
+  it('git-identity fixer has backup and rollback methods', () => {
+    const fixer = getFixerById('git-identity-fixer');
+    expect(fixer).toBeDefined();
+    expect(fixer?.backup).toBeDefined();
+    expect(fixer?.rollback).toBeDefined();
+  });
+
+  it('git-identity backup returns BackupData with user.name and user.email', async () => {
+    _test.mockExecSync = (cmd: string) => {
+      if (cmd.includes('git config --global user.name')) return Buffer.from('Old Name\n');
+      if (cmd.includes('git config --global user.email')) return Buffer.from('old@example.com\n');
+      return Buffer.from('');
+    };
+    const fixer = getFixerById('git-identity-fixer')!;
+    const scanResult: ScanResult = { id: 'git-identity', name: 'Git 身份', category: 'toolchain', status: 'warn', message: '' };
+    const backup = await fixer.backup!(scanResult);
+    expect(backup.scannerId).toBe('git-identity');
+    expect(backup.data['user.name']).toBeDefined();
+    expect(backup.data['user.email']).toBeDefined();
+  });
+
+  it('git-identity rollback restores old git config values', async () => {
+    const commands: string[] = [];
+    _test.mockExecSync = (cmd: string) => {
+      commands.push(cmd);
+      return Buffer.from('');
+    };
+    const fixer = getFixerById('git-identity-fixer')!;
+    const backup: BackupData = {
+      scannerId: 'git-identity',
+      timestamp: Date.now(),
+      data: { 'user.name': 'Old Name', 'user.email': 'old@example.com' },
+    };
+    await fixer.rollback!(backup);
+    expect(commands.some(c => c.includes('git config --global user.name') && c.includes('Old Name'))).toBe(true);
+    expect(commands.some(c => c.includes('git config --global user.email') && c.includes('old@example.com'))).toBe(true);
   });
 });
 

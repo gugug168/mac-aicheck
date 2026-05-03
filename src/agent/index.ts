@@ -1068,6 +1068,13 @@ function ownerValidationGateDetails(payload: unknown) {
   };
 }
 
+// Mac L2 repair allowlist (TASK-190 Phase C)
+// NOT a port of WinAICheck allowlist - these are macOS-specific safe repairs
+const OWNER_REPAIR_ALLOWLIST = new Set([
+  'npm-mirror',
+  'git-identity',
+]);
+
 function ownerTaskPhaseDetails(payload: unknown) {
   const data = payload && typeof payload === 'object'
     ? payload as Record<string, unknown>
@@ -1094,7 +1101,11 @@ function ownerTaskPhaseDetails(payload: unknown) {
   const consentStatus = String(consentState.status || '').trim();
   const rollbackStatus = String(rollbackState.status || '').trim();
   const prepareStatus = String(prepareState.status || '').trim();
-  const requiresRollbackParityBlock = executionTaskKind === 'owner_repair';
+  const scannerId = String(executionTask.scanner_id || repairCapability.scanner_id || '').trim();
+  const isInAllowlist = scannerId !== '' && OWNER_REPAIR_ALLOWLIST.has(scannerId);
+  const hasRollbackReady = rollbackStatus === 'ready';
+  const requiresRollbackParityBlock = executionTaskKind === 'owner_repair'
+    && (!isInAllowlist || !hasRollbackReady);
   return {
     lifecycle_state: lifecycleState,
     risk_level: riskLevel,
@@ -1109,6 +1120,7 @@ function ownerTaskPhaseDetails(payload: unknown) {
     prepare_state: prepareState,
     prepare_status: prepareStatus,
     requires_rollback_parity_block: requiresRollbackParityBlock,
+    scanner_id: scannerId,
     block_reason: requiresRollbackParityBlock ? 'blocked_pending_rollback_parity' : '',
   };
 }

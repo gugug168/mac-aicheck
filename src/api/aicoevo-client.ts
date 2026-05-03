@@ -89,10 +89,25 @@ export interface AICOEVOPayload {
   systemInfo: SystemInfo;
 }
 
-// ===== Sanitizer (脱敏，与 WinAICheck 一致) =====
+// ===== Sanitizer (脱敏，与 WinAICheck 对齐) =====
+
+const SENSITIVE_PATTERNS = [
+  { regex: /(?:sk-|api[_-]?key[_-]?)([a-zA-Z0-9_-]{20,})/gi, replacement: '<API_KEY>' },
+  { regex: /Bearer\s+[a-zA-Z0-9._-]+/gi, replacement: 'Bearer <TOKEN>' },
+  { regex: /\/Users\/[^\/]+?(?=\/|[\r\n]|$)/gi, replacement: '/Users/<USER>' },
+  { regex: /\b(\d{1,3}\.){3}\d{1,3}\b/g, replacement: '<IP>' },
+  { regex: /[\w.-]+@[\w.-]+\.\w+/g, replacement: '<EMAIL>' },
+  { regex: /-----BEGIN\s+(?:RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----[\s\S]*?-----END\s+(?:RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----/g, replacement: '<PRIVATE_KEY>' },
+  { regex: /https?:\/\/[^@\s]+:[^@\s]+@/g, replacement: 'http://<BASIC_AUTH>@' },
+  { regex: /(?:OPENAI|ANTHROPIC|OPENROUTER|OPENCLAW|DASHSCOPE|ZHIPU|MOONSHOT|GEMINI)[\w-]*(?:KEY|TOKEN)?\s*=\s*[^\s]+/gi, replacement: '<SECRET_ENV>' },
+];
 
 function sanitize(message: string): string {
-  return String(message)
+  let result = String(message || '');
+  for (const { regex, replacement } of SENSITIVE_PATTERNS) {
+    result = result.replace(regex, replacement);
+  }
+  return result
     .replace(/[<>]/g, '')
     .replace(/\n/g, ' ')
     .replace(/\r/g, '')

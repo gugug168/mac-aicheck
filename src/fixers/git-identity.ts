@@ -1,4 +1,4 @@
-import type { Fixer, FixResult, PostFixGuidance } from './types';
+import type { Fixer, FixResult, PostFixGuidance, BackupData } from './types';
 import type { ScanResult } from '../scanners/types';
 import { registerFixer } from './registry';
 import { commandExists, runCommand } from '../executor/index';
@@ -52,6 +52,30 @@ const gitIdentityFixer: Fixer = {
   name: 'Git 身份配置',
   risk: 'yellow',
   scannerIds: ['git-identity'],
+
+  async backup(_scanResult: ScanResult): Promise<BackupData> {
+    const name = readGitConfig('user.name');
+    const email = readGitConfig('user.email');
+    return {
+      scannerId: 'git-identity',
+      timestamp: Date.now(),
+      data: {
+        'user.name': name ?? '<UNSET>',
+        'user.email': email ?? '<UNSET>',
+      },
+    };
+  },
+
+  async rollback(backup: BackupData): Promise<void> {
+    for (const key of ['user.name', 'user.email'] as const) {
+      const val = backup.data[key];
+      if (val === '<UNSET>') {
+        runCommand(`git config --global --unset ${key} 2>/dev/null || true`, 5000);
+      } else if (val) {
+        runCommand(`git config --global ${key} ${escapeShellArg(val)}`, 5000);
+      }
+    }
+  },
 
   canFix(scanResult: ScanResult): boolean {
     return scanResult.id === 'git-identity'

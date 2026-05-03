@@ -1,4 +1,4 @@
-import type { Fixer, FixResult, PostFixGuidance } from './types';
+import type { Fixer, FixResult, PostFixGuidance, BackupData } from './types';
 import type { ScanResult } from '../scanners/types';
 import { registerFixer } from './registry';
 import { classifyError, ERROR_MESSAGES } from './errors';
@@ -11,6 +11,22 @@ const npmMirrorFixer: Fixer = {
 
   canFix(scanResult: ScanResult): boolean {
     return scanResult.id === 'npm-mirror' && (scanResult.status === 'warn' || scanResult.status === 'fail');
+  },
+
+  async backup(_scanResult: ScanResult): Promise<BackupData> {
+    const result = runCommand('npm config get registry 2>/dev/null || echo ""', 5000);
+    return {
+      scannerId: 'npm-mirror',
+      timestamp: Date.now(),
+      data: { registry: (result.stdout || '').trim() },
+    };
+  },
+
+  async rollback(backup: BackupData): Promise<void> {
+    const oldRegistry = backup.data.registry;
+    if (oldRegistry) {
+      runCommand(`npm config set registry '${oldRegistry.replace(/'/g, `'\"'\"'`)}'`, 5000);
+    }
   },
 
   async execute(scanResult: ScanResult, dryRun?: boolean): Promise<FixResult> {

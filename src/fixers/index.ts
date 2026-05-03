@@ -27,7 +27,7 @@ export {
 } from './orchestrator';
 
 // Re-export all types
-export type { Fixer, FixResult, FixerRisk, VerificationStatus, ErrorCategory } from './types';
+export type { Fixer, FixResult, FixerRisk, VerificationStatus, ErrorCategory, BackupData, FixBackupSummary, FixRollbackSummary, FixVerificationSummary } from './types';
 export type { ScanResult } from '../scanners/types';
 
 // Re-export registry functions
