@@ -1101,7 +1101,7 @@ function ownerTaskPhaseDetails(payload: unknown) {
   const consentStatus = String(consentState.status || '').trim();
   const rollbackStatus = String(rollbackState.status || '').trim();
   const prepareStatus = String(prepareState.status || '').trim();
-  const scannerId = String(executionTask.scanner_id || '').trim();
+  const scannerId = String(executionTask.scanner_id || repairCapability.scanner_id || '').trim();
   const isInAllowlist = scannerId !== '' && OWNER_REPAIR_ALLOWLIST.has(scannerId);
   const hasRollbackReady = rollbackStatus === 'ready';
   const requiresRollbackParityBlock = executionTaskKind === 'owner_repair'

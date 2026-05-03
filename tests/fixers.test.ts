@@ -53,7 +53,16 @@ describe('fixer registry (pre-registered)', () => {
     process.env.MAC_AICHECK_GIT_NAME = 'Test User';
     process.env.MAC_AICHECK_GIT_EMAIL = 'test@example.com';
     _test.mockExecSync = (cmd: string) => {
-      if (cmd.includes('which git') || cmd.includes('command -v git')) {
+      if (cmd.includes('git --version')) {
+        return Buffer.from('git version 2.45.0\n');
+      }
+      if (cmd.includes('git config --global user.name')) {
+        return Buffer.from('Test User\n');
+      }
+      if (cmd.includes('git config --global user.email')) {
+        return Buffer.from('test@example.com\n');
+      }
+      if (cmd.includes('where.exe git') || cmd.includes('which git') || cmd.includes('command -v git')) {
         return Buffer.from('/usr/bin/git\n');
       }
       throw new Error(`unexpected command: ${cmd}`);
@@ -68,7 +77,10 @@ describe('fixer registry (pre-registered)', () => {
     delete process.env.MAC_AICHECK_GIT_NAME;
     delete process.env.MAC_AICHECK_GIT_EMAIL;
     _test.mockExecSync = (cmd: string) => {
-      if (cmd.includes('which git') || cmd.includes('command -v git')) {
+      if (cmd.includes('git --version')) {
+        return Buffer.from('git version 2.45.0\n');
+      }
+      if (cmd.includes('where.exe git') || cmd.includes('which git') || cmd.includes('command -v git')) {
         return Buffer.from('/usr/bin/git\n');
       }
       if (cmd.includes('git config --global user.name')) return Buffer.from('');
