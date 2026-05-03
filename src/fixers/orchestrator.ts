@@ -3,7 +3,7 @@
  * Separated from barrel exports to keep each module focused.
  */
 
-import type { Fixer, FixResult } from './types';
+import type { Fixer, FixResult, BackupData, FixBackupSummary, FixRollbackSummary } from './types';
 import type { ScanResult } from '../scanners/types';
 import { getFixers, getFixerForScanResult } from './registry';
 import { verifyFix, buildNextSteps } from './verify';
@@ -28,6 +28,8 @@ export interface FixerExecutionResult {
   originalStatus: ScanResult['status'];
   fixResult?: FixResult;
   error?: string;
+  backupSummary?: FixBackupSummary;
+  rollbackSummary?: FixRollbackSummary;
 }
 
 /**
@@ -101,6 +103,24 @@ export async function fixAll(options: FixAllOptions = {}): Promise<FixAllResult>
 
     // Actual execution
     attempted++;
+
+    // Backup before execution (TASK-190 Phase B)
+    let backupData: BackupData | undefined;
+    if (fixer.backup) {
+      try {
+        backupData = await fixer.backup(scanResult);
+      } catch (backupErr) {
+        results.push({
+          scannerId: scanResult.id,
+          fixerId: fixer.id,
+          originalStatus: scanResult.status,
+          error: `备份失败: ${backupErr instanceof Error ? backupErr.message : String(backupErr)}`,
+          backupSummary: { available: false },
+        });
+        continue;
+      }
+    }
+
     try {
       const fixResult = await fixer.execute(scanResult, dryRun);
 
@@ -114,6 +134,21 @@ export async function fixAll(options: FixAllOptions = {}): Promise<FixAllResult>
           fixResult.success = false;
         }
         fixResult.nextSteps = buildNextSteps(status, fixer.risk, fixResult.message);
+
+        // Rollback on verification failure (TASK-190 Phase B)
+        if (!fixResult.success && backupData && fixer.rollback) {
+          try {
+            await fixer.rollback(backupData);
+            fixResult.rolledBack = true;
+            fixResult.rollback = { available: true, attempted: true, result: 'success' };
+          } catch (rollbackErr) {
+            fixResult.rolledBack = false;
+            fixResult.rollback = {
+              available: true, attempted: true, result: 'failed',
+              message: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr),
+            };
+          }
+        }
       } else {
         fixResult.verified = false;
         fixResult.nextSteps = buildNextSteps(
@@ -121,6 +156,14 @@ export async function fixAll(options: FixAllOptions = {}): Promise<FixAllResult>
           fixer.risk,
           fixResult.message
         );
+      }
+
+      // Fill structured summaries (TASK-190 Phase B)
+      fixResult.backupSummary = backupData
+        ? { available: true, timestamp: backupData.timestamp, keys: Object.keys(backupData.data) }
+        : { available: false };
+      if (!fixResult.rollback) {
+        fixResult.rollback = { available: !!backupData, attempted: false, result: 'not_needed' };
       }
 
       // Add guidance from fixer
@@ -148,6 +191,8 @@ export async function fixAll(options: FixAllOptions = {}): Promise<FixAllResult>
         fixerId: fixer.id,
         originalStatus: scanResult.status,
         fixResult,
+        backupSummary: fixResult.backupSummary,
+        rollbackSummary: fixResult.rollback,
       });
     } catch (err: any) {
       results.push({
