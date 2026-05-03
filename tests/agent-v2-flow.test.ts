@@ -1888,6 +1888,15 @@ describe('worker-on (TASK-091)', () => {
     seedConfig({ authToken: undefined, profileId: null });
     const spawn = createSpawnStub();
     (globalThis as { __MAC_AICHECK_TEST_SPAWN__?: unknown }).__MAC_AICHECK_TEST_SPAWN__ = spawn.spawnImpl;
+    (globalThis as { __MAC_AICHECK_TEST_EXEC__?: unknown }).__MAC_AICHECK_TEST_EXEC__ = (
+      command: string,
+      options?: { cwd?: string }
+    ) => {
+      if (command === 'sw_vers -productVersion') {
+        return { exitCode: 0, stdout: '15.4.1\n', stderr: '' };
+      }
+      return { exitCode: 1, stdout: '', stderr: 'unsupported' };
+    };
 
     const requests: Array<{ url: string; method: string }> = [];
     const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
@@ -1919,6 +1928,7 @@ describe('worker-on (TASK-091)', () => {
     expect(requests[0]?.url).toContain('/bind/request?');
     expect(requests[0]?.url).toContain('agent_type=claude-code');
     expect(requests[0]?.url).toContain('device_id=device-test');
+    expect(requests[0]?.url).toContain('device_info=macOS%2015.4.1');
     expect(requests.some(req => req.url.includes('/bind/poll?request_token=req_tok_123'))).toBe(true);
     expect(capture.output).toContain('浏览器将打开绑定确认页');
     expect(capture.output).toContain('网页中确认绑定');
@@ -1927,5 +1937,52 @@ describe('worker-on (TASK-091)', () => {
     expect(spawn.calls).toHaveLength(1);
     expect(_testHelpers.loadConfig().authToken).toBe('ak_device_flow_123');
     expect(_testHelpers.loadConfig().profileId).toBe('prof_device_flow_mac');
+  });
+
+  it('falls back to darwin major mapping when sw_vers is unavailable', async () => {
+    seedConfig({ authToken: undefined, profileId: null });
+    (globalThis as { __MAC_AICHECK_TEST_EXEC__?: unknown }).__MAC_AICHECK_TEST_EXEC__ = () => ({
+      exitCode: 1,
+      stdout: '',
+      stderr: 'missing',
+    });
+    const originalDarwin = process.versions.darwin;
+    Object.defineProperty(process.versions, 'darwin', {
+      configurable: true,
+      value: '24.0.0',
+    });
+
+    const requests: Array<{ url: string; method: string }> = [];
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      requests.push({ url, method: String(init?.method || 'GET') });
+      if (url.includes('/bind/request')) {
+        return mockResponse({
+          request_token: 'req_tok_fallback',
+          confirm_url: 'https://aicoevo.net/bind?t=req_tok_fallback',
+          expires_in: 9,
+        });
+      }
+      if (url.includes('/bind/poll')) {
+        return mockResponse({
+          status: 'confirmed',
+          api_key: 'ak_device_flow_456',
+          profile_id: 'prof_device_flow_mac_fallback',
+        });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const capture = captureOutput();
+    const code = await agentMain(['bind', '--agent', 'claude-code']);
+    capture.spy.mockRestore();
+
+    Object.defineProperty(process.versions, 'darwin', {
+      configurable: true,
+      value: originalDarwin,
+    });
+
+    expect(code).toBe(0);
+    expect(requests[0]?.url).toContain('device_info=macOS%2015');
   });
 });

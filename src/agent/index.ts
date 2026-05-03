@@ -40,6 +40,38 @@ function shortHash(v: string) { return sha256(v).slice(0, 16); }
 function nowIso() { return new Date().toISOString(); }
 function today() { return nowIso().slice(0, 10); }
 
+function detectMacDeviceInfo() {
+  const override = (globalThis as {
+    __MAC_AICHECK_TEST_EXEC__?: (command: string, options?: { cwd?: string }) => { exitCode: number; stdout?: string; stderr?: string };
+  }).__MAC_AICHECK_TEST_EXEC__;
+
+  try {
+    const result = override
+      ? override('sw_vers -productVersion')
+      : (() => {
+          const stdout = execFileSync('sw_vers', ['-productVersion'], {
+            encoding: 'utf-8',
+            timeout: 5000,
+            stdio: ['ignore', 'pipe', 'ignore'],
+          });
+          return { exitCode: 0, stdout, stderr: '' };
+        })();
+    const version = String(result.stdout || '').trim();
+    if (result.exitCode === 0 && version) return `macOS ${version}`;
+  } catch {
+    // fall through to Darwin mapping
+  }
+
+  const darwinMajor = Number(process.versions?.darwin?.split('.')[0] || 0);
+  const fallbackMap: Record<number, string> = {
+    24: 'macOS 15',
+    23: 'macOS 14',
+    22: 'macOS 13',
+    21: 'macOS 12',
+  };
+  return fallbackMap[darwinMajor] || 'macOS';
+}
+
 const SENSITIVE_PATTERNS: Array<{ regex: RegExp; replacement: string }> = [
   { regex: /(?:sk-|api[_-]?key[_-]?)([a-zA-Z0-9_-]{20,})/gi, replacement: '<API_KEY>' },
   { regex: /Bearer\s+[a-zA-Z0-9._-]+/gi, replacement: 'Bearer <TOKEN>' },
@@ -2556,7 +2588,7 @@ export async function main(argv: string[]) {
         process.stdout.write(`\n检测到 ${agents.map(a => a.name).join(', ')}\n`);
         for (const agent of agents) {
           try {
-            const deviceInfo = `${hostname()}/${process.platform}`;
+            const deviceInfo = detectMacDeviceInfo();
             const reqResult = await requestJson(
               `${apiBase()}/bind/request?agent_type=${encodeURIComponent(agent.agentType)}&device_info=${encodeURIComponent(deviceInfo)}&device_id=${encodeURIComponent(cfg.deviceId)}`,
               { method: 'POST', timeoutMs: 15000 },
@@ -2692,7 +2724,7 @@ export async function main(argv: string[]) {
 
     // 新流程：OAuth 设备流（自动打开浏览器）
     const agentName = String(args.agent || 'unknown').trim();
-    const deviceInfo = `${hostname()}/${process.platform}`;
+    const deviceInfo = detectMacDeviceInfo();
 
     process.stdout.write('正在发起设备绑定...\n');
 
