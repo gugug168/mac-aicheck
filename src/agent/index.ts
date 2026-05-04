@@ -2595,7 +2595,7 @@ export async function main(argv: string[]) {
             );
             if (reqResult.status === 200) {
               const { confirm_url } = reqResult.data as Record<string, unknown>;
-              process.stdout.write(`  ${agent.name}: 浏览器会打开绑定确认页 ${confirm_url}\n`);
+              process.stdout.write(`  ${agent.name}: 请在浏览器确认绑定 ${confirm_url}\n`);
               // Try opening browser
               try {
                 const openCmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
@@ -2723,7 +2723,7 @@ export async function main(argv: string[]) {
     }
 
     // 新流程：OAuth 设备流（自动打开浏览器）
-    const agentName = String(args.agent || 'unknown').trim();
+    const agentName = String(args.agent || 'mac-aicheck').trim();
     const deviceInfo = detectMacDeviceInfo();
 
     process.stdout.write('正在发起设备绑定...\n');
@@ -2741,15 +2741,15 @@ export async function main(argv: string[]) {
     }
 
     const { request_token, confirm_url, expires_in } = reqResult.data as Record<string, unknown>;
-    process.stdout.write(`\n浏览器将打开绑定确认页:\n  ${confirm_url}\n\n`);
+    process.stdout.write(`\n请在浏览器中确认新的绑定流程:\n  ${confirm_url}\n\n`);
 
     // Step 2: 尝试自动打开浏览器
     try {
       const openCmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
       execFileSync(openCmd, [confirm_url as string], { timeout: 5000 });
-      process.stdout.write('已自动打开浏览器；如果你已经登录 AICOEVO，网页中点一次确认即可完成绑定。\n\n');
+      process.stdout.write('已自动打开浏览器；如果你已经登录 AICOEVO，网页中点一次确认即可完成新绑定流程。\n\n');
     } catch {
-      process.stdout.write('请手动打开上方链接；如果尚未登录，先登录后再在网页中确认绑定。\n\n');
+      process.stdout.write('请手动复制上方链接到浏览器中打开。6 位码仅保留给旧版兼容场景。\n\n');
     }
 
     // Step 3: 轮询等待确认
