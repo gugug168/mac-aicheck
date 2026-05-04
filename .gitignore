@@ -13,6 +13,11 @@ npm-debug.log*
 .AppleDouble
 .LSOverride
 
+# Claude Code agents (shareable, project-level)
+# .claude/* is NOT gitignored here — agents commit to repo
+# Only settings.local.json stays local
+.claude/settings.local.json
+
 # Editor
 .vscode/
 .idea/
@@ -33,3 +38,4 @@ reports/
 *.tsbuildinfo
 .gstack/
 .tmp/
+.worktrees/

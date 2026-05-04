@@ -155,6 +155,13 @@ bash scripts/openclaw-smoke.sh
 - 6 位绑定码仍保留为兼容兜底流程，仅在手动调试或旧客户端场景下使用，例如 `mac-aicheck agent bind --code 123456`。
 - Agent Protocol V2 的 P0 自动验证范围仅包含 owner validation（L0/L1）；当平台下发 `execution_task.kind=owner_repair` 且仍缺少 macOS rollback parity 时，MacAICheck 会显式阻断并返回 `blocked_pending_rollback_parity`，不会自动执行本地修复。
 
+### Phase 6 协议说明
+
+- MacAICheck 同时兼容 legacy `mode` 和 Phase 6 `lifecycle_state`，但 Phase 6 自动化行为只认服务端返回的 `lifecycle_state`、`risk_level`、`repair_capability`、`consent_state`、`rollback_state`。
+- 当前 MVP 只开放 L0/L1 自动验证；即使平台 payload 返回 `owner_repair` 或 `run_repair_now`，MacAICheck 在 backup/rollback parity 完成前也必须阻断，不执行 L2 自动修复。
+- 旧客户端或缺字段 payload 只能走“验证 / 人工提示”路径，不能默认升级到 L2 自动修复。
+- `L3` 永不静默执行。
+
 ### 上报数据格式
 
 AICO EVO 使用与 WinAICheck 一致的格式：
@@ -187,6 +194,14 @@ npm run typecheck
 # 运行测试
 npm test
 ```
+
+## 微信交流群
+
+扫描二维码加入 MacAICheck 交流群，获取使用帮助和最新动态：
+
+<p align="center">
+  <img src=".github/assets/wechat-qr.png" alt="微信群二维码" width="200">
+</p>
 
 ## 参与贡献
 

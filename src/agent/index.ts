@@ -40,38 +40,6 @@ function shortHash(v: string) { return sha256(v).slice(0, 16); }
 function nowIso() { return new Date().toISOString(); }
 function today() { return nowIso().slice(0, 10); }
 
-function detectMacDeviceInfo() {
-  const override = (globalThis as {
-    __MAC_AICHECK_TEST_EXEC__?: (command: string, options?: { cwd?: string }) => { exitCode: number; stdout?: string; stderr?: string };
-  }).__MAC_AICHECK_TEST_EXEC__;
-
-  try {
-    const result = override
-      ? override('sw_vers -productVersion')
-      : (() => {
-          const stdout = execFileSync('sw_vers', ['-productVersion'], {
-            encoding: 'utf-8',
-            timeout: 5000,
-            stdio: ['ignore', 'pipe', 'ignore'],
-          });
-          return { exitCode: 0, stdout, stderr: '' };
-        })();
-    const version = String(result.stdout || '').trim();
-    if (result.exitCode === 0 && version) return `macOS ${version}`;
-  } catch {
-    // fall through to Darwin mapping
-  }
-
-  const darwinMajor = Number(process.versions?.darwin?.split('.')[0] || 0);
-  const fallbackMap: Record<number, string> = {
-    24: 'macOS 15',
-    23: 'macOS 14',
-    22: 'macOS 13',
-    21: 'macOS 12',
-  };
-  return fallbackMap[darwinMajor] || 'macOS';
-}
-
 const SENSITIVE_PATTERNS: Array<{ regex: RegExp; replacement: string }> = [
   { regex: /(?:sk-|api[_-]?key[_-]?)([a-zA-Z0-9_-]{20,})/gi, replacement: '<API_KEY>' },
   { regex: /Bearer\s+[a-zA-Z0-9._-]+/gi, replacement: 'Bearer <TOKEN>' },
@@ -1100,61 +1068,21 @@ function ownerValidationGateDetails(payload: unknown) {
   };
 }
 
-// Mac L2 repair allowlist (TASK-190 Phase C)
-// NOT a port of WinAICheck allowlist - these are macOS-specific safe repairs
-const OWNER_REPAIR_ALLOWLIST = new Set([
-  'npm-mirror',
-  'git-identity',
-]);
+function ownerRepairExecutionTask(item: Record<string, unknown>, prepareData: unknown) {
+  const prepared = prepareData && typeof prepareData === 'object'
+    ? prepareData as Record<string, unknown>
+    : {};
+  const preparedTask = prepared.execution_task && typeof prepared.execution_task === 'object'
+    ? prepared.execution_task as Record<string, unknown>
+    : {};
+  const itemTask = item.execution_task && typeof item.execution_task === 'object'
+    ? item.execution_task as Record<string, unknown>
+    : {};
+  return { ...itemTask, ...preparedTask };
+}
 
-function ownerTaskPhaseDetails(payload: unknown) {
-  const data = payload && typeof payload === 'object'
-    ? payload as Record<string, unknown>
-    : {};
-  const executionTask = data.execution_task && typeof data.execution_task === 'object'
-    ? data.execution_task as Record<string, unknown>
-    : {};
-  const repairCapability = data.repair_capability && typeof data.repair_capability === 'object'
-    ? data.repair_capability as Record<string, unknown>
-    : {};
-  const consentState = data.consent_state && typeof data.consent_state === 'object'
-    ? data.consent_state as Record<string, unknown>
-    : {};
-  const rollbackState = data.rollback_state && typeof data.rollback_state === 'object'
-    ? data.rollback_state as Record<string, unknown>
-    : {};
-  const prepareState = data.prepare_state && typeof data.prepare_state === 'object'
-    ? data.prepare_state as Record<string, unknown>
-    : {};
-  const lifecycleState = String(data.lifecycle_state || '').trim();
-  const riskLevel = String(data.risk_level || '').trim();
-  const executionTaskKind = String(executionTask.kind || '').trim();
-  const repairCapabilityMode = String(repairCapability.mode || '').trim();
-  const consentStatus = String(consentState.status || '').trim();
-  const rollbackStatus = String(rollbackState.status || '').trim();
-  const prepareStatus = String(prepareState.status || '').trim();
-  const scannerId = String(executionTask.scanner_id || repairCapability.scanner_id || '').trim();
-  const isInAllowlist = scannerId !== '' && OWNER_REPAIR_ALLOWLIST.has(scannerId);
-  const hasRollbackReady = rollbackStatus === 'ready';
-  const requiresRollbackParityBlock = executionTaskKind === 'owner_repair'
-    && (!isInAllowlist || !hasRollbackReady);
-  return {
-    lifecycle_state: lifecycleState,
-    risk_level: riskLevel,
-    execution_task: executionTask,
-    execution_task_kind: executionTaskKind,
-    repair_capability: repairCapability,
-    repair_capability_mode: repairCapabilityMode,
-    consent_state: consentState,
-    consent_status: consentStatus,
-    rollback_state: rollbackState,
-    rollback_status: rollbackStatus,
-    prepare_state: prepareState,
-    prepare_status: prepareStatus,
-    requires_rollback_parity_block: requiresRollbackParityBlock,
-    scanner_id: scannerId,
-    block_reason: requiresRollbackParityBlock ? 'blocked_pending_rollback_parity' : '',
-  };
+function isOwnerRepairTask(task: Record<string, unknown>) {
+  return String(task.kind || '').trim() === 'owner_repair';
 }
 
 function shouldPromptCurrentMachine(decision: ReturnType<typeof serverExecutionDecision>) {
@@ -1652,18 +1580,13 @@ async function processPendingOwnerVerifications(headers: Record<string, string>,
     if (!bountyId || !answerId) { skipped++; continue; }
     const guideRecord = writeOwnerVerifyGuide(item, config);
     const localAutomation = buildValidationAutomationAssessment(item);
-    const phaseDetails = ownerTaskPhaseDetails(item);
     const serverDecision = serverExecutionDecision(item, 'owner_verification');
     const promptCurrentMachine = shouldPromptCurrentMachine(serverDecision);
     const routeLabel = formatExecutionRoute(serverDecision);
-    if (phaseDetails.requires_rollback_parity_block) {
-      const reason = phaseDetails.block_reason || 'blocked_pending_rollback_parity';
-      process.stdout.write(
-        `[Worker] owner-auto 跳过 ${bountyId}/${answerId}: ${reason} (task=${phaseDetails.execution_task_kind || 'unknown'}, risk=${phaseDetails.risk_level || 'unknown'})\n`,
-      );
-      skipped++;
-      continue;
-    }
+    const itemExecutionTask = item.execution_task && typeof item.execution_task === 'object'
+      ? item.execution_task as Record<string, unknown>
+      : {};
+    const itemIsOwnerRepair = isOwnerRepairTask(itemExecutionTask);
     if (serverDecision.decision === 'ask_user_run') {
       if (promptCurrentMachine) {
         process.stdout.write(
@@ -1674,6 +1597,33 @@ async function processPendingOwnerVerifications(headers: Record<string, string>,
           `[Worker] owner-auto 跳过 ${bountyId}/${answerId}: 已路由回原机器${routeLabel ? ` (${routeLabel})` : ''}\n`,
         );
       }
+      skipped++;
+      continue;
+    }
+    if (itemIsOwnerRepair) {
+      if (!serverAutomationReady(item, 'owner_verification')) {
+        process.stdout.write(`[Worker] owner-repair 跳过 ${bountyId}/${answerId}: 平台已标记为 manual-only\n`);
+        skipped++;
+        continue;
+      }
+      const prepareResult = await prepareOwnerValidationTask(headers, answerId);
+      if (prepareResult.status !== 200) {
+        process.stdout.write(`[Worker] owner-repair 跳过 ${bountyId}/${answerId}: 平台 prepare 失败 (${prepareResult.status})\n`);
+        skipped++;
+        continue;
+      }
+      const prepareGate = ownerValidationGateDetails(prepareResult.data);
+      const repairTask = ownerRepairExecutionTask(item, prepareResult.data);
+      if (!prepareGate.prepared) {
+        process.stdout.write(
+          `[Worker] owner-repair 跳过 ${bountyId}/${answerId}: 平台未放行自动修复 (${prepareGate.prepared_action || 'not_prepared'})\n`,
+        );
+        skipped++;
+        continue;
+      }
+      process.stdout.write(
+        `[Worker] owner-repair 跳过 ${bountyId}/${answerId}: MacAICheck 暂未开放 L2 自动修复，需等待 backup/rollback parity (${String(repairTask.risk_level || 'L2')})\n`,
+      );
       skipped++;
       continue;
     }
@@ -2588,7 +2538,7 @@ export async function main(argv: string[]) {
         process.stdout.write(`\n检测到 ${agents.map(a => a.name).join(', ')}\n`);
         for (const agent of agents) {
           try {
-            const deviceInfo = detectMacDeviceInfo();
+            const deviceInfo = `${hostname()}/${process.platform}`;
             const reqResult = await requestJson(
               `${apiBase()}/bind/request?agent_type=${encodeURIComponent(agent.agentType)}&device_info=${encodeURIComponent(deviceInfo)}&device_id=${encodeURIComponent(cfg.deviceId)}`,
               { method: 'POST', timeoutMs: 15000 },
@@ -3283,7 +3233,6 @@ export async function main(argv: string[]) {
         const decision = serverExecutionDecision(item, 'owner_verification');
         const routeLabel = formatExecutionRoute(decision);
         const gate = ownerValidationGateDetails(item);
-        const phaseDetails = ownerTaskPhaseDetails(item);
         process.stdout.write(`## ${item.title || '(无标题)'}\n`);
         process.stdout.write(`  Bounty:   ${item.bounty_id}\n`);
         process.stdout.write(`  Answer:   ${item.answer_id}\n`);
@@ -3291,13 +3240,6 @@ export async function main(argv: string[]) {
         process.stdout.write(`  提交时间: ${item.submitted_at}\n`);
         process.stdout.write(`  截止时间: ${item.deadline_at}\n\n`);
         if (item.validation_cmd) process.stdout.write(`  验证命令: ${item.validation_cmd}\n`);
-        if (phaseDetails.lifecycle_state) process.stdout.write(`  生命周期: ${phaseDetails.lifecycle_state}\n`);
-        if (phaseDetails.risk_level) process.stdout.write(`  风险等级: ${phaseDetails.risk_level}\n`);
-        if (phaseDetails.execution_task_kind) process.stdout.write(`  执行任务: ${phaseDetails.execution_task_kind}\n`);
-        if (phaseDetails.repair_capability_mode) process.stdout.write(`  修复能力: ${phaseDetails.repair_capability_mode}\n`);
-        if (phaseDetails.consent_status) process.stdout.write(`  授权状态: ${phaseDetails.consent_status}\n`);
-        if (phaseDetails.rollback_status) process.stdout.write(`  回滚状态: ${phaseDetails.rollback_status}\n`);
-        if (phaseDetails.prepare_status) process.stdout.write(`  准备状态: ${phaseDetails.prepare_status}\n`);
         if ((guide.snapshot as Record<string, unknown> | null)?.suggestedProjectDir) {
           process.stdout.write(`  项目目录: ${String((guide.snapshot as Record<string, unknown>).suggestedProjectDir)}\n`);
         }
@@ -3322,7 +3264,6 @@ export async function main(argv: string[]) {
         }
         if (automation.selected_command) process.stdout.write(`  自动命令: ${automation.selected_command}\n`);
         if (automation.suggested_project_dir) process.stdout.write(`  自动目录: ${automation.suggested_project_dir}\n`);
-        if (phaseDetails.block_reason) process.stdout.write(`  协议阻塞: ${phaseDetails.block_reason}\n`);
         if (automation.blocking_reasons.length > 0) process.stdout.write(`  阻塞原因: ${automation.blocking_reasons.join(', ')}\n`);
         if (automation.warning_reasons.length > 0) process.stdout.write(`  注意事项: ${automation.warning_reasons.join(', ')}\n`);
         process.stdout.write(`  指南:     ${guide.guideMd}\n`);
@@ -3424,7 +3365,6 @@ export const _testHelpers = {
   loadDraftOrganizerState,
   saveDraftOrganizerState,
   runDraftOrganizerOnce,
-  ownerTaskPhaseDetails,
 };
 
 if (require.main === module) {
