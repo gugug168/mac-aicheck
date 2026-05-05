@@ -92,8 +92,8 @@ export const FIX_DEFS = [
 ];
 
 export const TIER_CFG: Record<string, {title:string;color:string;bg:string;border:string;btnLabel:string}> = {
-  green:  { title:'立即处理', color:'#22c55e', bg:'rgba(34,197,94,.06)', border:'rgba(34,197,94,.2)', btnLabel:'立即执行' },
-  yellow: { title:'建议处理', color:'#eab308', bg:'rgba(234,179,8,.06)', border:'rgba(234,179,8,.2)', btnLabel:'确认执行' },
+  green:  { title:'立即处理', color:'#22c55e', bg:'rgba(34,197,94,.06)', border:'rgba(34,197,94,.2)', btnLabel:'查看并执行' },
+  yellow: { title:'建议处理', color:'#eab308', bg:'rgba(234,179,8,.06)', border:'rgba(234,179,8,.2)', btnLabel:'查看后确认' },
   red:    { title:'手动处理', color:'#f97316', bg:'rgba(249,115,22,.06)', border:'rgba(249,115,22,.2)', btnLabel:'查看指引' },
   black:  { title:'可选优化', color:'#94a3b8', bg:'rgba(148,163,184,.06)', border:'rgba(148,163,184,.15)', btnLabel:'查看建议' },
 };
