@@ -6,8 +6,8 @@ import { TIER_CFG } from '../src/web/render';
 
 describe('fix presentation helpers', () => {
   it('maps risk levels to UI labels', () => {
-    expect(getFixRiskPresentation({ risk: 'green' } as Fixer).buttonLabel).toBe('立即修复');
-    expect(getFixRiskPresentation({ risk: 'yellow' } as Fixer).buttonLabel).toBe('查看并执行');
+    expect(getFixRiskPresentation({ risk: 'green' } as Fixer).buttonLabel).toBe('查看并执行');
+    expect(getFixRiskPresentation({ risk: 'yellow' } as Fixer).buttonLabel).toBe('查看后确认');
     expect(getFixRiskPresentation({ risk: 'red' } as Fixer).buttonLabel).toBe('查看指引');
     expect(TIER_CFG.green.btnLabel).toBe('查看并执行');
     expect(TIER_CFG.yellow.btnLabel).toBe('查看后确认');
