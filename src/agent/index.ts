@@ -6,6 +6,7 @@ import { execFileSync, spawn } from 'child_process';
 import crypto from 'node:crypto';
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
+import { getFixers } from '../fixers/index';
 
 const LOCAL_VERSION = process.env.npm_package_version || '1.0.0';
 
@@ -39,6 +40,38 @@ function sha256(v: string) { return crypto.createHash('sha256').update(v).digest
 function shortHash(v: string) { return sha256(v).slice(0, 16); }
 function nowIso() { return new Date().toISOString(); }
 function today() { return nowIso().slice(0, 10); }
+
+function detectMacDeviceInfo() {
+  const override = (globalThis as {
+    __MAC_AICHECK_TEST_EXEC__?: (command: string, options?: { cwd?: string }) => { exitCode: number; stdout?: string; stderr?: string };
+  }).__MAC_AICHECK_TEST_EXEC__;
+
+  try {
+    const result = override
+      ? override('sw_vers -productVersion')
+      : (() => {
+          const stdout = execFileSync('sw_vers', ['-productVersion'], {
+            encoding: 'utf-8',
+            timeout: 5000,
+            stdio: ['ignore', 'pipe', 'ignore'],
+          });
+          return { exitCode: 0, stdout, stderr: '' };
+        })();
+    const version = String(result.stdout || '').trim();
+    if (result.exitCode === 0 && version) return `macOS ${version}`;
+  } catch {
+    // fall through to Darwin mapping
+  }
+
+  const darwinMajor = Number(process.versions?.darwin?.split('.')[0] || 0);
+  const fallbackMap: Record<number, string> = {
+    24: 'macOS 15',
+    23: 'macOS 14',
+    22: 'macOS 13',
+    21: 'macOS 12',
+  };
+  return fallbackMap[darwinMajor] || 'macOS';
+}
 
 const SENSITIVE_PATTERNS: Array<{ regex: RegExp; replacement: string }> = [
   { regex: /(?:sk-|api[_-]?key[_-]?)([a-zA-Z0-9_-]{20,})/gi, replacement: '<API_KEY>' },
@@ -1085,6 +1118,21 @@ function isOwnerRepairTask(task: Record<string, unknown>) {
   return String(task.kind || '').trim() === 'owner_repair';
 }
 
+function ownerRepairHasRollbackParity(scannerId: string, repairCapability?: Record<string, unknown>) {
+  if (repairCapability) {
+    const backupAvailable = repairCapability.backup_available === true;
+    const rollbackAvailable = repairCapability.rollback_available === true;
+    if (backupAvailable && rollbackAvailable) return true;
+  }
+  const normalized = String(scannerId || '').trim();
+  if (!normalized) return false;
+  const fixer = getFixers().find((candidate) =>
+    candidate.scannerIds?.includes(normalized)
+    || candidate.id === `${normalized}-fixer`,
+  );
+  return Boolean(fixer?.backup && fixer?.rollback);
+}
+
 function shouldPromptCurrentMachine(decision: ReturnType<typeof serverExecutionDecision>) {
   return decision.phase === 'owner_verification' && decision.current_profile_is_target !== false;
 }
@@ -1603,6 +1651,28 @@ async function processPendingOwnerVerifications(headers: Record<string, string>,
     if (itemIsOwnerRepair) {
       if (!serverAutomationReady(item, 'owner_verification')) {
         process.stdout.write(`[Worker] owner-repair 跳过 ${bountyId}/${answerId}: 平台已标记为 manual-only\n`);
+        skipped++;
+        continue;
+      }
+      const repairCapability = itemExecutionTask.repair_capability && typeof itemExecutionTask.repair_capability === 'object'
+        ? itemExecutionTask.repair_capability as Record<string, unknown>
+        : {};
+      const rollbackState = item.rollback_state && typeof item.rollback_state === 'object'
+        ? item.rollback_state as Record<string, unknown>
+        : {};
+      const rollbackReady = String(rollbackState.status || '').trim() === 'ready'
+        || itemExecutionTask.rollback_ready === true
+        || (item.prepare_state && typeof item.prepare_state === 'object' && (item.prepare_state as Record<string, unknown>).rollback_ready === true);
+      const scannerId = String(
+        itemExecutionTask.scanner_id
+        || repairCapability.scanner_id
+        || '',
+      ).trim();
+      const parityReady = rollbackReady && ownerRepairHasRollbackParity(scannerId, repairCapability);
+      if (!parityReady) {
+        process.stdout.write(
+          `[Worker] owner-repair 跳过 ${bountyId}/${answerId}: blocked_pending_rollback_parity (${scannerId || String(itemExecutionTask.risk_level || item.risk_level || 'L2')})\n`,
+        );
         skipped++;
         continue;
       }
@@ -2691,15 +2761,15 @@ export async function main(argv: string[]) {
     }
 
     const { request_token, confirm_url, expires_in } = reqResult.data as Record<string, unknown>;
-    process.stdout.write(`\n请在浏览器中确认新的绑定流程:\n  ${confirm_url}\n\n`);
+    process.stdout.write(`\n浏览器将打开绑定确认页:\n  ${confirm_url}\n\n`);
 
     // Step 2: 尝试自动打开浏览器
     try {
       const openCmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
       execFileSync(openCmd, [confirm_url as string], { timeout: 5000 });
-      process.stdout.write('已自动打开浏览器；如果你已经登录 AICOEVO，网页中点一次确认即可完成新绑定流程。\n\n');
+      process.stdout.write('已自动打开浏览器；如果你已经登录 AICOEVO，请在网页中确认绑定。\n\n');
     } catch {
-      process.stdout.write('请手动复制上方链接到浏览器中打开。6 位码仅保留给旧版兼容场景。\n\n');
+      process.stdout.write('请手动复制上方链接到浏览器中打开，并在网页中确认绑定。6 位码仅保留给旧版兼容场景。\n\n');
     }
 
     // Step 3: 轮询等待确认

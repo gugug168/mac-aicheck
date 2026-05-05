@@ -16,7 +16,7 @@ const PRESENTATION_BY_RISK: Record<FixerRisk, FixRiskPresentation> = {
   green: {
     risk: 'green',
     title: '立即处理',
-    buttonLabel: '立即修复',
+    buttonLabel: '查看并执行',
     accent: '#22c55e',
     background: 'rgba(34,197,94,.10)',
     text: '#dcfce7',
@@ -26,7 +26,7 @@ const PRESENTATION_BY_RISK: Record<FixerRisk, FixRiskPresentation> = {
   yellow: {
     risk: 'yellow',
     title: '建议处理',
-    buttonLabel: '查看并执行',
+    buttonLabel: '查看后确认',
     accent: '#eab308',
     background: 'rgba(234,179,8,.10)',
     text: '#fef3c7',

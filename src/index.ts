@@ -77,9 +77,13 @@ function renderServePage(): string {
     data.results.filter(item => item.status === 'fail' || item.status === 'warn'),
     item => getFixerForScanResult(item),
   );
+  const failCount = data.results.filter(item => item.status === 'fail').length;
+  const warnCount = data.results.filter(item => item.status === 'warn').length;
+  const actionableCount = issues.filter(item => getFixerForScanResult(item)).length;
   const cards = issues.map((item) => {
     const fixer = getFixerForScanResult(item);
     const presentation = fixer ? getFixRiskPresentation(fixer) : null;
+    const sectionId = `issue-${escapeHtml(item.id)}`;
     const detail = item.detail ? `<pre style="white-space:pre-wrap;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:12px;overflow:auto">${escapeHtml(item.detail)}</pre>` : '';
     const riskChip = presentation
       ? `<span style="display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;font-size:12px;font-weight:700;background:${presentation.background};color:${presentation.text};border:1px solid ${presentation.border}">${escapeHtml(presentation.title)}</span>`
@@ -87,7 +91,10 @@ function renderServePage(): string {
     const fixButton = presentation
       ? `<button onclick="runFix('${escapeHtml(item.id)}', this)" style="margin-top:12px;padding:10px 14px;border-radius:8px;border:0;background:${presentation.accent};color:#04130a;font-weight:700;cursor:pointer">${escapeHtml(presentation.buttonLabel)}</button>`
       : `<div style="margin-top:12px;color:#94a3b8;font-size:13px">当前没有自动修复器</div>`;
-    return `<section style="border:1px solid #334155;border-radius:12px;padding:16px;background:#111827">
+    const actionHint = presentation
+      ? `<div style="margin-top:8px;font-size:13px;color:#94a3b8">${presentation.risk === 'green' ? '点击后会先弹出确认，再执行修复。' : presentation.risk === 'yellow' ? '点击后会先看说明，再确认执行。' : '先看指引，再手动处理。'}</div>`
+      : '';
+    return `<section id="${sectionId}" style="border:1px solid #334155;border-radius:12px;padding:16px;background:#111827;scroll-margin-top:110px">
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">
         <div>
           <div style="font-size:18px;font-weight:700">${escapeHtml(item.name)}</div>
@@ -97,8 +104,23 @@ function renderServePage(): string {
       </div>
       <p style="margin:12px 0;color:#e5e7eb">${escapeHtml(item.message)}</p>
       ${detail}
+      ${actionHint}
       ${fixButton}
     </section>`;
+  }).join('\n');
+
+  const topIssueCards = issues.slice(0, 4).map((item, index) => {
+    const fixer = getFixerForScanResult(item);
+    const presentation = fixer ? getFixRiskPresentation(fixer) : null;
+    const statusColor = item.status === 'fail' ? '#ef4444' : '#eab308';
+    return `<button onclick="scrollToSection('issue-${escapeHtml(item.id)}')" style="width:100%;text-align:left;border:1px solid #334155;border-radius:12px;padding:14px;background:#111827;color:#e2e8f0;cursor:pointer">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:start">
+        <div style="font-size:16px;font-weight:700">${index + 1}. ${escapeHtml(item.name)}</div>
+        <span style="font-size:12px;color:${statusColor}">${escapeHtml(item.status.toUpperCase())}</span>
+      </div>
+      <div style="margin-top:8px;font-size:13px;color:#cbd5e1">${escapeHtml(item.message)}</div>
+      <div style="margin-top:8px;font-size:12px;color:#94a3b8">${presentation ? '点击定位到对应修复项' : '点击定位到对应检测项'}</div>
+    </button>`;
   }).join('\n');
 
   return `<!doctype html>
@@ -114,8 +136,25 @@ function renderServePage(): string {
     .score{display:inline-block;padding:16px 18px;border-radius:14px;background:#111827;border:1px solid #334155}
     .muted{color:#94a3b8}
     .grid{display:grid;gap:16px}
+    .grid.two{grid-template-columns:1.1fr .9fr}
     .toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:18px 0 24px}
     button.secondary{padding:10px 14px;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;cursor:pointer}
+    .sticky-nav{position:sticky;top:12px;z-index:20;display:flex;flex-wrap:wrap;gap:8px;padding:12px;border:1px solid #334155;border-radius:14px;background:rgba(15,23,42,.92);backdrop-filter:blur(12px);margin-bottom:18px}
+    .sticky-nav button{padding:8px 12px;border-radius:999px;border:1px solid #334155;background:#111827;color:#cbd5e1;cursor:pointer}
+    .route-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+    .route-card{width:100%;text-align:left;padding:16px;border-radius:14px;border:1px solid #334155;background:#111827;color:#e2e8f0;cursor:pointer}
+    .route-card strong{display:block;margin:8px 0 6px;font-size:15px}
+    .route-card small{display:inline-flex;padding:4px 8px;border-radius:999px;background:#0f172a;border:1px solid #334155;color:#93c5fd}
+    .section-card{border:1px solid #334155;border-radius:14px;padding:16px;background:#111827}
+    .section-title{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:12px}
+    .section-title h2{margin:0;font-size:18px}
+    .section-title span{font-size:13px;color:#94a3b8}
+    .summary-stats{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+    .summary-stats span{padding:6px 10px;border-radius:999px;background:#0f172a;border:1px solid #334155;font-size:13px;color:#cbd5e1}
+    .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(120px);padding:12px 18px;border-radius:12px;background:rgba(15,23,42,.96);border:1px solid #334155;color:#e2e8f0;font-size:14px;transition:transform .25s ease;z-index:40}
+    .toast.show{transform:translateX(-50%) translateY(0)}
+    .highlight{box-shadow:0 0 0 2px rgba(96,165,250,.35),0 0 24px rgba(96,165,250,.12)}
+    @media (max-width: 840px){ .grid.two, .route-grid { grid-template-columns:1fr; } .sticky-nav{top:8px} }
   </style>
 </head>
 <body>
@@ -133,12 +172,105 @@ function renderServePage(): string {
         <span class="muted">当前显示 fail/warn 项，共 ${issues.length} 项</span>
       </div>
     </div>
-    <div class="grid">
+
+    <div class="sticky-nav">
+      <button onclick="scrollToSection('summary')">结论</button>
+      <button onclick="scrollToSection('route')">路线</button>
+      <button onclick="scrollToSection('issues')">修复</button>
+      <button onclick="scrollToSection('feedback')">反馈</button>
+    </div>
+
+    <section id="summary" class="grid two" style="margin-bottom:16px">
+      <div class="section-card">
+        <div class="section-title">
+          <h2>环境结论</h2>
+          <span>${label}</span>
+        </div>
+        <div style="font-size:15px;line-height:1.7;color:#cbd5e1">
+          ${failCount > 0 ? `当前还有 ${failCount} 个失败项，建议先处理直接阻塞，再继续安装或接入 AI 工具链。` : warnCount > 0 ? `阻塞项已经不多，当前主要是 ${warnCount} 个警告项，适合集中清理后再进入长期使用。` : '主要链路已通过，可以直接开始使用。'}
+        </div>
+        <div class="summary-stats">
+          <span>${failCount} 个失败</span>
+          <span>${warnCount} 个警告</span>
+          <span>${actionableCount} 项可行动作</span>
+        </div>
+      </div>
+      <div class="section-card">
+        <div class="section-title">
+          <h2>当前最该处理</h2>
+          <span>点击可定位</span>
+        </div>
+        <div class="grid">
+          ${topIssueCards || '<div class="muted">当前没有需要处理的 fail/warn 项。</div>'}
+        </div>
+      </div>
+    </section>
+
+    <section id="route" class="section-card" style="margin-bottom:16px">
+      <div class="section-title">
+        <h2>后续路线</h2>
+        <span>一步一步来</span>
+      </div>
+      <div class="route-grid">
+        <button class="route-card" onclick="scrollToSection('issues')"><small>Step 1</small><strong>先处理可执行项</strong><div class="muted">优先把 fail 项和高收益 warn 项清掉，避免后面装了工具还不能用。</div></button>
+        <button class="route-card" onclick="alert('下一步建议：先处理这里的 fail/warn，再继续安装 Claude Code、OpenClaw、Gemini CLI 等工具。')"><small>Step 2</small><strong>再决定装哪些工具</strong><div class="muted">诊断先明确问题，再做安装，避免边装边猜。</div></button>
+        <button class="route-card" onclick="alert('aicoevo 接入建议：环境稳定后，再接入持续优化或经验回传能力，避免把噪声配置同步出去。')"><small>Step 3</small><strong>接入 aicoevo 持续优化</strong><div class="muted">先把机器跑顺，再接持续优化、社区经验和后续回传。</div></button>
+        <button class="route-card" onclick="scrollToSection('feedback')"><small>Need Help</small><strong>卡住就直接反馈</strong><div class="muted">如果你不确定先改哪一项，就把当前现象发出来，别自己硬猜。</div></button>
+      </div>
+    </section>
+
+    <section id="feedback" class="section-card" style="margin-bottom:16px">
+      <div class="section-title">
+        <h2>反馈入口</h2>
+        <span>当前页快速说明</span>
+      </div>
+      <div class="muted" style="line-height:1.7">
+        现在这个 Mac 版轻量页面还没有内嵌反馈表单。如果你卡住了，建议先记录当前检测项、报错和终端输出，再走 CLI 或社区反馈链路。
+      </div>
+    </section>
+
+    <div id="issues" class="grid">
       ${cards || '<div class="muted">当前没有 fail/warn 项。</div>'}
     </div>
   </div>
+  <div id="toast" class="toast"></div>
   <script>
+    let toastTimer = null;
+
+    function scrollToSection(id) {
+      const el = document.getElementById(id);
+      if (el && typeof el.scrollIntoView === 'function') {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+
+    function showToast(message) {
+      const toast = document.getElementById('toast');
+      if (!toast) return;
+      toast.textContent = message;
+      toast.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove('show'), 2200);
+    }
+
+    function highlightIssue(id) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      document.querySelectorAll('.highlight').forEach(node => node.classList.remove('highlight'));
+      el.classList.add('highlight');
+      scrollToSection(id);
+      setTimeout(() => el.classList.remove('highlight'), 2200);
+    }
+
     async function runFix(scannerId, button) {
+      const cardId = 'issue-' + scannerId;
+      highlightIssue(cardId);
+      const proceed = window.confirm('将先执行该修复命令。确认继续？');
+      if (!proceed) {
+        showToast('已取消执行。');
+        return;
+      }
+      showToast('已确认，开始执行修复。');
       const original = button.textContent;
       button.disabled = true;
       button.textContent = '修复中...';
