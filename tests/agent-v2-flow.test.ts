@@ -1991,6 +1991,9 @@ describe('worker-on (TASK-091)', () => {
       if (command === 'sw_vers -productVersion') {
         return { exitCode: 0, stdout: '15.4.1\n', stderr: '' };
       }
+      if (command === 'open' || command === 'xdg-open') {
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
       return { exitCode: 1, stdout: '', stderr: 'unsupported' };
     };
 
@@ -2037,11 +2040,16 @@ describe('worker-on (TASK-091)', () => {
 
   it('falls back to darwin major mapping when sw_vers is unavailable', async () => {
     seedConfig({ authToken: undefined, profileId: null });
-    (globalThis as { __MAC_AICHECK_TEST_EXEC__?: unknown }).__MAC_AICHECK_TEST_EXEC__ = () => ({
-      exitCode: 1,
-      stdout: '',
-      stderr: 'missing',
-    });
+    (globalThis as { __MAC_AICHECK_TEST_EXEC__?: unknown }).__MAC_AICHECK_TEST_EXEC__ = (command: string) => {
+      if (command === 'open' || command === 'xdg-open') {
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
+      return {
+        exitCode: 1,
+        stdout: '',
+        stderr: 'missing',
+      };
+    };
     const originalDarwin = process.versions.darwin;
     Object.defineProperty(process.versions, 'darwin', {
       configurable: true,
@@ -2079,6 +2087,7 @@ describe('worker-on (TASK-091)', () => {
     });
 
     expect(code).toBe(0);
-    expect(requests[0]?.url).toContain('device_info=macOS%2015');
+    const bindRequest = requests.find(request => request.url.includes('/bind/request?'));
+    expect(bindRequest?.url).toContain('device_info=macOS%2015');
   });
 });
