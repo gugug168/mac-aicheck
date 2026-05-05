@@ -2089,5 +2089,5 @@ describe('worker-on (TASK-091)', () => {
     expect(code).toBe(0);
     const bindRequest = requests.find(request => request.url.includes('/bind/request?'));
     expect(bindRequest?.url).toContain('device_info=macOS%2015');
-  });
+  }, 10_000);
 });

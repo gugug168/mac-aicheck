@@ -1,6 +1,6 @@
 {
   "name": "mac-aicheck",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "macOS AI 开发环境检测工具",
   "main": "dist/index.js",
   "bin": {
