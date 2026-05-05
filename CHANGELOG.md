@@ -6,8 +6,15 @@ All notable changes will be documented in this file.
 
 ### Changed
 
+- 轻量 `--serve` 页面新增吸顶导航、环境结论、当前最该处理和后续路线区块，并支持从卡片直接定位到对应问题项。
+- 修复动作按钮文案统一改为 `查看并执行 / 查看后确认`，执行前增加确认与提示反馈，避免用户误判为按钮无响应。
 - 同步 `TASK-230` 最新生产 smoke 事实：平台侧 `auto_scan -> reviewer quorum -> solved_confirmed -> owner_rescan -> failed final rescan -> reopen original problem` 已在 2026-05-03 最新生产部署上重新跑通，当前 MacAICheck 不再被平台 reviewer 可见性或 final-rescan surfaced 问题阻断。
 - 同步 `TASK-230` 最新真实 Mac 结论：MacAICheck 已完成 L0/L1 owner validation 历史链路核对，并补齐 L2 `owner_repair` 被 `blocked_pending_rollback_parity` 阻断的当场证据。
+
+### Fixed
+
+- 补回 `detectMacDeviceInfo()` 缺失实现，恢复 device-flow bind 的可读 macOS 设备信息上报，并修正绑定提示文案与测试契约。
+- 修复 `owner_repair` 的 rollback parity gating：仅在具备 rollback readiness 与对应修复能力时越过阻断，避免错误落入 `not_prepared` 分支。
 
 ### Notes
 
