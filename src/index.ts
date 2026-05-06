@@ -6,7 +6,7 @@ import { getFixRiskPresentation, sortIssuesByPriority } from './fixers/presentat
 import { calculateScore } from './scoring/calculator';
 import { createPayload, saveLocal, stashData, buildClaimUrl, submitFeedback } from './api/aicoevo-client';
 import { getInstallers, getAllowedCommands } from './installers/index';
-import { getAgentLocalStatus, enableAgentExperience, pauseAgentUploads, syncAgentEvents } from './agent/local-state';
+import { getAgentLocalStatus, enableAgentExperience, pauseAgentUploads, reportAgentToolEvent, syncAgentEvents } from './agent/local-state';
 import { shouldUploadScan } from './cli/options';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -448,9 +448,30 @@ function serveHttp() {
           const result = await fixAll({ dryRun: Boolean(payload.dryRun), scannerIds: [scannerId] });
           const fixEntry = result.results[0];
           if (!fixEntry) {
+            reportAgentToolEvent({
+              step: 'launch',
+              status: 'error',
+              eventType: 'ui_action_failed',
+              failedItems: [scannerId],
+              message: `No fixer available for ${scannerId}`,
+              content: `ui fix action failed for ${scannerId}`,
+              commandSummary: ['POST /api/fix'],
+            });
             res.writeHead(404, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: `No fixer available for ${scannerId}` }));
             return;
+          }
+
+          if (fixEntry.error || fixEntry.fixResult?.success === false) {
+            reportAgentToolEvent({
+              step: 'launch',
+              status: 'error',
+              eventType: 'ui_action_failed',
+              failedItems: [scannerId],
+              message: String(fixEntry.error || fixEntry.fixResult?.message || 'fix execution failed'),
+              content: `ui fix action failed for ${scannerId}`,
+              commandSummary: ['POST /api/fix'],
+            });
           }
 
           const refreshedResults = await scanAll();
@@ -467,6 +488,15 @@ function serveHttp() {
             results: refreshedResults,
           }));
         } catch (e: any) {
+          reportAgentToolEvent({
+            step: 'launch',
+            status: 'error',
+            eventType: 'ui_action_failed',
+            failedItems: ['unknown-scanner'],
+            message: e?.message || '修复失败',
+            content: 'ui fix action failed',
+            commandSummary: ['POST /api/fix'],
+          });
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: e?.message || '修复失败' }));
         }
@@ -635,7 +665,21 @@ function serveHttp() {
 
 async function runScan(serve: boolean, upload: boolean) {
   console.log(`[*] MacAICheck v${VERSION} scanning...\n`);
-  const results = await scanAll();
+  let results;
+  try {
+    results = await scanAll();
+  } catch (error) {
+    reportAgentToolEvent({
+      step: 'scan',
+      status: 'error',
+      eventType: 'step_failed',
+      failedItems: ['scan-all'],
+      message: error instanceof Error ? error.message : String(error),
+      content: 'scan failed while collecting local diagnostics',
+      commandSummary: [serve ? 'mac-aicheck --serve' : upload ? 'mac-aicheck --upload' : 'mac-aicheck'],
+    });
+    throw error;
+  }
   const score = calculateScore(results);
   // 保存本地 + 上报 aicoevo.net 获取认领 token
   const payload = createPayload(results, score);

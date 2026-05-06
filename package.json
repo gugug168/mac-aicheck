@@ -19,6 +19,7 @@
     "scan": "node dist/index.js scan",
     "report": "node dist/index.js report",
     "upload": "node dist/index.js upload",
+    "smoke:tool-events": "bash scripts/tool-event-smoke.sh",
     "test": "vitest run",
     "test:watch": "vitest"
   },

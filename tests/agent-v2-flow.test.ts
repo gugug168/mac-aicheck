@@ -38,6 +38,7 @@ describe('agent v2 flow', () => {
   const originalHome = process.env.HOME;
   const originalBaseUrl = process.env.AICOEVO_BASE_URL;
   const originalApiBase = process.env.AICOEVO_API_BASE;
+  const originalNpmPackageVersion = process.env.npm_package_version;
 
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -47,6 +48,9 @@ describe('agent v2 flow', () => {
     restoreEnv('HOME', originalHome);
     restoreEnv('AICOEVO_BASE_URL', originalBaseUrl);
     restoreEnv('AICOEVO_API_BASE', originalApiBase);
+    delete process.env.MACAICHECK_ALLOW_PRIVATE_API;
+    if (originalNpmPackageVersion === undefined) delete process.env.npm_package_version;
+    else process.env.npm_package_version = originalNpmPackageVersion;
     for (const home of homes.splice(0)) {
       rmSync(home, { recursive: true, force: true });
     }
@@ -169,6 +173,18 @@ describe('agent v2 flow', () => {
     }
   });
 
+  it('allows private API base when MACAICHECK_ALLOW_PRIVATE_API is enabled', async () => {
+    seedConfig();
+    process.env.AICOEVO_API_BASE = 'http://192.168.1.176:8013/api/v1';
+    process.env.MACAICHECK_ALLOW_PRIVATE_API = '1';
+
+    expect(_testHelpers.allowPrivateApiBase()).toBe(true);
+    expect(_testHelpers.apiBase()).toBe('http://192.168.1.176:8013/api/v1');
+    await expect(_testHelpers.assertSafeRequestUrl('http://192.168.1.176:8013/api/v1/feedback')).resolves.toBeUndefined();
+
+    delete process.env.MACAICHECK_ALLOW_PRIVATE_API;
+  });
+
   it('rejects API hosts that resolve to loopback addresses', async () => {
     seedConfig();
     process.env.AICOEVO_API_BASE = 'http://127.0.0.1.nip.io';
@@ -213,6 +229,189 @@ describe('agent v2 flow', () => {
     const body = JSON.parse(request?.body || '{}') as { deviceId: string; events: Array<{ deviceId: string }> };
     expect(body.deviceId).toBe('device-test');
     expect(body.events[0]?.deviceId).toBe('device-test_cc');
+  });
+
+  it('sync failure auto-reports repair_loop tool event', async () => {
+    const home = seedConfig();
+    const outboxPath = path.join(home, '.mac-aicheck', 'outbox', 'events.jsonl');
+    mkdirSync(path.dirname(outboxPath), { recursive: true });
+    writeFileSync(outboxPath, JSON.stringify({
+      eventId: 'evt_sync_1',
+      clientId: 'client-test',
+      deviceId: 'device-test_cc',
+      source: 'mac-aicheck-lite',
+      agent: 'claude-code',
+      eventType: 'agent_runtime',
+      occurredAt: '2026-04-30T00:00:00Z',
+      fingerprint: 'fp_sync_1',
+      sanitizedMessage: 'sync me',
+      severity: 'error',
+      localContext: { os: 'darwin', shell: '/bin/zsh', node: process.version, cwdHash: 'hash' },
+      syncStatus: 'pending',
+    }) + '\n', 'utf8');
+
+    const requests: Array<{ url: string; body?: string }> = [];
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      requests.push({ url, body: init?.body ? String(init.body) : undefined });
+      if (url.endsWith('/api/v1/agent-events/batch')) {
+        return mockResponse({ detail: 'service unavailable' }, 503);
+      }
+      if (url.endsWith('/api/v1/feedback')) {
+        const body = JSON.parse(String(init?.body || '{}'));
+        expect(body.env_summary.step).toBe('sync');
+        expect(body.env_summary.event_type).toBe('step_failed');
+        expect(body.env_summary.failed_items).toEqual(['agent-events-batch']);
+        expect(body.env_summary.failure_signature).toBe('mac-aicheck:sync:agent-events-batch:503');
+        expect(body.env_summary.message).toContain('service unavailable');
+        return mockResponse({ status: 'received' });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const code = await agentMain(['sync']);
+
+    expect(code).toBe(1);
+    expect(requests.some(req => req.url.endsWith('/api/v1/feedback'))).toBe(true);
+  });
+
+  it('tool auto report network failure queues locally with redaction', async () => {
+    const home = seedConfig();
+    const fetchMock = vi.fn().mockRejectedValue(new Error('offline'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await _testHelpers.reportToolAutoEvent({
+      step: 'bind',
+      status: 'error',
+      eventType: 'step_failed',
+      failedItems: ['bind-request'],
+      message: 'bind failed at /Users/alice/repo with OPENAI_API_KEY=sk-secret-12345678',
+      content: 'bind request failed',
+    });
+
+    const queuePath = path.join(home, '.mac-aicheck', 'uploads', 'tool-feedback-queue.json');
+    const queue = JSON.parse(readFileSync(queuePath, 'utf8'));
+    expect(result.status).toBe(0);
+    expect(queue).toHaveLength(1);
+    expect(queue[0].state).toBe('queued');
+    expect(queue[0].payload.env_summary.message).toContain('/Users/<USER>/repo');
+    expect(queue[0].payload.env_summary.message).not.toContain('sk-secret');
+  });
+
+  it('queued tool auto report flushes later and marks flushed', async () => {
+    const home = seedConfig();
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    await _testHelpers.reportToolAutoEvent({
+      step: 'sync',
+      status: 'error',
+      eventType: 'step_failed',
+      failedItems: ['agent-events-batch'],
+      message: 'service unavailable',
+      content: 'sync failed',
+    });
+
+    const queuePath = path.join(home, '.mac-aicheck', 'uploads', 'tool-feedback-queue.json');
+    const queued = JSON.parse(readFileSync(queuePath, 'utf8'));
+    queued[0].nextAttemptAt = '2000-01-01T00:00:00.000Z';
+    writeFileSync(queuePath, JSON.stringify(queued, null, 2) + '\n', 'utf8');
+
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/api/v1/feedback')) {
+        const body = JSON.parse(String(init?.body || '{}'));
+        expect(body.env_summary.step).toBe('sync');
+        return mockResponse({ status: 'received' });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const flush = await _testHelpers.flushToolAutoReports();
+    const queue = JSON.parse(readFileSync(queuePath, 'utf8'));
+    expect(flush.flushed).toBe(1);
+    expect(queue[0].state).toBe('flushed');
+  });
+
+  it('tool auto report marks non-retryable 4xx as failed', async () => {
+    const home = seedConfig();
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse({ detail: 'bad request' }, 400));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await _testHelpers.reportToolAutoEvent({
+      step: 'bind',
+      status: 'error',
+      eventType: 'step_failed',
+      failedItems: ['bind-request'],
+      message: 'bad payload',
+      content: 'bind request failed',
+    });
+
+    const queuePath = path.join(home, '.mac-aicheck', 'uploads', 'tool-feedback-queue.json');
+    const queue = JSON.parse(readFileSync(queuePath, 'utf8'));
+    expect(result.status).toBe(400);
+    expect(queue[0].state).toBe('failed');
+    expect(queue[0].lastStatus).toBe(400);
+  });
+
+  it('report-tool-event command uses the shared reporter contract', async () => {
+    seedConfig();
+    const requests: Array<{ url: string; body: any }> = [];
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      requests.push({ url, body });
+      if (url.endsWith('/api/v1/feedback')) return mockResponse({ status: 'received' });
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    const code = await agentMain([
+      'report-tool-event',
+      '--step', 'claim',
+      '--failed-items', 'bounty-claim',
+      '--message', 'claim failed',
+      '--claim-id', 'bounty_m1',
+    ]);
+    const output = stdout.mock.calls.map(call => String(call[0])).join('');
+    stdout.mockRestore();
+    const parsed = JSON.parse(output);
+
+    expect(code).toBe(0);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.body?.env_summary?.step).toBe('claim');
+    expect(requests[0]?.body?.env_summary?.failed_items).toEqual(['bounty-claim']);
+    expect(requests[0]?.body?.env_summary?.claim_id).toBe('bounty_m1');
+    expect(parsed.payload.env_summary.step).toBe('claim');
+    expect(parsed.payload.env_summary.failed_items).toEqual(['bounty-claim']);
+    expect(parsed.payload.env_summary.claim_id).toBe('bounty_m1');
+    expect(parsed.data.status).toBe('received');
+  });
+
+  it('bounty-claim failure auto-reports claim failure', async () => {
+    seedConfig();
+    const requests: Array<{ url: string; body: any }> = [];
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      requests.push({ url, body });
+      if (url.endsWith('/api/v2/agent/heartbeat')) return mockResponse({ ok: true });
+      if (url.endsWith('/api/v2/agent/bounties/bounty_m1/claim')) {
+        return mockResponse({ detail: 'lease conflict' }, 409);
+      }
+      if (url.endsWith('/api/v1/feedback')) {
+        expect(body.env_summary.step).toBe('claim');
+        expect(body.env_summary.failed_items).toEqual(['bounty-claim']);
+        expect(body.env_summary.claim_id).toBe('bounty_m1');
+        expect(body.env_summary.message).toContain('lease conflict');
+        return mockResponse({ status: 'received' });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const code = await agentMain(['bounty-claim', 'bounty_m1']);
+
+    expect(code).toBe(1);
+    expect(requests.some(req => req.url.endsWith('/api/v1/feedback'))).toBe(true);
   });
 
   // ── TASK-100: Owner reproduction loop ──
@@ -477,6 +676,19 @@ describe('agent v2 flow', () => {
 
     const cache = JSON.parse(readFileSync(cachePath, 'utf8')) as { notifiedSignature?: string };
     expect(cache.notifiedSignature).toBe('claude-code:1.0.0->1.1.0');
+  });
+
+  it('falls back to local VERSION file when npm_package_version is missing', () => {
+    const home = seedConfig();
+    writeFileSync(path.join(home, '.mac-aicheck', 'VERSION'), '1.0.9\n', 'utf8');
+    delete process.env.npm_package_version;
+
+    expect(_testHelpers.resolveLocalVersion()).toBe('1.0.9');
+    expect(_testHelpers.buildToolAutoReport({
+      step: 'bind',
+      failedItems: ['bind-request'],
+      message: 'bind failed',
+    }).env_summary.tool_version).toBe('1.0.9');
   });
 
   it('treats failed upgrade results as unsuccessful', () => {
@@ -1962,6 +2174,33 @@ describe('worker-on (TASK-091)', () => {
     expect(spawn.calls[0]?.args.join(' ')).toContain('worker daemon');
   });
 
+  it('enable worker start failure auto-reports enable failure', async () => {
+    seedConfig();
+    let feedbackSeen = false;
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/api/v1/feedback')) {
+        const body = JSON.parse(String(init?.body || '{}'));
+        expect(body.env_summary.step).toBe('enable');
+        expect(body.env_summary.event_type).toBe('step_failed');
+        expect(body.env_summary.failed_items).toEqual(['worker-start']);
+        feedbackSeen = true;
+        return mockResponse({ status: 'received' });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    (globalThis as { __MAC_AICHECK_TEST_SPAWN__?: unknown }).__MAC_AICHECK_TEST_SPAWN__ = () => {
+      throw new Error("spawn failed");
+    };
+
+    const capture = captureOutput();
+    const code = await agentMain(['enable', '--target', 'claude-code']);
+    capture.spy.mockRestore();
+
+    expect(code).toBe(0);
+    expect(feedbackSeen).toBe(true);
+  });
+
   it('bind auto-starts worker after token is granted', async () => {
     seedConfig({ authToken: undefined });
     const spawn = createSpawnStub();
@@ -1978,6 +2217,47 @@ describe('worker-on (TASK-091)', () => {
     expect(spawn.calls).toHaveLength(1);
     expect(spawn.calls[0]?.args.join(' ')).toContain('worker daemon');
     expect(_testHelpers.loadConfig().profileId).toBe('prof_mac');
+  });
+
+  it('device-flow bind request failure auto-reports repair_loop tool event', async () => {
+    seedConfig({ authToken: undefined, profileId: null, workerEnabled: false });
+    (globalThis as { __MAC_AICHECK_TEST_EXEC__?: unknown }).__MAC_AICHECK_TEST_EXEC__ = (
+      command: string,
+    ) => {
+      if (command === 'sw_vers -productVersion') {
+        return { exitCode: 0, stdout: '15.4.1\n', stderr: '' };
+      }
+      return { exitCode: 1, stdout: '', stderr: 'unsupported' };
+    };
+
+    const requests: Array<{ url: string; body?: string }> = [];
+    const fetchMock = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      requests.push({ url, body: init?.body ? String(init.body) : undefined });
+      if (url.includes('/bind/request?')) {
+        return mockResponse({ detail: 'bind service down' }, 500);
+      }
+      if (url.endsWith('/api/v1/feedback')) {
+        const body = JSON.parse(String(init?.body || '{}'));
+        expect(body.category).toBe('repair_loop');
+        expect(body.env_summary.product).toBe('mac-aicheck');
+        expect(body.env_summary.source).toBe('tool_auto_report');
+        expect(body.env_summary.step).toBe('bind');
+        expect(body.env_summary.event_type).toBe('step_failed');
+        expect(body.env_summary.failed_items).toEqual(['bind-request']);
+        expect(body.env_summary.failure_signature).toBe('mac-aicheck:bind:bind-request:500');
+        expect(body.env_summary.tool_version).toBe('1.0.9');
+        return mockResponse({ status: 'received' });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const capture = captureOutput();
+    const code = await agentMain(['bind', '--agent', 'claude-code']);
+    capture.spy.mockRestore();
+
+    expect(code).toBe(1);
+    expect(requests.some(req => req.url.endsWith('/api/v1/feedback'))).toBe(true);
   });
 
   it('device-flow bind polls profile_id and saves it to config', async () => {

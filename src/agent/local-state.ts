@@ -1,11 +1,13 @@
 import { execFileSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, chmodSync, readdirSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { createHash } from 'crypto';
 import type { AgentStatus } from './types';
 
 function getBaseDir(): string {
+  const override = process.env.MAC_AICHECK_AGENT_BASE_DIR;
+  if (override && override.trim()) return override.trim();
   return join(homedir(), '.mac-aicheck');
 }
 
@@ -50,6 +52,42 @@ function getPaths() {
   };
 }
 
+function resolveBundledVersion(): string {
+  const versionCandidates = [
+    join(__dirname, '../../VERSION'),
+    join(process.cwd(), 'VERSION'),
+  ];
+  for (const candidate of versionCandidates) {
+    try {
+      if (!existsSync(candidate)) continue;
+      const version = readFileSync(candidate, 'utf-8').trim();
+      if (version) return version;
+    } catch {
+      // try next candidate
+    }
+  }
+
+  const packageJson = readJson<{ version?: string }>(join(__dirname, '../../package.json'), {});
+  const packageVersion = String(packageJson.version || '').trim();
+  return packageVersion || '1.0.0';
+}
+
+function copyDirRecursive(srcDir: string, destDir: string) {
+  mkdirSync(destDir, { recursive: true });
+  for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
+    const srcPath = join(srcDir, entry.name);
+    const destPath = join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      copyDirRecursive(srcPath, destPath);
+      continue;
+    }
+    copyFileSync(srcPath, destPath);
+    if ((statSync(srcPath).mode & 0o111) !== 0) {
+      chmodSync(destPath, 0o755);
+    }
+  }
+}
+
 function today(): string {
   const now = new Date();
   const y = now.getFullYear();
@@ -83,10 +121,15 @@ function runAgentCommand(args: string[]): string {
 
 function installEmbeddedLocalAgent() {
   const p = getPaths();
+  const version = resolveBundledVersion();
   mkdirSync(p.agentDir, { recursive: true });
   // 从 dist/agent/index.js 复制（已编译，可直接运行）
   const src = join(__dirname, '../agent/index.js');
+  const runtimeDirs = ['fixers', 'executor', 'scanners', 'installers'];
   copyFileSync(src, p.agentJs);
+  for (const dir of runtimeDirs) {
+    copyDirRecursive(join(__dirname, '..', dir), join(p.base, dir));
+  }
   const hash = createHash('sha256').update(readFileSync(p.agentJs, 'utf-8')).digest('hex');
   writeFileSync(
     join(p.agentDir, 'agent-lite.hash.json'),
@@ -100,6 +143,15 @@ function installEmbeddedLocalAgent() {
     '',
   ].join('\n');
   writeFileSync(p.agentCmd, cmd, 'utf-8');
+  chmodSync(p.agentJs, 0o755);
+  chmodSync(p.agentCmd, 0o755);
+  writeFileSync(join(p.base, 'VERSION'), version + '\n', 'utf-8');
+  writeFileSync(join(p.agentDir, 'VERSION'), version + '\n', 'utf-8');
+  writeFileSync(
+    join(p.base, 'version-cache.json'),
+    JSON.stringify({ macAICheckVersion: version }, null, 2) + '\n',
+    'utf-8',
+  );
   return {
     agentDir: p.agentDir,
     agentJs: p.agentJs,
@@ -188,6 +240,59 @@ export function syncAgentEvents(): { ok: boolean; output: string; status: AgentS
     return {
       ok: false,
       output: '',
+      status: getAgentLocalStatus(),
+    };
+  }
+}
+
+type ReportToolEventInput = {
+  step: string;
+  failedItems: string[];
+  status?: string;
+  eventType?: string;
+  message?: string;
+  content?: string;
+  failureSignature?: string;
+  statusCode?: number;
+  claimId?: string;
+  sessionId?: string;
+  commandSummary?: string[];
+  rollbackStatus?: string;
+  requiresUserConfirmation?: boolean;
+};
+
+export function reportAgentToolEvent(input: ReportToolEventInput): { ok: boolean; output: string; status: AgentStatus } {
+  installEmbeddedLocalAgent();
+  const safeArg = (v: string) => v.replace(/[\r\n&|<>^]/g, ' ');
+  const args = [
+    'report-tool-event',
+    '--step', safeArg(input.step),
+    '--failed-items', input.failedItems.map(s => safeArg(s)).join(','),
+  ];
+  if (input.status) args.push('--status', safeArg(input.status));
+  if (input.eventType) args.push('--event-type', safeArg(input.eventType));
+  if (input.message) args.push('--message', safeArg(input.message));
+  if (input.content) args.push('--content', safeArg(input.content));
+  if (input.failureSignature) args.push('--failure-signature', safeArg(input.failureSignature));
+  if (Number.isFinite(input.statusCode)) args.push('--status-code', String(input.statusCode));
+  if (input.claimId) args.push('--claim-id', safeArg(input.claimId));
+  if (input.sessionId) args.push('--session-id', safeArg(input.sessionId));
+  if (input.commandSummary?.length) args.push('--command-summary', input.commandSummary.map(s => safeArg(s)).join('|||'));
+  if (input.rollbackStatus) args.push('--rollback-status', safeArg(input.rollbackStatus));
+  if (input.requiresUserConfirmation) args.push('--requires-user-confirmation', 'true');
+
+  try {
+    const output = runAgentCommand(args);
+    const parsed = JSON.parse(output);
+    return {
+      ok: parsed.status >= 200 && parsed.status < 300,
+      output,
+      status: getAgentLocalStatus(),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      output: error instanceof Error ? error.message : String(error),
       status: getAgentLocalStatus(),
     };
   }
