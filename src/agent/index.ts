@@ -8,8 +8,6 @@ import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { getFixers } from '../fixers/index';
 
-const LOCAL_VERSION = process.env.npm_package_version || '1.0.0';
-
 function getHome() { return process.env.HOME || homedir(); }
 function getBaseDir() { return join(getHome(), '.mac-aicheck'); }
 function paths() {
@@ -25,6 +23,7 @@ function paths() {
     workerState: join(base, 'worker-state.json'),
     workerLock: join(base, 'worker.lock'),
     draftOrganizerState: join(base, 'draft-organizer-state.json'),
+    toolFeedbackQueue: join(base, 'uploads', 'tool-feedback-queue.json'),
   };
 }
 function ensureDir(dir: string) { if (!existsSync(dir)) mkdirSync(dir, { recursive: true }); }
@@ -85,10 +84,48 @@ const SENSITIVE_PATTERNS: Array<{ regex: RegExp; replacement: string }> = [
 function sanitizeText(text: string): string { let r = String(text || ''); for (const p of SENSITIVE_PATTERNS) r = r.replace(p.regex, p.replacement); return r; }
 function trimForCapture(text: string): string { const s = sanitizeText(text); return s.length <= 8000 ? s : s.slice(0, 8000) + '\n<TRUNCATED>'; }
 
+function readVersionCandidate(file: string): string | null {
+  try {
+    if (!existsSync(file)) return null;
+    const version = readFileSync(file, 'utf-8').trim();
+    return version || null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveLocalVersion(): string {
+  const envVersion = String(process.env.npm_package_version || '').trim();
+  if (envVersion) return envVersion;
+
+  const p = paths();
+  const versionCandidates = [
+    join(p.base, 'VERSION'),
+    join(p.agentDir, 'VERSION'),
+    join(__dirname, '../../VERSION'),
+  ];
+  for (const candidate of versionCandidates) {
+    const version = readVersionCandidate(candidate);
+    if (version) return version;
+  }
+
+  const cache = readJson<Record<string, unknown>>(p.versionCache, {});
+  const cachedVersion = typeof cache.macAICheckVersion === 'string' ? cache.macAICheckVersion.trim() : '';
+  if (cachedVersion) return cachedVersion;
+
+  const packageJson = readJson<{ version?: string }>(join(__dirname, '../../package.json'), {});
+  const packageVersion = String(packageJson.version || '').trim();
+  if (packageVersion) return packageVersion;
+
+  return '1.0.0';
+}
+
 // 版本检测和更新检查（参考 gstack）
 const VERSION_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 小时限速
 const WORKER_DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
 const WORKER_MAX_PARALLEL = 3;
+const TOOL_REPORT_RETRY_BASE_MS = 30 * 1000;
+const TOOL_REPORT_RETRY_MAX_MS = 30 * 60 * 1000;
 
 interface VersionInfo {
   current: string;
@@ -755,6 +792,11 @@ function isBlockedHost(hostname: string): boolean {
   return false;
 }
 
+function allowPrivateApiBase(): boolean {
+  const raw = String(process.env.MACAICHECK_ALLOW_PRIVATE_API || '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
 function apiBase() {
   const configuredBase = [process.env.AICOEVO_API_BASE, process.env.AICOEVO_BASE_URL]
     .find(value => value && !['undefined', 'null'].includes(value.trim().toLowerCase()));
@@ -762,12 +804,14 @@ function apiBase() {
   try {
     const withScheme = raw.startsWith('http') ? raw : `https://${raw}`;
     const parsed = new URL(withScheme);
-    if (isBlockedHost(parsed.hostname)) {
+    if (isBlockedHost(parsed.hostname) && !allowPrivateApiBase()) {
       process.stderr.write(`[安全] AICOEVO_API_BASE 指向内网地址 ${parsed.hostname}，已忽略，使用默认地址\n`);
       return 'https://aicoevo.net/api/v1';
     }
   } catch {}
-  if (!raw.startsWith('https://') && process.env.NODE_ENV !== 'development') return raw.replace(/^http:\/\//, 'https://').endsWith('/api/v1') ? raw.replace(/^http:\/\//, 'https://') : `${raw.replace(/^http:\/\//, 'https://')}/api/v1`;
+  if (!raw.startsWith('https://') && process.env.NODE_ENV !== 'development' && !allowPrivateApiBase()) {
+    return raw.replace(/^http:\/\//, 'https://').endsWith('/api/v1') ? raw.replace(/^http:\/\//, 'https://') : `${raw.replace(/^http:\/\//, 'https://')}/api/v1`;
+  }
   return raw.endsWith('/api/v1') ? raw : `${raw}/api/v1`;
 }
 
@@ -788,9 +832,10 @@ async function resolveHostname(hostname: string): Promise<ResolvedAddress[]> {
 
 async function assertSafeRequestUrl(url: string): Promise<void> {
   const parsed = new URL(url);
-  if (isBlockedHost(parsed.hostname)) {
+  if (isBlockedHost(parsed.hostname) && !allowPrivateApiBase()) {
     throw new Error(`[安全] AICOEVO API 主机 ${parsed.hostname} 属于内网或本机地址，已拒绝请求`);
   }
+  if (allowPrivateApiBase()) return;
   let resolved: ResolvedAddress[];
   try {
     resolved = await resolveHostname(parsed.hostname);
@@ -824,6 +869,187 @@ function agentApiKeyHeaders(config: { authToken?: string }): Record<string, stri
   return { 'X-API-Key': config.authToken };
 }
 
+function buildToolAutoReport(input: {
+  step?: string;
+  status?: string;
+  eventType?: string;
+  failedItems?: string[];
+  failureSignature?: string;
+  statusCode?: number | null;
+  message?: string;
+  content?: string;
+  sessionId?: string | null;
+  claimId?: string | null;
+  commandSummary?: string[];
+  requiresUserConfirmation?: boolean;
+  rollbackStatus?: string | null;
+}) {
+  const config = loadConfig();
+  const product = 'mac-aicheck';
+  const step = String(input.step || '').trim() || 'manual_handoff';
+  const status = String(input.status || '').trim() || 'error';
+  const eventType = String(input.eventType || '').trim() || 'step_failed';
+  const failedItems = uniqueStrings((input.failedItems || []).map(item => String(item || '').trim()).filter(Boolean));
+  const statusCode = Number.isFinite(input.statusCode) ? Number(input.statusCode) : null;
+  const failureSignature = String(input.failureSignature || '').trim()
+    || `${product}:${step}:${failedItems[0] || 'unknown'}:${statusCode ?? 'failed'}`;
+  const message = trimForCapture(input.message || '');
+  const envSummary = {
+    product,
+    source: 'tool_auto_report',
+    step,
+    status,
+    event_type: eventType,
+    failure_signature: failureSignature,
+    failed_items: failedItems.length ? failedItems : ['unknown'],
+    tool_version: resolveLocalVersion(),
+    platform_os: detectMacDeviceInfo(),
+    device_id: String(config.deviceId || '').trim() || undefined,
+    session_id: input.sessionId ? String(input.sessionId).trim() : undefined,
+    claim_id: input.claimId ? String(input.claimId).trim() : undefined,
+    message: message || undefined,
+    command_summary: (input.commandSummary || []).map(item => trimForCapture(String(item || ''))).filter(Boolean),
+    requires_user_confirmation: Boolean(input.requiresUserConfirmation),
+    rollback_status: input.rollbackStatus ? String(input.rollbackStatus).trim() : undefined,
+    created_at: nowIso(),
+  };
+  return {
+    content: trimForCapture(input.content || message || `${step} failed`),
+    category: 'repair_loop',
+    env_summary: Object.fromEntries(Object.entries(envSummary).filter(([, value]) => value !== undefined && value !== null && value !== '')),
+  };
+}
+
+async function reportToolAutoEvent(input: Parameters<typeof buildToolAutoReport>[0]) {
+  const payload = buildToolAutoReport(input);
+  try {
+    const response = await requestJson(`${apiBase()}/feedback`, {
+      method: 'POST',
+      body: payload,
+    });
+    if (response.status >= 200 && response.status < 300) {
+      return { ...response, payload };
+    }
+    queueToolAutoReport(payload, {
+      status: response.status,
+      error: String((response.data as Record<string, unknown>)?.detail || (response.data as Record<string, unknown>)?._raw || `status ${response.status}`),
+      mode: response.status >= 400 && response.status < 500 && response.status !== 429 ? 'failed' : 'queued',
+    });
+    return { ...response, payload };
+  } catch {
+    queueToolAutoReport(payload, {
+      status: 0,
+      error: 'tool auto report failed',
+      mode: 'queued',
+    });
+    return { status: 0, data: { detail: 'tool auto report failed' }, payload };
+  }
+}
+
+function loadToolFeedbackQueue(): Array<Record<string, unknown>> {
+  return readJson<Array<Record<string, unknown>>>(paths().toolFeedbackQueue, []);
+}
+
+function saveToolFeedbackQueue(rows: Array<Record<string, unknown>>) {
+  writeJson(paths().toolFeedbackQueue, rows);
+}
+
+function toolReportBackoffMs(attemptCount: number): number {
+  const attempts = Math.max(1, Number(attemptCount) || 1);
+  return Math.min(TOOL_REPORT_RETRY_BASE_MS * (2 ** (attempts - 1)), TOOL_REPORT_RETRY_MAX_MS);
+}
+
+function queueToolAutoReport(
+  payload: Record<string, unknown>,
+  meta: { status: number; error: string; mode: 'queued' | 'failed' },
+) {
+  const queue = loadToolFeedbackQueue();
+  const now = nowIso();
+  const fingerprint = shortHash(JSON.stringify(payload));
+  const existingIndex = queue.findIndex(item => item.fingerprint === fingerprint && item.state !== 'flushed');
+  const previous = existingIndex >= 0 ? queue[existingIndex] as Record<string, unknown> : null;
+  const attemptCount = Number(previous?.attemptCount || 0) + 1;
+  const nextAttemptAt = new Date(Date.parse(now) + toolReportBackoffMs(attemptCount)).toISOString();
+  const next = {
+    id: String(previous?.id || `toolfb_${crypto.randomUUID()}`),
+    fingerprint,
+    payload,
+    state: meta.mode,
+    attemptCount,
+    firstQueuedAt: String(previous?.firstQueuedAt || now),
+    lastAttemptAt: now,
+    nextAttemptAt: meta.mode === 'failed' ? null : nextAttemptAt,
+    lastStatus: meta.status,
+    lastError: meta.error,
+    flushedAt: previous?.flushedAt || null,
+  };
+  if (existingIndex >= 0) queue[existingIndex] = next;
+  else queue.push(next);
+  saveToolFeedbackQueue(queue);
+  return next;
+}
+
+async function flushToolAutoReports() {
+  const queue = loadToolFeedbackQueue();
+  if (!queue.length) return { flushed: 0, remaining: 0 };
+  const nowMs = Date.parse(nowIso());
+  let flushed = 0;
+  const updated: Array<Record<string, unknown>> = [];
+  for (const item of queue) {
+    if (item.state === 'flushed' || item.state === 'failed') {
+      updated.push(item);
+      continue;
+    }
+    if (item.nextAttemptAt && Date.parse(String(item.nextAttemptAt)) > nowMs) {
+      updated.push(item);
+      continue;
+    }
+    try {
+      const response = await requestJson(`${apiBase()}/feedback`, {
+        method: 'POST',
+        body: item.payload,
+      });
+      if (response.status >= 200 && response.status < 300) {
+        updated.push({
+          ...item,
+          state: 'flushed',
+          flushedAt: nowIso(),
+          lastAttemptAt: nowIso(),
+          lastStatus: response.status,
+          lastError: '',
+          nextAttemptAt: null,
+        });
+        flushed += 1;
+        continue;
+      }
+      const terminal = response.status >= 400 && response.status < 500 && response.status !== 429;
+      const attemptCount = Number(item.attemptCount || 0) + 1;
+      updated.push({
+        ...item,
+        state: terminal ? 'failed' : 'queued',
+        attemptCount,
+        lastAttemptAt: nowIso(),
+        lastStatus: response.status,
+        lastError: String((response.data as Record<string, unknown>)?.detail || (response.data as Record<string, unknown>)?._raw || `status ${response.status}`),
+        nextAttemptAt: terminal ? null : new Date(Date.parse(nowIso()) + toolReportBackoffMs(attemptCount)).toISOString(),
+      });
+    } catch {
+      const attemptCount = Number(item.attemptCount || 0) + 1;
+      updated.push({
+        ...item,
+        state: 'queued',
+        attemptCount,
+        lastAttemptAt: nowIso(),
+        lastStatus: 0,
+        lastError: 'tool auto report failed',
+        nextAttemptAt: new Date(Date.parse(nowIso()) + toolReportBackoffMs(attemptCount)).toISOString(),
+      });
+    }
+  }
+  saveToolFeedbackQueue(updated);
+  return { flushed, remaining: updated.filter(item => item.state === 'queued').length };
+}
+
 async function requestJson(url: string, init: { method?: string; headers?: Record<string, string>; body?: unknown; timeoutMs?: number } = {}) {
   await assertSafeRequestUrl(url);
   const resp = await fetch(url, { method: init.method || 'GET', headers: { Accept: 'application/json', ...(init.body ? { 'Content-Type': 'application/json' } : {}), ...(init.headers || {}) }, body: init.body ? JSON.stringify(init.body) : undefined, signal: AbortSignal.timeout(init.timeoutMs || 5000) });
@@ -836,6 +1062,7 @@ async function requestJson(url: string, init: { method?: string; headers?: Recor
 async function syncEvents() {
   const p = paths();
   const config = loadConfig();
+  await flushToolAutoReports();
   if (config.paused) return { ok: false, skipped: true, reason: 'paused' };
   if (!config.shareData) return { ok: false, skipped: true, reason: 'not_authorized' };
   const all = readJsonl(p.outbox) as Array<Record<string, unknown>>;
@@ -846,7 +1073,18 @@ async function syncEvents() {
     if (config.authToken.startsWith('ak_')) { authH['X-API-Key'] = config.authToken; } else { authH['Authorization'] = `Bearer ${config.authToken}`; }
   }
   const remote = await requestJson(`${apiBase()}/agent-events/batch`, { method: 'POST', headers: authH, body: { clientId: config.clientId, deviceId: normalizeDeviceId(String(config.deviceId || '')), events: pending.map(({ syncStatus, ...e }) => e) } });
-  if (remote.status < 200 || remote.status >= 300) return { ok: false, uploaded: 0, status: remote.status };
+  if (remote.status < 200 || remote.status >= 300) {
+    await reportToolAutoEvent({
+      step: 'sync',
+      status: 'error',
+      eventType: 'step_failed',
+      failedItems: ['agent-events-batch'],
+      statusCode: remote.status,
+      message: `sync failed: ${String((remote.data as Record<string, unknown>)?.detail || (remote.data as Record<string, unknown>)?._raw || `status ${remote.status}`)}`,
+      content: `sync failed while uploading agent events (${remote.status})`,
+    });
+    return { ok: false, uploaded: 0, status: remote.status };
+  }
   const pendingIds = new Set(pending.map(e => e.eventId));
   const updated = all.map(e => pendingIds.has(e.eventId) ? { ...e, syncStatus: 'synced', syncedAt: nowIso() } : e);
   writeFileSync(p.outbox, updated.map(e => JSON.stringify(e)).join('\n') + '\n', 'utf-8');
@@ -2525,6 +2763,53 @@ export async function main(argv: string[]) {
     return 0;
   }
   if (command === 'sync') { const result = await syncEvents(); process.stdout.write(JSON.stringify(result) + '\n'); return result.ok || result.skipped ? 0 : 1; }
+
+  if (command === 'report-tool-event') {
+    const step = String(args.step || '').trim();
+    const status = String(args.status || 'error').trim();
+    const eventType = String(args.eventType || args['event-type'] || 'step_failed').trim();
+    const message = String(args.message || '').trim();
+    const content = String(args.content || message || `${step || 'manual_handoff'} failed`).trim();
+    const failureSignature = String(args.failureSignature || args['failure-signature'] || '').trim();
+    const rollbackStatus = String(args.rollbackStatus || args['rollback-status'] || '').trim();
+    const claimId = String(args.claimId || args['claim-id'] || '').trim();
+    const sessionId = String(args.sessionId || args['session-id'] || '').trim();
+    const failedItems = String(args.failedItems || args['failed-items'] || '')
+      .split(',')
+      .map(value => value.trim())
+      .filter(Boolean);
+    const commandSummary = String(args.commandSummary || args['command-summary'] || '')
+      .split('|||')
+      .map(value => value.trim())
+      .filter(Boolean);
+    const statusCodeRaw = String(args.statusCode || args['status-code'] || '').trim();
+    const statusCode = statusCodeRaw ? Number(statusCodeRaw) : undefined;
+    if (!step) {
+      process.stdout.write('用法: mac-aicheck agent report-tool-event --step <step> --failed-items <a,b> [--status error] [--event-type step_failed]\n');
+      return 1;
+    }
+    if (!failedItems.length) {
+      process.stdout.write('report-tool-event 需要至少一个 failed item\n');
+      return 1;
+    }
+    const result = await reportToolAutoEvent({
+      step,
+      status,
+      eventType,
+      failedItems,
+      failureSignature: failureSignature || undefined,
+      statusCode: Number.isFinite(statusCode) ? statusCode : undefined,
+      message,
+      content,
+      claimId: claimId || undefined,
+      sessionId: sessionId || undefined,
+      commandSummary,
+      rollbackStatus: rollbackStatus || undefined,
+      requiresUserConfirmation: String(args.requiresUserConfirmation || args['requires-user-confirmation'] || '').trim() === 'true',
+    });
+    process.stdout.write(JSON.stringify(result) + '\n');
+    return result.status >= 200 && result.status < 300 ? 0 : 1;
+  }
   if (command === 'pause' || command === 'resume') { const cfg = loadConfig(); cfg.paused = command === 'pause'; saveConfig(cfg); process.stdout.write(command === 'pause' ? '已暂停自动上传和 Worker 互助循环。\n' : '已恢复自动上传和 Worker 互助循环。\n'); return 0; }
 
   if (command === 'disable') {
@@ -2585,9 +2870,25 @@ export async function main(argv: string[]) {
         } else if (workerStart.reason === 'missing auth token') {
           process.stdout.write(`  Worker 互助循环: 等待绑定完成后自动启动\n`);
         } else {
+          await reportToolAutoEvent({
+            step: 'enable',
+            status: 'error',
+            eventType: 'step_failed',
+            failedItems: ['worker-start'],
+            message: 'enable worker start failed',
+            content: 'enable failed while starting worker',
+          });
           process.stdout.write(`  Worker 互助循环: 已禁用\n`);
         }
       } catch (e: unknown) {
+        await reportToolAutoEvent({
+          step: 'enable',
+          status: 'error',
+          eventType: 'step_failed',
+          failedItems: ['worker-start'],
+          message: `enable worker start failed: ${(e as Error).message}`,
+          content: 'enable failed while starting worker',
+        });
         process.stdout.write(`  Worker 互助循环: 启动失败 (${(e as Error).message})\n`);
       }
     } else {
@@ -2756,6 +3057,15 @@ export async function main(argv: string[]) {
 
     if (reqResult.status !== 200) {
       const detail = ((reqResult.data as Record<string, unknown>)?.detail as string) || '未知错误';
+      await reportToolAutoEvent({
+        step: 'bind',
+        status: 'error',
+        eventType: 'step_failed',
+        failedItems: ['bind-request'],
+        statusCode: reqResult.status,
+        message: `bind request failed: ${detail}`,
+        content: `bind request failed (${reqResult.status})`,
+      });
       process.stderr.write(`绑定请求失败 (${reqResult.status}): ${detail}\n`);
       return 1;
     }
@@ -2785,6 +3095,15 @@ export async function main(argv: string[]) {
       );
 
       if (pollResult.status !== 200) {
+        await reportToolAutoEvent({
+          step: 'bind',
+          status: 'error',
+          eventType: 'step_failed',
+          failedItems: ['bind-poll'],
+          statusCode: pollResult.status,
+          message: 'bind poll failed or expired',
+          content: `bind poll failed (${pollResult.status})`,
+        });
         process.stderr.write('\n绑定请求已过期，请重新运行 bind 命令。\n');
         return 1;
       }
@@ -2870,7 +3189,7 @@ export async function main(argv: string[]) {
         // Write just-upgraded marker
         const stateDir = join(getBaseDir(), 'state');
         ensureDir(stateDir);
-        writeFileSync(join(stateDir, 'just-upgraded-from'), LOCAL_VERSION);
+        writeFileSync(join(stateDir, 'just-upgraded-from'), resolveLocalVersion());
         // Clear cache
         try { writeFileSync(join(stateDir, 'last-update-check'), '{}'); } catch {}
         try { const sf = join(stateDir, 'update-snoozed'); if (existsSync(sf)) writeFileSync(sf, ''); } catch {}
@@ -3081,12 +3400,39 @@ export async function main(argv: string[]) {
         headers,
         body: envId ? { env_id: envId } : {},
       });
-      if (result.status >= 400) { process.stdout.write(`认领失败: ${JSON.stringify(result.data)}\n`); return 1; }
+      if (result.status >= 400) {
+        await reportToolAutoEvent({
+          step: 'claim',
+          status: 'error',
+          eventType: 'step_failed',
+          failedItems: ['bounty-claim'],
+          statusCode: result.status,
+          claimId: id,
+          message: `claim failed: ${JSON.stringify(result.data)}`,
+          content: `claim failed for bounty ${id}`,
+          commandSummary: [`mac-aicheck agent bounty-claim ${id}`],
+        });
+        process.stdout.write(`认领失败: ${JSON.stringify(result.data)}\n`);
+        return 1;
+      }
       const d = result.data as Record<string, unknown>;
       process.stdout.write(`✓ 认领成功 ${d.bounty_id} (lease ${d.lease_id})\n`);
       if (d.claimed_until) process.stdout.write(`  截止: ${d.claimed_until}\n`);
       if (d.slot_limit) process.stdout.write(`  并行槽位: ${d.slot_limit}\n`);
-    } catch (e: unknown) { process.stdout.write(`认领失败: ${(e as Error).message}\n`); return 1; }
+    } catch (e: unknown) {
+      await reportToolAutoEvent({
+        step: 'claim',
+        status: 'error',
+        eventType: 'step_failed',
+        failedItems: ['bounty-claim'],
+        claimId: id,
+        message: `claim failed: ${(e as Error).message}`,
+        content: `claim failed for bounty ${id}`,
+        commandSummary: [`mac-aicheck agent bounty-claim ${id}`],
+      });
+      process.stdout.write(`认领失败: ${(e as Error).message}\n`);
+      return 1;
+    }
     return 0;
   }
 
@@ -3421,6 +3767,7 @@ export const _testHelpers = {
   agentApiKeyHeaders,
   agentApiBase,
   apiBase,
+  allowPrivateApiBase,
   isBlockedHost,
   assertSafeRequestUrl,
   checkUpdatesWithNotify,
@@ -3435,6 +3782,11 @@ export const _testHelpers = {
   loadDraftOrganizerState,
   saveDraftOrganizerState,
   runDraftOrganizerOnce,
+  buildToolAutoReport,
+  resolveLocalVersion,
+  reportToolAutoEvent,
+  syncEvents,
+  flushToolAutoReports,
 };
 
 if (require.main === module) {
