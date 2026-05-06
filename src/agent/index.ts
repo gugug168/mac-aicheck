@@ -993,10 +993,19 @@ async function flushToolAutoReports() {
   const queue = loadToolFeedbackQueue();
   if (!queue.length) return { flushed: 0, remaining: 0 };
   const nowMs = Date.parse(nowIso());
+  const MAX_QUEUE_SIZE = 200;
+  const FLUSHED_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
+  const FAILED_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;
   let flushed = 0;
   const updated: Array<Record<string, unknown>> = [];
   for (const item of queue) {
-    if (item.state === 'flushed' || item.state === 'failed') {
+    if (item.state === 'flushed') {
+      if (item.flushedAt && (nowMs - Date.parse(String(item.flushedAt))) > FLUSHED_EXPIRY_MS) continue;
+      updated.push(item);
+      continue;
+    }
+    if (item.state === 'failed') {
+      if (item.lastAttemptAt && (nowMs - Date.parse(String(item.lastAttemptAt))) > FAILED_EXPIRY_MS) continue;
       updated.push(item);
       continue;
     }
@@ -1046,8 +1055,9 @@ async function flushToolAutoReports() {
       });
     }
   }
-  saveToolFeedbackQueue(updated);
-  return { flushed, remaining: updated.filter(item => item.state === 'queued').length };
+  const pruned = updated.length > MAX_QUEUE_SIZE ? updated.slice(-MAX_QUEUE_SIZE) : updated;
+  saveToolFeedbackQueue(pruned);
+  return { flushed, remaining: pruned.filter(item => item.state === 'queued').length };
 }
 
 async function requestJson(url: string, init: { method?: string; headers?: Record<string, string>; body?: unknown; timeoutMs?: number } = {}) {
