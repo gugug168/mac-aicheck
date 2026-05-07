@@ -11,7 +11,7 @@
 
 import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { homedir, hostname as osHostname, arch as osArch, release as osRelease } from 'os';
+import { homedir, hostname as osHostname, arch as osArch, release as osRelease, totalmem as osTotalMem } from 'os';
 import { execSync } from 'child_process';
 import type { ScanResult } from '../scanners/types';
 import type { ScoreResult } from '../scoring/calculator';
@@ -68,6 +68,24 @@ export interface SystemInfo {
   hostname: string;
 }
 
+export interface EnvFingerprint {
+  captured_at: string;
+  os_version: string;
+  architecture: string;
+  memory_gb: number;
+  node_version: string | null;
+  python_version: string | null;
+  git_version: string | null;
+  npm_registry: string | null;
+  proxy_config: {
+    http_proxy: string | null;
+    https_proxy: string | null;
+    all_proxy: string | null;
+    no_proxy: string | null;
+  };
+  key_env: Record<string, string | null>;
+}
+
 /** 上传Payload格式（与 WinAICheck 一致） */
 export interface AICOEVOPayload {
   timestamp: string;
@@ -87,6 +105,7 @@ export interface AICOEVOPayload {
     severity?: string | null;
   }>;
   systemInfo: SystemInfo;
+  env_fingerprint: EnvFingerprint;
 }
 
 // ===== Sanitizer (脱敏，与 WinAICheck 对齐) =====
@@ -144,6 +163,55 @@ function collectSystemInfo(): SystemInfo {
   } catch {}
 
   return { os: 'darwin', version, arch, hostname };
+}
+
+function execTrim(command: string): string | null {
+  try {
+    const output = execSync(command, {
+      timeout: 3000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).toString().trim();
+    return output || null;
+  } catch {
+    return null;
+  }
+}
+
+function redactEnvValue(value: string | undefined): string | null {
+  if (!value) return null;
+  const sanitized = sanitize(value);
+  return sanitized || null;
+}
+
+function collectEnvFingerprint(): EnvFingerprint {
+  const systemInfo = collectSystemInfo();
+  const pythonVersionRaw = execTrim('python3 --version') || execTrim('python --version');
+  const gitVersionRaw = execTrim('git --version');
+  const npmRegistryRaw = execTrim('npm config get registry');
+  return {
+    captured_at: new Date().toISOString(),
+    os_version: `${systemInfo.os} ${systemInfo.version}`.trim(),
+    architecture: systemInfo.arch,
+    memory_gb: Math.round(osTotalMem() / 1024 / 1024 / 1024),
+    node_version: process.version || null,
+    python_version: pythonVersionRaw ? pythonVersionRaw.replace(/^Python\s+/i, '') : null,
+    git_version: gitVersionRaw ? gitVersionRaw.replace(/^git version\s+/i, '') : null,
+    npm_registry: npmRegistryRaw,
+    proxy_config: {
+      http_proxy: redactEnvValue(process.env.HTTP_PROXY || process.env.http_proxy),
+      https_proxy: redactEnvValue(process.env.HTTPS_PROXY || process.env.https_proxy),
+      all_proxy: redactEnvValue(process.env.ALL_PROXY || process.env.all_proxy),
+      no_proxy: redactEnvValue(process.env.NO_PROXY || process.env.no_proxy),
+    },
+    key_env: {
+      shell: redactEnvValue(process.env.SHELL),
+      path: redactEnvValue(process.env.PATH),
+      term: redactEnvValue(process.env.TERM),
+      lang: redactEnvValue(process.env.LANG),
+      claude_code_version: redactEnvValue(process.env.CLAUDE_CODE_VERSION),
+      npm_config_registry: redactEnvValue(process.env.npm_config_registry),
+    },
+  };
 }
 
 // ===== HTTP Helper =====
@@ -215,6 +283,7 @@ export function createPayload(results: ScanResult[], score: ScoreResult): AICOEV
       severity: r.severity ?? null,
     })),
     systemInfo: collectSystemInfo(),
+    env_fingerprint: collectEnvFingerprint(),
   };
 }
 

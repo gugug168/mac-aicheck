@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { getFixers } from '../fixers/index';
+import type { ErrorSignal, EnvFingerprint } from './types';
 
 function getHome() { return process.env.HOME || homedir(); }
 function getBaseDir() { return join(getHome(), '.mac-aicheck'); }
@@ -650,6 +651,52 @@ function normalizeAgent(v: string): string { const a = String(v || 'custom').toL
 function classifyEvent(agent: string, msg: string): string { const t = msg.toLowerCase(); if (t.includes('mcp')) return 'mcp_error'; if (t.includes('config') || t.includes('json')) return 'agent_config'; if (t.includes('traceback') || t.includes('syntaxerror') || t.includes('typeerror')) return 'coding_error_summary'; return agent === 'custom' ? 'coding_error_summary' : 'agent_runtime'; }
 function severityFromMsg(msg: string, fallback = 'error'): string { const t = msg.toLowerCase(); return t.includes('warn') ? 'warn' : t.includes('info') ? 'info' : fallback; }
 
+function extractErrorSignals(msg: string): ErrorSignal[] {
+  const t = String(msg || '').toLowerCase();
+  const signals: ErrorSignal[] = [];
+  if (/econnrefused|connection refused/i.test(t)) signals.push('network_connection_refused');
+  if (/etimedout|timed?\s*out|timeout/i.test(t)) signals.push('network_timeout');
+  if (/sigkill|sigterm|killed|terminated/i.test(t)) signals.push('process_terminated');
+  if (/max.?token|context.?overflow|context.?window|token.?limit/i.test(t)) signals.push('context_overflow');
+  if (/rate.?limit|429|too many requests/i.test(t)) signals.push('rate_limited');
+  if (/eacces|permission denied|operation not permitted/i.test(t)) signals.push('permission_denied');
+  if (/command not found|enoent|not found/i.test(t)) signals.push('command_not_found');
+  if (/mcp.?server|mcp.?error/i.test(t)) signals.push('mcp_server_error');
+  if (/fatal:|git\s+(clone|pull|push|merge|rebase|checkout)/i.test(msg) && /fatal|error|conflict/i.test(t)) signals.push('git_error');
+  if (/traceback|python|syntaxerror|typeerror|importerror|modulenotfound/i.test(t)) signals.push('python_error');
+  if (/npm\s+err|node_modules|package\.json/i.test(t)) signals.push('npm_error');
+  if (signals.length === 0 && (t.includes('error') || t.includes('fail') || t.includes('fatal'))) signals.push('unknown_error');
+  return [...new Set(signals)];
+}
+
+function collectEnvFingerprint(): EnvFingerprint {
+  let pythonVersion: string | null = null;
+  let gitVersion: string | null = null;
+  let npmRegistry: string | null = null;
+  try { pythonVersion = execFileSync('python3', ['--version'], { encoding: 'utf-8', timeout: 3000 }).trim().replace(/^python\s+/i, ''); } catch {}
+  try { gitVersion = execFileSync('git', ['--version'], { encoding: 'utf-8', timeout: 3000 }).trim().replace(/^git version\s+/i, ''); } catch {}
+  try { npmRegistry = execFileSync('npm', ['config', 'get', 'registry'], { encoding: 'utf-8', timeout: 3000 }).trim(); } catch {}
+  let totalMemoryGB = 0;
+  try {
+    const bytes = parseInt(execFileSync('sysctl', ['-n', 'hw.memsize'], { encoding: 'utf-8', timeout: 3000 }).trim(), 10);
+    if (!isNaN(bytes)) totalMemoryGB = Math.round(bytes / 1024 ** 3);
+  } catch {}
+  return {
+    os: `${process.platform} ${process.arch}`,
+    arch: process.arch,
+    totalMemoryGB,
+    nodeVersion: process.version,
+    pythonVersion,
+    gitVersion,
+    npmRegistry: npmRegistry || null,
+    shellProxy: process.env.SHELL_PROXY || null,
+    httpProxy: process.env.HTTP_PROXY || process.env.http_proxy || null,
+    httpsProxy: process.env.HTTPS_PROXY || process.env.https_proxy || null,
+    claudeVersion: process.env.CLAUDE_CODE_VERSION || null,
+    cwdHash: shortHash(process.cwd()),
+  };
+}
+
 function computeAgentSuffix(agent: string): string {
   return agent === 'claude-code' ? '_cc' : agent === 'openclaw' ? '_oc' : '';
 }
@@ -687,6 +734,8 @@ function createEvent(input: { agent?: string; message?: string; eventType?: stri
     sanitizedMessage,
     severity: input.severity || severityFromMsg(sanitizedMessage),
     localContext: { os: `${process.platform} ${process.release.name || process.platform}`, shell: process.env.SHELL || '', node: process.version, cwdHash: shortHash(process.cwd()) },
+    error_signals: extractErrorSignals(sanitizedMessage),
+    env_fingerprint: collectEnvFingerprint(),
     syncStatus: 'pending',
   };
 }
