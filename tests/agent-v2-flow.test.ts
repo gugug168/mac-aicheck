@@ -642,12 +642,12 @@ describe('agent v2 flow', () => {
     const home = seedConfig({ upgradeNotify: true, autoUpgrade: false });
     const cachePath = path.join(home, '.mac-aicheck', 'version-cache.json');
     writeFileSync(cachePath, JSON.stringify({
-      current: 'node:20.0.0|claude:1.0.0|openclaw:0.9.0',
-      latest: 'claude-code: 1.0.0 → 1.1.0',
+      current: '1.0.0',
+      latest: 'mac-aicheck: 1.0.0 → 1.1.0',
       repo: '',
       lastCheck: new Date().toISOString(),
       hasUpdate: true,
-      updates: [{ name: 'claude-code', current: '1.0.0', latest: '1.1.0' }],
+      updates: [{ name: 'mac-aicheck', current: '1.0.0', latest: '1.1.0' }],
     }), 'utf8');
 
     (globalThis as { __MAC_AICHECK_TEST_DNS_LOOKUP__?: (hostname: string) => Promise<Array<{ address: string; family: number }>> }).__MAC_AICHECK_TEST_DNS_LOOKUP__ = async (hostname: string) => {
@@ -667,15 +667,15 @@ describe('agent v2 flow', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[0]).toBe('https://aicoevo.net/api/v1/events/tool-version');
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body || 'null'))).toEqual({
-      tool: 'claude-code',
+      tool: 'mac-aicheck',
       currentVersion: '1.0.0',
       latestVersion: '1.1.0',
       eventType: 'version_update_available',
     });
-    expect(output.match(/发现新版本/g)).toHaveLength(1);
+    expect(output).toContain('mac-aicheck 新版本可用');
 
     const cache = JSON.parse(readFileSync(cachePath, 'utf8')) as { notifiedSignature?: string };
-    expect(cache.notifiedSignature).toBe('claude-code:1.0.0->1.1.0');
+    expect(cache.notifiedSignature).toBe('mac-aicheck:1.0.0->1.1.0');
   });
 
   it('falls back to local VERSION file when npm_package_version is missing', () => {
@@ -768,7 +768,7 @@ describe('worker-on (TASK-091)', () => {
     expect(cfg.workerEnabled).toBe(true);
   });
 
-  it('upgradeNotify defaults to true and autoUpgrade defaults to false in config', () => {
+  it('upgradeNotify defaults to true and autoUpgrade defaults to true in config', () => {
     const home = createTempHome();
     homes.push(home);
     const configDir = path.join(home, '.mac-aicheck');
@@ -785,7 +785,7 @@ describe('worker-on (TASK-091)', () => {
 
     const cfg = _testHelpers.loadConfig();
     expect(cfg.upgradeNotify).toBe(true);
-    expect(cfg.autoUpgrade).toBe(false);
+    expect(cfg.autoUpgrade).toBe(true);
   });
 
   it('config set/get persists runtime boolean settings', async () => {
