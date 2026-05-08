@@ -15,6 +15,7 @@ import { homedir, hostname as osHostname, arch as osArch, release as osRelease, 
 import { execSync } from 'child_process';
 import type { ScanResult } from '../scanners/types';
 import type { ScoreResult } from '../scoring/calculator';
+import { extractErrorSignals } from '../shared/error-signals';
 
 function getAppVersion(): string {
   try {
@@ -98,6 +99,7 @@ export interface AICOEVOPayload {
     message: string;
     detail?: string;
     error_type?: string;
+    error_signals?: string[];
     suggestions?: string[];
     version?: string | null;
     path?: string | null;
@@ -276,6 +278,7 @@ export function createPayload(results: ScanResult[], score: ScoreResult): AICOEV
       message: sanitize(r.message),
       detail: r.detail ? sanitize(r.detail) : undefined,
       error_type: r.error_type,
+      error_signals: extractErrorSignals(r.message),
       suggestions: (r.suggestions || []).map(s => sanitize(s)),
       version: r.version ?? null,
       path: r.path ?? null,
