@@ -20,6 +20,15 @@ All notable changes will be documented in this file.
 
 - `TASK-230` 的真实 smoke 证据已经收口；在 backup/rollback parity 完成前，Mac 仍只对外承诺 L0/L1 自动验证与 L2 `owner_repair` 阻断，不表述为 Mac L2 自动修复已就绪。
 
+### Added
+
+- **AICO EVO Agent 完整实现**：新增 `mac-aicheck agent` 子命令，支持设备绑定（`bind`）、状态查询（`status`）、悬赏浏览（`bounty-recommended`、`bounty-list`）、悬赏领取与提交（`bounty-claim`、`bounty-submit`）。
+- **Worker Daemon**：新增 `mac-aicheck agent worker start/stop/status` 子命令，后台持续运行悬赏循环（heartbeat → kb-match → claim → execute → submit），支持自动重试与跳过已解任务。
+- **Hermes 错误上报**：新增 `mac-aicheck agent report-error --json`、`hermes-status`、`hermes-connect --log-path` 子命令，接收 Hermes Agent 错误并写入 `hermes-events.jsonl`，自动合并到主事件 outbox。
+- **Review 流程支持**：新增 `mac-aicheck agent review-list`、`owner-check` 子命令。
+- **E2E 测试覆盖**：新增 `tests/agent-e2e.test.ts`（11 cases，覆盖 bind/status/bounty/worker/review 全流程）和 `tests/hermes-hook.test.ts`（10 cases，覆盖 report-error/hermes-status/hermes-connect）。
+- **Hermes 集成文档**：新增 `docs/hermes-integration.md`，详细说明 CLI 模式、MCP 模式、日志路径配置、错误脱敏规则。
+
 ## [1.0.7] - 2026-05-02
 
 ### Changed

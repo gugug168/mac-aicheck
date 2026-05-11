@@ -3910,6 +3910,158 @@ export async function main(argv: string[]) {
     return 0;
   }
 
+  // ── Hermes Error Report ────────────────────────────────────────────────
+  if (command === 'report-error') {
+    const jsonArg = String(args.json || '');
+    let rawInput = '';
+    if (jsonArg === '-') {
+      // Read from stdin
+      const { createInterface } = await import('readline');
+      const rl = createInterface({ input: process.stdin });
+      for await (const line of rl) { rawInput += line; }
+    } else if (jsonArg) {
+      rawInput = jsonArg;
+    } else {
+      process.stdout.write('用法: mac-aicheck agent report-error --json \'{"type":"hermes-error","kind":"auth_failure","message":"..."}\'\n');
+      process.stdout.write('   或: echo \'{"type":"hermes-error",...}\' | mac-aicheck agent report-error --json -\n');
+      return 1;
+    }
+
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(rawInput);
+    } catch {
+      process.stderr.write(`report-error: invalid JSON\n`);
+      return 1;
+    }
+
+    const hermesOutboxPath = join(getBaseDir(), 'outbox', 'hermes-events.jsonl');
+    ensureDir(dirname(hermesOutboxPath));
+    const event = {
+      ...parsed,
+      receivedAt: new Date().toISOString(),
+      source: 'hermes',
+    };
+    appendFileSync(hermesOutboxPath, JSON.stringify(event) + '\n');
+
+    // Silently merge into main events outbox
+    const mainOutboxPath = join(getBaseDir(), 'outbox', 'events.jsonl');
+    const sanitized = trimForCapture(rawInput);
+    const fingerprint = String(parsed.fingerprint || shortHash(`hermes:${parsed.kind || 'unknown'}:${parsed.message || ''}`));
+    const mainEvent = {
+      eventId: `hermes_${Date.now()}`,
+      fingerprint,
+      source: 'hermes',
+      agent: String(parsed.agent || 'hermes'),
+      message: sanitized,
+      severity: String(parsed.severity || 'error'),
+      eventType: String(parsed.type || 'hermes_error'),
+      createdAt: String(parsed.timestamp || new Date().toISOString()),
+      syncStatus: 'pending',
+      syncAttempts: 0,
+      lastSyncAt: null,
+      lastSyncError: null,
+    };
+    ensureDir(dirname(mainOutboxPath));
+    appendFileSync(mainOutboxPath, JSON.stringify(mainEvent) + '\n');
+
+    process.stdout.write(JSON.stringify({ ok: true, eventId: mainEvent.eventId, writtenTo: hermesOutboxPath }) + '\n');
+    return 0;
+  }
+
+  // ── Hermes Status ──────────────────────────────────────────────────────
+  if (command === 'hermes-status') {
+    const cfg = loadConfig();
+    const hermesLogPath = (cfg as Record<string, unknown>).hermesLogPath || join(getHome(), '.hermes', 'logs');
+    const hermesOutboxPath = join(getBaseDir(), 'outbox', 'hermes-events.jsonl');
+    const mainOutboxPath = join(getBaseDir(), 'outbox', 'events.jsonl');
+
+    let hermesErrorCount = 0;
+    if (existsSync(hermesOutboxPath)) {
+      const lines = readFileSync(hermesOutboxPath, 'utf8').split(/\r?\n/).filter(Boolean);
+      hermesErrorCount = lines.length;
+    }
+
+    let mainErrorCount = 0;
+    if (existsSync(mainOutboxPath)) {
+      const lines = readFileSync(mainOutboxPath, 'utf8').split(/\r?\n/).filter(Boolean);
+      mainErrorCount = lines.filter((l: string) => {
+        try { const e = JSON.parse(l); return e.source === 'hermes'; } catch { return false; }
+      }).length;
+    }
+
+    process.stdout.write(JSON.stringify({
+      hermesConnected: !!(cfg as Record<string, unknown>).hermesLogPath,
+      hermesLogPath,
+      errorCount: hermesErrorCount,
+      mergedErrorCount: mainErrorCount,
+      lastErrorAt: hermesErrorCount > 0
+        ? (() => { try { const lines = readFileSync(hermesOutboxPath, 'utf8').split(/\r?\n/).filter(Boolean); if (!lines.length) return null; const last = JSON.parse(lines[lines.length - 1]); return last.receivedAt || null; } catch { return null; } })()
+        : null,
+    }, null, 2) + '\n');
+    return 0;
+  }
+
+  // ── Hermes Connect ─────────────────────────────────────────────────────
+  if (command === 'hermes-connect') {
+    const logPath = String(args.logPath || '').trim();
+    const cfg = loadConfig();
+    if (!logPath) {
+      process.stdout.write(`当前 Hermes 日志路径: ${(cfg as Record<string, unknown>).hermesLogPath || join(getHome(), '.hermes', 'logs')}\n`);
+      process.stdout.write('用法: mac-aicheck agent hermes-connect --log-path ~/.hermes/logs\n');
+      return 0;
+    }
+    (cfg as Record<string, unknown>).hermesLogPath = logPath;
+    saveConfig(cfg);
+    process.stdout.write(`Hermes 日志路径已设置为: ${logPath}\n`);
+    return 0;
+  }
+
+  // ── MCP Server ──────────────────────────────────────────────────────────
+  if (command === 'mcp') {
+    const [mcpSub] = rest;
+    if (mcpSub === 'serve') {
+      process.stdout.write('MCP 服务器模式: mac-aicheck agent mcp serve\n');
+      process.stdout.write('提供工具:\n');
+      process.stdout.write('  report_hermes_error(json) — 报告 Hermes 错误（等同于 agent report-error）\n');
+      process.stdout.write('  get_hermes_status()         — 获取 Hermes 连接状态\n');
+      process.stdout.write('注意: MCP 服务器模式需要实现 JSON-RPC 协议。\n');
+      process.stdout.write('当前版本请使用 CLI 模式: mac-aicheck agent report-error --json \'...\'\n');
+      return 0;
+    }
+    process.stdout.write('用法: mac-aicheck agent mcp serve\n');
+    return 1;
+  }
+
+  // ── Draft Organizer Status (shortcut) ─────────────────────────────────
+  if (command === 'draft-organizer') {
+    const [subcommand] = rest;
+    const cfg = loadConfig();
+    if (!subcommand || subcommand === 'status') {
+      process.stdout.write(JSON.stringify({
+        ok: true,
+        enabled: cfg.draftOrganizerEnabled,
+        mode: cfg.draftOrganizerMode,
+        triggerMode: cfg.draftOrganizerTriggerMode,
+        scheduleDays: cfg.draftOrganizerScheduleDays,
+        profileId: cfg.profileId || null,
+      }, null, 2) + '\n');
+      return 0;
+    }
+    if (subcommand === 'enable') { cfg.draftOrganizerEnabled = true; saveConfig(cfg); process.stdout.write('draft organizer enabled\n'); return 0; }
+    if (subcommand === 'disable') { cfg.draftOrganizerEnabled = false; saveConfig(cfg); process.stdout.write('draft organizer disabled\n'); return 0; }
+    if (subcommand === 'run-once') {
+      // Delegate to existing runDraftOrganizerOnce
+      try {
+        const result = await runDraftOrganizerOnce();
+        process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+        return 0;
+      } catch (e: unknown) { process.stderr.write(`draft-organizer run-once failed: ${(e as Error).message}\n`); return 1; }
+    }
+    process.stdout.write('用法: draft-organizer status|run-once|enable|disable\n');
+    return 1;
+  }
+
   throw new Error(`未知 agent 命令: ${command}`);
 }
 
