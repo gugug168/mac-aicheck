@@ -2828,6 +2828,7 @@ export async function main(argv: string[]) {
   mac-aicheck agent draft-organizer status|run-once|enable|disable
   mac-aicheck agent advice --format json|markdown
   mac-aicheck agent diagnose          分析失败模式，类比 Evolver 信号诊断
+  mac-aicheck agent status                          查看绑定状态（connected/profileId/deviceId）
   mac-aicheck agent bind [--agent claude-code|openclaw]  绑定设备（自动打开浏览器确认）
   mac-aicheck agent review-list
   mac-aicheck agent review-submit <lease_id> --result success|partial|failed
@@ -3882,6 +3883,30 @@ export async function main(argv: string[]) {
       process.stdout.write(`  社区分数: ${data.community_score ?? '-'}\n`);
       process.stdout.write(`  总分: ${data.total_score ?? '-'} / ${data.threshold ?? 70}\n`);
     } catch (e: unknown) { process.stdout.write(`提交复现验证失败: ${(e as Error).message}\n`); return 1; }
+    return 0;
+  }
+
+  // ── Agent Status ──
+  if (command === 'status') {
+    const cfg = loadConfig();
+    const headers = agentApiKeyHeaders(cfg);
+    const connected = !!(headers);
+    const masked = maskConfigForOutput(cfg);
+    process.stdout.write(JSON.stringify({
+      connected,
+      profileId: cfg.profileId || null,
+      deviceId: cfg.deviceId || null,
+      agentType: cfg.agentType || null,
+      shareData: cfg.shareData || false,
+      autoSync: cfg.autoSync || false,
+      paused: cfg.paused || false,
+      workerEnabled: cfg.workerEnabled || false,
+      draftOrganizerEnabled: cfg.draftOrganizerEnabled || false,
+      lastConfirmedAt: cfg.confirmedAt || null,
+      // masked fields (authToken redacted)
+      hasAuthToken: !!cfg.authToken,
+      authTokenPrefix: cfg.authToken ? cfg.authToken.slice(0, 4) : null,
+    }, null, 2) + '\n');
     return 0;
   }
 
