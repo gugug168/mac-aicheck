@@ -52,6 +52,8 @@ function isInstalled(id: string): boolean {
     case 'cute-claude-hooks': return cmdExists('cute-claude-hooks-install');
     case 'gh-copilot':     return ghCopilotDownloaded();
     case 'xcode-clt':      return existsSync('/Library/Developer/CommandLineTools');
+    case 'hermes-agent':   return cmdExists('hermes');
+    case 'mmx-cli':        return cmdExists('mmx');
     default:               return false;
   }
 }
@@ -328,6 +330,79 @@ const xcodeCltInstaller: Installer = {
   },
 };
 
+// ==================== Hermes Agent 安装器 ====================
+
+const hermesAgentInstaller: Installer = {
+  id: 'hermes-agent',
+  name: 'Hermes Agent',
+  description: 'NousResearch 开源 AI Agent 框架，支持多模型编排、工作流自动化、MCP 协议集成',
+  icon: '🧠',
+  needsAdmin: false,
+  cmd: 'npm install -g @nousresearch/hermes-agent --registry=https://registry.npmjs.org',
+  type: 'npm',
+  async run(onProgress): Promise<InstallResult> {
+    if (isInstalled('hermes-agent')) {
+      const v = execSync('hermes --version 2>/dev/null || hermes agent --version 2>/dev/null || echo "已安装"', { encoding: 'utf-8' }).trim();
+      onProgress({ type: 'done', success: true, message: `Hermes Agent 已安装: ${v}` });
+      return { success: true, message: `Hermes Agent 已安装: ${v}` };
+    }
+    if (!cmdExists('npm')) {
+      onProgress({ type: 'done', success: false, message: '请先安装 Node.js' });
+      return { success: false, message: '请先安装 Node.js' };
+    }
+    onProgress({ type: 'progress', step: '正在安装 Hermes Agent...', pct: 30 });
+    onProgress({ type: 'log', line: '$ npm install -g @nousresearch/hermes-agent --registry=https://registry.npmjs.org' });
+    const code = await npmInstall('@nousresearch/hermes-agent', onProgress, 'https://registry.npmjs.org');
+    const success = code === 0 && isInstalled('hermes-agent');
+    onProgress({ type: 'done', success, message: success ? 'Hermes Agent 安装成功！运行 hermes 命令启动。' : '安装失败，请检查 npm 和网络' });
+    return { success, message: success ? '安装成功' : `安装失败 (${code})` };
+  },
+};
+
+function isHermesInstalled(): boolean {
+  try {
+    execSync('command -v hermes 2>/dev/null || test -f ~/.npm/bin/hermes 2>/dev/null || echo "not found"', { stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ==================== mmx-cli (MiniMax MAX) 安装器 ====================
+
+const mmxInstaller: Installer = {
+  id: 'mmx-cli',
+  name: 'MiniMax MAX CLI',
+  description: 'MiniMax MAX 平台 CLI 工具，支持图片生成、视频生成、语音合成、音乐生成、声音克隆（额度：图片/4500周，视频/14周，语音/11000周）',
+  icon: '🎬',
+  needsAdmin: false,
+  cmd: 'npm install -g mmx-cli --registry=https://registry.npmjs.org',
+  type: 'npm',
+  async run(onProgress): Promise<InstallResult> {
+    if (isInstalled('mmx-cli')) {
+      const v = execSync('mmx --version 2>/dev/null || echo "已安装"', { encoding: 'utf-8' }).trim();
+      onProgress({ type: 'done', success: true, message: `MiniMax MAX CLI 已安装: ${v}` });
+      return { success: true, message: `MiniMax MAX CLI 已安装: ${v}` };
+    }
+    if (!cmdExists('npm')) {
+      onProgress({ type: 'done', success: false, message: '请先安装 Node.js' });
+      return { success: false, message: '请先安装 Node.js' };
+    }
+    onProgress({ type: 'progress', step: '正在安装 MiniMax MAX CLI...', pct: 30 });
+    onProgress({ type: 'log', line: '$ npm install -g mmx-cli --registry=https://registry.npmjs.org' });
+    const code = await npmInstall('mmx-cli', onProgress, 'https://registry.npmjs.org');
+    const success = code === 0 && isInstalled('mmx-cli');
+    if (success) {
+      onProgress({ type: 'progress', step: '配置认证...', pct: 80 });
+      onProgress({ type: 'log', line: '认证: mmx auth <token>（CN 区域: api.minimaxi.com）' });
+      onProgress({ type: 'done', success: true, message: 'MiniMax MAX CLI 安装成功！运行 mmx auth <token> 认证。\n额度：图片298/4500周，视频0/14周，语音0/11000周，音乐0/100周' });
+    } else {
+      onProgress({ type: 'done', success: false, message: '安装失败，请检查 npm 和网络\n官网: https://platform.minimax.io/docs' });
+    }
+    return { success, message: success ? '安装成功' : `安装失败 (${code})` };
+  },
+};
+
 // ==================== 注册表 ====================
 
 const ALL_INSTALLERS: Installer[] = [
@@ -339,6 +414,8 @@ const ALL_INSTALLERS: Installer[] = [
   cuteClaudeHooksInstaller,
   ghCopilotInstaller,
   xcodeCltInstaller,
+  hermesAgentInstaller,
+  mmxInstaller,
 ];
 
 export function getInstallers(): Installer[] {

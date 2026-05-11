@@ -2434,11 +2434,28 @@ function uninstallHook(args: Record<string, unknown>) {
   return { profiles };
 }
 
+// Validate hook script JS syntax by running node --check
+function validateHookScript(filePath: string): { valid: boolean; error?: string } {
+  try {
+    const result = execFileSync('node', ['--check', filePath], { encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
+    return { valid: true };
+  } catch (e) {
+    const err = e as { status?: number; message?: string };
+    // exit code 1 = syntax error, exit code 2 = parse error
+    if (err.status === 1 || err.status === 2) {
+      return { valid: false, error: err.message || '语法错误' };
+    }
+    // Other errors (e.g. file not found) are not syntax errors
+    return { valid: true };
+  }
+}
+
 // Install SessionStart and PostToolUse hooks to ~/.claude/settings.json
-function installSettingsHook(): { hookType: 'settings'; hooks: string[] } {
+function installSettingsHook(): { hookType: 'settings'; hooks: string[]; warnings: string[] } {
   const settingsFile = join(getHome(), '.claude', 'settings.json');
   const hooksDir = join(getHome(), '.claude', 'hooks');
   ensureDir(hooksDir);
+  const warnings: string[] = [];
 
   // Resolve hook source files from hooks-src/ directory.
   const projectRoot = resolveProjectRootForHooks();
@@ -2462,6 +2479,16 @@ function installSettingsHook(): { hookType: 'settings'; hooks: string[] } {
     }
   } catch (e) {
     throw new Error(`无法复制 hook 脚本: ${e}`);
+  }
+
+  // Validate copied scripts have valid JS syntax
+  const sessionValidation = validateHookScript(sessionHookDest);
+  if (!sessionValidation.valid) {
+    throw new Error(`SessionStart hook 语法错误: ${sessionValidation.error}`);
+  }
+  const postToolValidation = validateHookScript(postToolHookDest);
+  if (!postToolValidation.valid) {
+    throw new Error(`PostToolUse hook 语法错误: ${postToolValidation.error}`);
   }
 
   // Read existing settings
@@ -2524,6 +2551,7 @@ function installSettingsHook(): { hookType: 'settings'; hooks: string[] } {
   return {
     hookType: 'settings',
     hooks: ['SessionStart (版本检查)', 'PostToolUse (错误捕获)'],
+    warnings,
   };
 }
 
@@ -2789,6 +2817,7 @@ export async function main(argv: string[]) {
   mac-aicheck agent enable --target claude-code|openclaw|all  一键启用监控（新方式，推荐）
   mac-aicheck agent migrate                迁移到 SessionStart Hook（新方式，推荐）
   mac-aicheck agent install-hook --target claude-code|openclaw|all
+  mac-aicheck agent hook-status                 查看 Hook 安装状态
   mac-aicheck agent uninstall-hook --target all
   mac-aicheck agent capture --agent <name> --message <text>
   mac-aicheck agent sync
@@ -2894,7 +2923,44 @@ export async function main(argv: string[]) {
     process.stdout.write('Worker 互助循环已重新启用。运行 worker start 启动后台循环。\n');
     return 0;
   }
-  if (command === 'install-hook') { const r = installHook(args); process.stdout.write(`已安装 Hook: ${r.agents.map((a: { target: string }) => a.target).join(', ')}\n`); return 0; }
+  if (command === 'hook-status') {
+    const hookStatus = claudeSettingsHookStatus();
+    process.stdout.write('Hook 安装状态\n\n');
+    process.stdout.write(`settings.json:  ${hookStatus.settings_file}\n`);
+    process.stdout.write(`hooks 目录:    ${join(getHome(), '.claude', 'hooks')}\n\n`);
+    process.stdout.write(`SessionStart hook:\n`);
+    process.stdout.write(`  脚本文件: ${hookStatus.session_hook_file_present ? '✓ 存在' : '✗ 缺失'}\n`);
+    process.stdout.write(`  settings 注册: ${hookStatus.session_hook_configured ? '✓ 已注册' : '✗ 未注册'}\n\n`);
+    process.stdout.write(`PostToolUse hook:\n`);
+    process.stdout.write(`  脚本文件: ${hookStatus.post_tool_hook_file_present ? '✓ 存在' : '✗ 缺失'}\n`);
+    process.stdout.write(`  settings 注册: ${hookStatus.post_tool_hook_configured ? '✓ 已注册' : '✗ 未注册'}\n`);
+    const allGood = hookStatus.session_hook_file_present && hookStatus.session_hook_configured
+      && hookStatus.post_tool_hook_file_present && hookStatus.post_tool_hook_configured;
+    process.stdout.write(`\n${allGood ? '✓' : '⚠'} PostTool Hook 系统: ${allGood ? '完全就绪' : '未完全配置 (运行 `mac-aicheck agent install-hook --target claude-code` 修复)'}\n`);
+    return 0;
+  }
+  if (command === 'install-hook') {
+    // Shell-based hook (for all targets)
+    const shellResult = installHook(args);
+    const outputs: string[] = shellResult.agents.map((a: { target: string }) => `shell: ${a.target}`);
+
+    // Claude Code settings.json hook (if targeting claude-code)
+    const target = String(args.target || 'all');
+    if (targetIncludesClaude(target)) {
+      try {
+        const settingsResult = installSettingsHook();
+        outputs.push(...settingsResult.hooks.map(h => `Claude Code settings: ${h}`));
+        if (settingsResult.warnings.length > 0) {
+          for (const w of settingsResult.warnings) process.stderr.write(`警告: ${w}\n`);
+        }
+      } catch (e) {
+        process.stderr.write(`Claude Code settings hook 安装失败: ${(e as Error).message}\n`);
+      }
+    }
+
+    process.stdout.write(`已安装 Hook: ${outputs.join(', ')}\n`);
+    return 0;
+  }
   if (command === 'install-local-agent') { const r = installLocalAgent(); process.stdout.write(JSON.stringify({ ok: true, ...r }) + '\n'); return 0; }
   if (command === 'enable') {
     // 一键安装：runner + 针对目标 Agent 的 hook + 启用同步

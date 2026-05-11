@@ -123,7 +123,7 @@ const SENSITIVE_PATTERNS = [
   { regex: /(?:OPENAI|ANTHROPIC|OPENROUTER|OPENCLAW|DASHSCOPE|ZHIPU|MOONSHOT|GEMINI)[\w-]*(?:KEY|TOKEN)?\s*=\s*[^\s]+/gi, replacement: '<SECRET_ENV>' },
 ];
 
-function sanitize(message: string): string {
+export function sanitize(message: string): string {
   let result = String(message || '');
   for (const { regex, replacement } of SENSITIVE_PATTERNS) {
     result = result.replace(regex, replacement);
