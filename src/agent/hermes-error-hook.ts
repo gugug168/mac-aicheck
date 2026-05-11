@@ -239,6 +239,7 @@ export function extractHermesSignal(input: HermesErrorInput): HermesSignal | nul
 export function extractAllSignals(input: HermesErrorInput): HermesSignal[] {
   const rawText = [
     input.message || '',
+    input.kind || '',
     input.stack || '',
     input.step || '',
   ].join('\n');

@@ -66,6 +66,7 @@ describe('agent e2e — AICO EVO integration', () => {
     stdout.mockRestore();
 
     expect(code).toBe(0);
+    expect(output).not.toBe('');
     expect(JSON.parse(output).connected).toBe(false);
   });
 
@@ -80,6 +81,7 @@ describe('agent e2e — AICO EVO integration', () => {
     stdout.mockRestore();
 
     expect(code).toBe(0);
+    expect(output).not.toBe('');
     expect(JSON.parse(output).connected).toBe(true);
     expect(JSON.parse(output).profileId).toBe('prof_test123');
   });
@@ -155,6 +157,7 @@ describe('agent e2e — AICO EVO integration', () => {
     const output = stdout.mock.calls.map(c => String(c[0])).join('');
     stdout.mockRestore();
 
+    expect(output).not.toBe('');
     const r = JSON.parse(output);
     expect(code).toBe(0);
     expect(r.ok).toBe(true);
@@ -172,6 +175,7 @@ describe('agent e2e — AICO EVO integration', () => {
     const output = stdout.mock.calls.map(c => String(c[0])).join('');
     stdout.mockRestore();
 
+    expect(output).not.toBe('');
     const r = JSON.parse(output);
     expect(code).toBe(0);
     expect(r.automation.api_key_bound).toBe(true);
