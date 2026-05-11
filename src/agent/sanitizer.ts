@@ -87,5 +87,8 @@ export function containsSensitive(text: string): boolean {
     /\b[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\.[A-Z]{2,}\b/,
     /https?:\/\/[^@\s]+:[^@\s]+@/,
   ];
-  return patterns.some(p => p.test(text));
+  return patterns.some(p => {
+    p.lastIndex = 0;
+    return p.test(text);
+  });
 }
