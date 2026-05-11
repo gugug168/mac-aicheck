@@ -14,6 +14,7 @@ export interface JsonReport {
   score: ScoreResult;
   results: ScanResult[];
   fixerResults?: FixerExecutionResult[];
+  executionMode?: 'sequential' | 'parallel';
   metadata: ReportMetadata;
 }
 
@@ -48,6 +49,12 @@ export interface ReportMetadata {
   generator: string;
 }
 
+export interface GenerateJsonOptions {
+  sanitize?: boolean;
+  fixerResults?: FixerExecutionResult[];
+  executionMode?: 'sequential' | 'parallel';
+}
+
 /**
  * 生成 JSON 报告
  * @param results 扫描结果
@@ -57,9 +64,9 @@ export interface ReportMetadata {
 export function generateJsonReport(
   results: ScanResult[],
   score: ScoreResult,
-  options: { sanitize?: boolean } = {},
+  options: GenerateJsonOptions = {},
 ): string {
-  const { sanitize: shouldSanitize = true } = options;
+  const { sanitize: shouldSanitize = true, fixerResults, executionMode } = options;
   const version = getPackageVersion();
 
   const sanitizedResults: SanitizedScanResult[] = results.map(r => {
@@ -92,6 +99,13 @@ export function generateJsonReport(
       generator: 'mac-aicheck',
     },
   };
+
+  if (fixerResults !== undefined) {
+    (report as any).fixerResults = fixerResults;
+  }
+  if (executionMode !== undefined) {
+    (report as any).executionMode = executionMode;
+  }
 
   return JSON.stringify(report, null, 2);
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { scanAll } from './scanners/index';
-import { fixAll, getFixerById, getFixerForScanResult } from './fixers/index';
+import { fixAll, getFixerById, getFixerForScanResult, type FixerExecutionResult } from './fixers/index';
 import { getFixRiskPresentation, sortIssuesByPriority } from './fixers/presentation';
 import { calculateScore } from './scoring/calculator';
 import { createPayload, saveLocal, stashData, buildClaimUrl, submitFeedback } from './api/aicoevo-client';
@@ -728,7 +728,7 @@ if (args.includes('--serve') || args.includes('--web')) {
 } else if (args.includes('--json')) {
   runScan(false, upload).then(r => { if (r) console.log(JSON.stringify(r, null, 2)); }).catch(console.error);
 } else if (args.includes('--help')) {
-  console.log('MacAICheck - AI Dev Environment Checker\nUsage:\n  mac-aicheck           Run diagnosis (local only)\n  mac-aicheck --upload  Run diagnosis and upload for claim link\n  mac-aicheck upload    Upload-enabled diagnosis shortcut\n  mac-aicheck --serve   Start Web UI\n  mac-aicheck --json    JSON output (score + results)\n  mac-aicheck report    生成结构化报告（mac-aicheck report --format json --scan）\n  mac-aicheck agent     Agent Lite commands (enable/install-hook/sync, etc.)');
+  console.log('MacAICheck - AI Dev Environment Checker\nUsage:\n  mac-aicheck           Run diagnosis (local only)\n  mac-aicheck --upload  Run diagnosis and upload for claim link\n  mac-aicheck upload    Upload-enabled diagnosis shortcut\n  mac-aicheck --serve   Start Web UI\n  mac-aicheck --json    JSON output (score + results)\n  mac-aicheck report    生成结构化报告（mac-aicheck report --format json --scan [--fix [--dry-run]]）\n  mac-aicheck agent     Agent Lite commands (enable/install-hook/sync, etc.)');
 } else if (args.includes('agent')) {
   // Agent Lite CLI 子命令
   const agentArgs = args.slice(args.indexOf('agent') + 1);
@@ -738,7 +738,7 @@ if (args.includes('--serve') || args.includes('--web')) {
   proc.on('close', (code: number | null) => { process.exitCode = code ?? 0; });
 } else if (args.includes('report')) {
   // 生成结构化报告（JSON / HTML）
-  // mac-aicheck report [--format json|html] [--output <file>] [--scan]
+  // mac-aicheck report [--format json|html] [--output <file>] [--scan] [--fix [--dry-run]]
   const reportFormat = args.includes('--format') && args[args.indexOf('--format') + 1] !== undefined
     ? args[args.indexOf('--format') + 1]
     : 'json';
@@ -746,15 +746,24 @@ if (args.includes('--serve') || args.includes('--web')) {
     ? args[args.indexOf('--output') + 1]
     : null;
   const doScan = args.includes('--scan');
+  const doFix = args.includes('--fix');
+  const dryRun = args.includes('--dry-run');
 
   if (reportFormat !== 'json' && reportFormat !== 'html') {
-    console.error(`[--] 不支持的报告格式: ${reportFormat}，支持的格式: json, html`);
+    console.error(`[-] 不支持的报告格式: ${reportFormat}，支持的格式: json, html`);
+    process.exit(1);
+  }
+
+  if (doFix && !doScan) {
+    console.error('[-] --fix 需要配合 --scan 使用');
     process.exit(1);
   }
 
   (async () => {
     let scanResults: Awaited<ReturnType<typeof scanAll>> | null = null;
     let scoreResult: ReturnType<typeof calculateScore> | null = null;
+    let fixerResults: FixerExecutionResult[] | undefined;
+    let fixExecutionMode: 'sequential' | 'parallel' | undefined;
 
     if (doScan) {
       // 运行新的扫描
@@ -777,10 +786,27 @@ if (args.includes('--serve') || args.includes('--web')) {
       process.exit(1);
     }
 
+    // 可选：同时运行 fixer 并将结果纳入报告
+    if (doFix && scanResults && scoreResult) {
+      console.log('[*] 正在运行自动修复...\n');
+      const fixResult = await fixAll({ dryRun });
+      fixerResults = fixResult.results;
+      fixExecutionMode = fixResult.executionMode;
+      // 重新计算分数（修复后）
+      if (!dryRun) {
+        scanResults = await scanAll();
+        scoreResult = calculateScore(scanResults);
+      }
+      console.log(`[*] 修复完成: ${fixResult.succeeded} 成功 / ${fixResult.failed} 失败\n`);
+    }
+
     if (!scanResults || !scoreResult) { console.error('[-] 缺少扫描数据'); process.exit(1); }
 
     if (reportFormat === 'json') {
-      const jsonContent = generateJsonReport(scanResults, scoreResult);
+      const jsonContent = generateJsonReport(scanResults, scoreResult, {
+        fixerResults,
+        executionMode: fixExecutionMode,
+      });
       if (outputFile) {
         fs.writeFileSync(outputFile, jsonContent, 'utf-8');
         console.log(`[+] JSON 报告已保存: ${outputFile}`);
