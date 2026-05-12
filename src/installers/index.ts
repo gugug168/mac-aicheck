@@ -332,41 +332,7 @@ const xcodeCltInstaller: Installer = {
 
 // ==================== Hermes Agent 安装器 ====================
 
-const hermesAgentInstaller: Installer = {
-  id: 'hermes-agent',
-  name: 'Hermes Agent',
-  description: 'NousResearch 开源 AI Agent 框架，支持多模型编排、工作流自动化、MCP 协议集成',
-  icon: '🧠',
-  needsAdmin: false,
-  cmd: 'npm install -g @nousresearch/hermes-agent --registry=https://registry.npmjs.org',
-  type: 'npm',
-  async run(onProgress): Promise<InstallResult> {
-    if (isInstalled('hermes-agent')) {
-      const v = execSync('hermes --version 2>/dev/null || hermes agent --version 2>/dev/null || echo "已安装"', { encoding: 'utf-8' }).trim();
-      onProgress({ type: 'done', success: true, message: `Hermes Agent 已安装: ${v}` });
-      return { success: true, message: `Hermes Agent 已安装: ${v}` };
-    }
-    if (!cmdExists('npm')) {
-      onProgress({ type: 'done', success: false, message: '请先安装 Node.js' });
-      return { success: false, message: '请先安装 Node.js' };
-    }
-    onProgress({ type: 'progress', step: '正在安装 Hermes Agent...', pct: 30 });
-    onProgress({ type: 'log', line: '$ npm install -g @nousresearch/hermes-agent --registry=https://registry.npmjs.org' });
-    const code = await npmInstall('@nousresearch/hermes-agent', onProgress, 'https://registry.npmjs.org');
-    const success = code === 0 && isInstalled('hermes-agent');
-    onProgress({ type: 'done', success, message: success ? 'Hermes Agent 安装成功！运行 hermes 命令启动。' : '安装失败，请检查 npm 和网络' });
-    return { success, message: success ? '安装成功' : `安装失败 (${code})` };
-  },
-};
-
-function isHermesInstalled(): boolean {
-  try {
-    execSync('command -v hermes 2>/dev/null || test -f ~/.npm/bin/hermes 2>/dev/null || echo "not found"', { stdio: 'pipe' });
-    return true;
-  } catch {
-    return false;
-  }
-}
+import { hermesInstaller } from './hermes';
 
 // ==================== mmx-cli (MiniMax MAX) 安装器 ====================
 
@@ -414,7 +380,7 @@ const ALL_INSTALLERS: Installer[] = [
   cuteClaudeHooksInstaller,
   ghCopilotInstaller,
   xcodeCltInstaller,
-  hermesAgentInstaller,
+  hermesInstaller,
   mmxInstaller,
 ];
 

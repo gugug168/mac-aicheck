@@ -31,6 +31,8 @@ import './firewall-ports';
 import './git-credential-health';
 import './git-path';
 import './gpu-driver';
+import './hermes';
+export { scanner as hermesScanner } from './hermes';
 import './long-paths';
 import './mcp-command-availability';
 import './mcp-config-health';
