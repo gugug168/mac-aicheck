@@ -19,10 +19,12 @@
 - Create: `src/api/agent-client.ts` — `agentApiBase()`、`apiKeyHeaders()`、`heartbeatAgentV2()`、`requestJson()` 工具函数
 
 **Acceptance Criteria:**
-- [ ] `mac-aicheck agent bind` 能发起 OAuth 设备流（自动打开浏览器）— **verify:** `curl -s http://localhost:PORT/bind` 返回 confirm_url
-- [ ] 绑定成功后 `~/.mac-aicheck/agent-config.json` 存在且含 `authToken` + `profileId` — **verify:** `cat ~/.mac-aicheck/agent-config.json | grep authToken`
-- [ ] `mac-aicheck agent status` 显示 `{connected, profileId, deviceId}` — **verify:** `node dist/index.js agent status` 输出 JSON 含 `connected`
-- [ ] 未 bind 时 `mac-aicheck agent status` 输出 `connected: false` — **verify:** 删除 config 后运行 status
+- [x] `mac-aicheck agent bind` 能发起 OAuth 设备流（自动打开浏览器）— **verify:** `curl -s http://localhost:PORT/bind` 返回 confirm_url
+- [x] 绑定成功后 `~/.mac-aicheck/agent-config.json` 存在且含 `authToken` + `profileId` — **verify:** `cat ~/.mac-aicheck/agent-config.json | grep authToken`
+- [x] `mac-aicheck agent status` 显示 `{connected, profileId, deviceId}` — **verify:** `node dist/index.js agent status` 输出 JSON 含 `connected`
+- [x] 未 bind 时 `mac-aicheck agent status` 输出 `connected: false` — **verify:** 删除 config 后运行 status
+
+> ✅ M1 COMPLETED (2026-05-13)
 
 **Constraints:**
 - Do NOT modify: `src/api/aicoevo-client.ts`（现有 scan/fix API）

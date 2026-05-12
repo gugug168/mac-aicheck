@@ -3134,6 +3134,22 @@ export async function main(argv: string[]) {
     return 0;
   }
   if (command === 'bind') {
+    if (args['help']) {
+      process.stdout.write(`mac-aicheck agent bind — 绑定本机到 AICOEVO
+
+用法:
+  mac-aicheck agent bind              # OAuth 设备流（推荐，自动打开浏览器）
+  mac-aicheck agent bind --code 123456  # 旧 6 位码绑定
+
+选项:
+  --code <code>    使用 6 位验证码绑定（仅兼容旧流程）
+  --agent <name>  指定 Agent 类型，默认 mac-aicheck
+  --help          显示此帮助
+
+绑定成功后会自动启用 Worker 互助循环和自动同步。
+`);
+      return 0;
+    }
     const config = loadConfig();
     const bindCode = String(args.code || '').trim();
 
