@@ -105,3 +105,46 @@ hermes chat -q "<goal>" -t terminal --provider minimax
 - 确认 worktree 干净（仅 src/scanners/hermes.ts untracked）
 - 创建看板 + 6 个任务（T1-T6）
 - 建立依赖链：T1→T2→T3→T4→T5→T6
+
+### 2026-05-12 — Phase 3 Execution (Claude Code 执行)
+
+| Task | Agent | Duration | Result |
+|------|-------|----------|--------|
+| T1 Fix hermes.ts | claude-code | ~10min | ✅ 原有 bug 已修复（c0e1237）；新增 ES module import 问题，修复后通过 |
+| T2 Hermes installer | claude-code | ~4min | ✅ src/installers/hermes.ts 创建并注册 |
+| T3 Delegation service | claude-code | ~1.5min | ✅ src/agent/hermes/hermes-delegation.ts，含 ES module fix |
+| T4 IPC channel | claude-code | ~25s | ✅ src/agent/hermes/hermes-ipc.ts 创建 |
+| T5 CLI registration | claude-code | ~3.5min | ✅ `mac-aicheck agent hermes-delegate` 命令注册成功 |
+| T6 E2E test | claude-code | ~3min | ✅ E2E 全流程测试通过（2/2） |
+
+### 2026-05-12 — Phase 5 Final Review
+- PR #90 创建：https://github.com/gugug168/mac-aicheck/pull/90
+- Branch pushed to origin
+- Build: ✅ `npm run build` passes
+- All 7 commits verified on `feat/hermes-delegation-direction-b`
+
+## Final State: ✅ COMPLETE
+
+### Commits (7 total on this branch)
+```
+8ba6950 feat(cli): add hermes-delegate CLI command and register all Hermes modules
+783018a feat(ipc): add HermesResultWatcher for IPC result channel
+fccbc15 feat(delegation): add HermesDelegationService for task dispatch
+ee49c75 feat(installer): add Hermes Agent installer
+1a1baac feat: 实现 Hermes 安装器
+af47a98 fix(hermes-scanner): fix stdio syntax and timeout unit bugs
+c7f96d6 fix: correct MAC_AICHECK_BASE_DIR env var typos (P0)
+```
+
+### Deliverables
+- ✅ Scanner: `src/scanners/hermes.ts` — 检测 Hermes 版本/路径/能力
+- ✅ Installer: `src/installers/hermes.ts` — 安装/升级 Hermes
+- ✅ Delegation: `src/agent/hermes/hermes-delegation.ts` — 任务派发
+- ✅ IPC: `src/agent/hermes/hermes-ipc.ts` — 结果回报通道
+- ✅ CLI: `mac-aicheck agent hermes-delegate "<goal>"` 命令
+
+### E2E Results
+```
+mac-aicheck agent hermes-delegate "Create a file at /tmp/test.txt with content 'hello'" --timeout 60000
+✅ Success (34024ms) — 文件内容正确
+```
