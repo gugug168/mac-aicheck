@@ -691,15 +691,21 @@ async function runScan(serve: boolean, upload: boolean) {
     }
 
     if (upload) {
-      stashData(payload)
+      const stashWithTimeout = Promise.race([
+        stashData(payload),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('上传超时 (10s)')), 10000)
+        ),
+      ]);
+      stashWithTimeout
         .then(({ token, claim_url }) => {
           const claimUrl = claim_url || buildClaimUrl(token);
           console.log('\n[+] 扫描结果已上传，请在浏览器打开认领你的环境报告:');
           console.log(`    ${claimUrl}\n`);
         })
         .catch((err) => {
-          console.error('\n[-] 上传失败:', err instanceof Error ? err.message : String(err));
-          console.error('    扫描结果已保存在本地，请检查网络后重新运行上传\n');
+          console.warn('\n[!] 上传失败（不影响本地结果）:', err instanceof Error ? err.message : String(err));
+          console.warn('    扫描结果已保存在本地，请检查网络后重新运行上传\n');
         });
     } else {
       console.log('[i] 默认不上传扫描结果。使用 --upload 或 mac-aicheck upload 获取认领链接。\n');

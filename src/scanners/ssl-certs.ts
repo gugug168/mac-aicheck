@@ -1,6 +1,19 @@
 import type { Scanner, ScanResult } from './types';
-import { runCommand } from '../executor/index';
+import * as https from 'https';
 import { registerScanner } from './registry';
+
+function checkHttpsSite(hostname: string, path: string = '/'): Promise<{ code: string; ok: boolean }> {
+  return new Promise((resolve) => {
+    const req = https.request({ hostname, path, method: 'HEAD', timeout: 5000 }, (res) => {
+      const code = String(res.statusCode || 'FAIL');
+      const ok = code === '200' || code === '301' || code === '302';
+      resolve({ code, ok });
+    });
+    req.on('error', () => resolve({ code: 'FAIL', ok: false }));
+    req.on('timeout', () => { req.destroy(); resolve({ code: 'TIMEOUT', ok: false }); });
+    req.end();
+  });
+}
 
 const scanner: Scanner = {
   id: 'ssl-certs',
@@ -10,19 +23,16 @@ const scanner: Scanner = {
 
   async scan(): Promise<ScanResult> {
     const sites = [
-      { name: 'github.com', url: 'https://github.com' },
-      { name: 'registry.npmjs.org', url: 'https://registry.npmjs.org' },
+      { name: 'github.com', hostname: 'github.com' },
+      { name: 'registry.npmjs.org', hostname: 'registry.npmjs.org' },
     ];
 
-    const checks = sites.map(site => {
-      const result = runCommand(
-        `curl -s --connect-timeout 5 -o /dev/null -w "%{http_code}" ${site.url} 2>/dev/null`,
-        10000,
-      );
-      const code = result.exitCode === 0 ? result.stdout.trim() : 'FAIL';
-      const ok = code === '200' || code === '301' || code === '302';
-      return { ...site, code, ok };
-    });
+    const checks = await Promise.all(
+      sites.map(async (site) => {
+        const result = await checkHttpsSite(site.hostname);
+        return { name: site.name, ...result };
+      })
+    );
 
     const failed = checks.filter(item => !item.ok);
     if (failed.length === 0) {

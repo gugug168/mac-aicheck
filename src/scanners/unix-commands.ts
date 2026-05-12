@@ -7,7 +7,6 @@ const scanner: Scanner = {
   name: 'Unix 命令检测',
   category: 'toolchain',
   affectsScore: false,
-  defaultEnabled: false,
 
   async scan(): Promise<ScanResult> {
     const commands = ['ls', 'grep', 'curl', 'ssh', 'tar', 'awk', 'sed'];
