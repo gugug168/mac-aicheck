@@ -37,7 +37,7 @@ const OUTBOX_RETRY_MAX_MS = 30 * 60_000;  // 30 minutes
 const MAX_OUTBOX_EVENTS = 5000;
 
 function getBaseDir(): string {
-  return process.env.MAC_AICCHECK_BASE_DIR || path.join(os.homedir(), '.mac-aicheck');
+  return process.env.MAC_AICHECK_BASE_DIR || path.join(os.homedir(), '.mac-aicheck');
 }
 
 function outboxPath(): string {

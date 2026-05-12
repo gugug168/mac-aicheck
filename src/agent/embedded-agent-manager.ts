@@ -28,7 +28,7 @@ import os from 'node:os';
 import { AGENT_LITE_SOURCE } from './embedded-agent-source.js';
 
 function getBaseDir(): string {
-  return process.env.MAC_AICHAEL_BASE_DIR || path.join(os.homedir(), '.mac-aicheck');
+  return process.env.MAC_AICHECK_BASE_DIR || path.join(os.homedir(), '.mac-aicheck');
 }
 
 function agentDir(): string {
