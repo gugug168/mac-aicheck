@@ -132,7 +132,7 @@ function checkDelegateHealth(): HermesDelegateHealth {
 
 // ── Scanner ───────────────────────────────────────────────────────────────────
 
-const scanner: Scanner = {
+export const scanner: Scanner = {
   id: 'hermes',
   name: 'Hermes Agent',
   category: 'ai-tools',

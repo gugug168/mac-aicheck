@@ -8,6 +8,7 @@ import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { getFixers } from '../fixers/index';
 import type { ErrorSignal, EnvFingerprint } from './types';
+import { HermesDelegationService } from './hermes/hermes-delegation';
 
 function getHome() { return process.env.HOME || homedir(); }
 function getBaseDir() { return join(getHome(), '.mac-aicheck'); }
@@ -4031,6 +4032,43 @@ export async function main(argv: string[]) {
     saveConfig(cfg);
     process.stdout.write(`Hermes 日志路径已设置为: ${logPath}\n`);
     return 0;
+  }
+
+  // ── Hermes Delegate ────────────────────────────────────────────────────
+  if (command === 'hermes-delegate') {
+    const goal = String((args._ as string[])[0] || '').trim();
+    if (!goal) {
+      process.stdout.write('用法: mac-aicheck agent hermes-delegate "<goal>" [--context "<context>"] [--timeout <ms>] [--toolsets <list>]\n');
+      process.stdout.write('示例: mac-aicheck agent hermes-delegate "帮我总结今天的工作" --context "今天修复了bug，优化了性能"\n');
+      return 1;
+    }
+    const context = String(args.context || '').trim();
+    const timeoutMs = args.timeout ? Number(args.timeout) : 300000;
+    const toolsetsStr = String(args.toolsets || '');
+    const toolsets = toolsetsStr ? toolsetsStr.split(',').map(t => t.trim()).filter(Boolean) : undefined;
+
+    const service = new HermesDelegationService();
+    try {
+      const result = await service.delegateTask(goal, context || undefined, {
+        timeoutMs,
+        toolsets,
+      });
+      if (result.success) {
+        process.stdout.write(`✅ 成功 (${result.durationMs}ms)\n`);
+        process.stdout.write(`输出:\n${result.output}\n`);
+        return 0;
+      } else {
+        process.stderr.write(`❌ 失败 (${result.durationMs}ms)\n`);
+        process.stderr.write(`错误: ${result.error || 'unknown error'}\n`);
+        if (result.output) {
+          process.stderr.write(`输出:\n${result.output}\n`);
+        }
+        return 1;
+      }
+    } catch (e: unknown) {
+      process.stderr.write(`异常: ${(e as Error).message}\n`);
+      return 1;
+    }
   }
 
   // ── MCP Server ──────────────────────────────────────────────────────────
