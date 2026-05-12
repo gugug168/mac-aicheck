@@ -1,5 +1,5 @@
 // Agent Lite CLI - 简洁实现
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, appendFileSync, unlinkSync, openSync, closeSync, statSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, appendFileSync, unlinkSync, openSync, closeSync, statSync, readdirSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import { homedir, hostname } from 'os';
 import { execFileSync, spawn } from 'child_process';
@@ -2611,6 +2611,48 @@ function installLocalAgent() {
   writeJson(join(p.agentDir, 'agent-lite.hash.json'), { sha256: hash, installedAt: nowIso() });
   const cmd = `#!/bin/bash\nSCRIPT_DIR="$(cd "$(dirname "\${BASH_SOURCE[0]}")" && pwd)"\nexec node "$SCRIPT_DIR/agent-lite.js" "$@"\n`;
   writeFileSync(p.agentCmd, cmd, 'utf-8'); chmodSync(p.agentCmd, 0o755);
+
+  // ── Install full dist/ tree to ~/.mac-aicheck/ (required by agent-lite.js) ─
+  // agent-lite.js uses relative requires: ../index.js, ../fixers/*, ../executor/*, etc.
+  // selfPath = dist/agent/index.js → selfDir = dist/agent/ → pkgRoot = dist/ (npm pkg root)
+  const selfDir = dirname(selfPath);
+  const pkgRoot = dirname(selfDir);          // dist/agent/ → dist/
+  const srcDist = join(pkgRoot);            // dist/ = npm package root
+  const dstBase = p.base;
+
+  // Recursive copy helper: copies all .js/.d.ts files from srcDir to dstDir
+  function copyDirRecursive(srcDir: string, dstDir: string) {
+    ensureDir(dstDir);
+    for (const entry of readdirSync(srcDir)) {
+      const srcPath = join(srcDir, entry);
+      const dstPath = join(dstDir, entry);
+      if (statSync(srcPath).isDirectory()) {
+        copyDirRecursive(srcPath, dstPath);
+      } else if (entry.endsWith('.js') || entry.endsWith('.d.ts')) {
+        copyFileSync(srcPath, dstPath);
+      }
+    }
+  }
+
+  for (const entry of readdirSync(srcDist)) {
+    const srcEntry = join(srcDist, entry);
+    const dstEntry = join(dstBase, entry);
+    if (entry === 'agent') {
+      // Recursively mirror agent/ subdirectories (e.g. agent/hermes/)
+      copyDirRecursive(srcEntry, p.agentDir);
+    } else if (statSync(srcEntry).isDirectory()) {
+      // Mirror top-level directory: copy all .js and .d.ts files
+      ensureDir(dstEntry);
+      for (const file of readdirSync(srcEntry)) {
+        if (file.endsWith('.js') || file.endsWith('.d.ts')) {
+          copyFileSync(join(srcEntry, file), join(dstEntry, file));
+        }
+      }
+    } else if (entry.endsWith('.js') || entry.endsWith('.d.ts')) {
+      copyFileSync(srcEntry, dstEntry);
+    }
+  }
+
   return { agentDir: p.agentDir, agentJs: p.agentJs, agentCmd: p.agentCmd };
 }
 
