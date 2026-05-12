@@ -96,6 +96,86 @@ docker run -it --rm \
 | GitHub Copilot | `gh copilot` | ✅ 手动 |
 | Xcode CLT | `xcode-select --install` | ✅ GUI |
 
+## AICO EVO Agent
+
+mac-aicheck 支持 AICO EVO bounty 自主任务系统，在后台运行 Worker Daemon 自动领取并解决悬赏任务。
+
+### 绑定设备
+
+```bash
+mac-aicheck agent bind
+```
+
+会打开浏览器引导你在 AICO EVO 平台完成设备授权。绑定码（6位数）保留用于兼容旧客户端流程。
+
+### 查看连接状态
+
+```bash
+mac-aicheck agent status
+```
+
+返回设备绑定状态、authToken 有效性、Worker 自动化就绪情况。
+
+### 悬赏任务
+
+```bash
+# 查看平台推荐悬赏
+mac-aicheck agent bounty-recommended
+
+# 分页浏览所有悬赏
+mac-aicheck agent bounty-list --page 1 --limit 20
+
+# 手动领取悬赏
+mac-aicheck agent bounty-claim --id <bounty_id>
+
+# 提交解题结果
+mac-aicheck agent bounty-submit --id <bounty_id> --answer "解决方案"
+```
+
+### Worker Daemon
+
+Worker 在后台持续领取并执行悬赏任务，支持自动循环：
+
+```bash
+# 启动 Worker（自动进入悬赏循环）
+mac-aicheck agent worker start
+
+# 查看 Worker 状态（daemon 信息 + 自动化就绪标志）
+mac-aicheck agent worker status
+
+# 停止 Worker
+mac-aicheck agent worker stop
+```
+
+Worker 自动化前提：已绑定（`status` 显示 `connected:true`）、Worker 已启用（`workerEnabled:true`）、未暂停（`paused:false`）。
+
+### Hermes 错误上报
+
+mac-aicheck 可接收来自 Hermes Agent 的错误事件：
+
+```bash
+# 上报 Hermes 错误
+mac-aicheck agent report-error --json '{"type":"hermes-error","kind":"auth_failure","message":"401 invalid api key"}'
+
+# 查看 Hermes 集成状态
+mac-aicheck agent hermes-status
+
+# 配置 Hermes 日志路径
+mac-aicheck agent hermes-connect --log-path ~/.hermes/logs
+```
+
+详见 [docs/hermes-integration.md](docs/hermes-integration.md)。
+
+### Review 流程
+
+```bash
+# 查看当前需要 review 的项目
+mac-aicheck agent review-list
+
+# 确认 owner 验证
+mac-aicheck agent owner-check
+```
+
 ## 目录结构
 
 ```
@@ -111,6 +191,10 @@ mac-aicheck/
 │   │   ├── homebrew.ts       # Homebrew
 │   │   ├── xcode.ts          # Xcode CLT
 │   │   └── ...
+│   ├── agent/                 # AICO EVO Agent 模块
+│   │   ├── index.ts          # Agent 主逻辑 + 所有子命令
+│   │   ├── embedded-agent-manager.ts  # Worker daemon 生命周期
+│   │   └── ...
 │   ├── scoring/
 │   │   └── calculator.ts     # 评分算法
 │   ├── installers/
@@ -119,6 +203,9 @@ mac-aicheck/
 │   │   └── aicoevo-client.ts # AICO EVO 上报客户端
 │   └── report/
 │       └── html.ts           # HTML 报告生成器
+├── tests/
+│   ├── agent-e2e.test.ts      # Agent E2E 测试（11 cases）
+│   └── hermes-hook.test.ts    # Hermes hook 测试（10 cases）
 ├── dist/                     # 编译输出
 ├── dist/web/                 # Web UI 运行时数据（如 scan-data.json）
 └── package.json

@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { getFixers } from '../fixers/index';
+import type { ErrorSignal, EnvFingerprint } from './types';
 
 function getHome() { return process.env.HOME || homedir(); }
 function getBaseDir() { return join(getHome(), '.mac-aicheck'); }
@@ -650,6 +651,52 @@ function normalizeAgent(v: string): string { const a = String(v || 'custom').toL
 function classifyEvent(agent: string, msg: string): string { const t = msg.toLowerCase(); if (t.includes('mcp')) return 'mcp_error'; if (t.includes('config') || t.includes('json')) return 'agent_config'; if (t.includes('traceback') || t.includes('syntaxerror') || t.includes('typeerror')) return 'coding_error_summary'; return agent === 'custom' ? 'coding_error_summary' : 'agent_runtime'; }
 function severityFromMsg(msg: string, fallback = 'error'): string { const t = msg.toLowerCase(); return t.includes('warn') ? 'warn' : t.includes('info') ? 'info' : fallback; }
 
+function extractErrorSignals(msg: string): ErrorSignal[] {
+  const t = String(msg || '').toLowerCase();
+  const signals: ErrorSignal[] = [];
+  if (/econnrefused|connection refused/i.test(t)) signals.push('network_connection_refused');
+  if (/etimedout|timed?\s*out|timeout/i.test(t)) signals.push('network_timeout');
+  if (/sigkill|sigterm|killed|terminated/i.test(t)) signals.push('process_terminated');
+  if (/max.?token|context.?overflow|context.?window|token.?limit/i.test(t)) signals.push('context_overflow');
+  if (/rate.?limit|429|too many requests/i.test(t)) signals.push('rate_limited');
+  if (/eacces|permission denied|operation not permitted/i.test(t)) signals.push('permission_denied');
+  if (/command not found|enoent|not found/i.test(t)) signals.push('command_not_found');
+  if (/mcp.?server|mcp.?error/i.test(t)) signals.push('mcp_server_error');
+  if (/fatal:|git\s+(clone|pull|push|merge|rebase|checkout)/i.test(msg) && /fatal|error|conflict/i.test(t)) signals.push('git_error');
+  if (/traceback|python|syntaxerror|typeerror|importerror|modulenotfound/i.test(t)) signals.push('python_error');
+  if (/npm\s+err|node_modules|package\.json/i.test(t)) signals.push('npm_error');
+  if (signals.length === 0 && (t.includes('error') || t.includes('fail') || t.includes('fatal'))) signals.push('unknown_error');
+  return [...new Set(signals)];
+}
+
+function collectEnvFingerprint(): EnvFingerprint {
+  let pythonVersion: string | null = null;
+  let gitVersion: string | null = null;
+  let npmRegistry: string | null = null;
+  try { pythonVersion = execFileSync('python3', ['--version'], { encoding: 'utf-8', timeout: 3000 }).trim().replace(/^python\s+/i, ''); } catch {}
+  try { gitVersion = execFileSync('git', ['--version'], { encoding: 'utf-8', timeout: 3000 }).trim().replace(/^git version\s+/i, ''); } catch {}
+  try { npmRegistry = execFileSync('npm', ['config', 'get', 'registry'], { encoding: 'utf-8', timeout: 3000 }).trim(); } catch {}
+  let totalMemoryGB = 0;
+  try {
+    const bytes = parseInt(execFileSync('sysctl', ['-n', 'hw.memsize'], { encoding: 'utf-8', timeout: 3000 }).trim(), 10);
+    if (!isNaN(bytes)) totalMemoryGB = Math.round(bytes / 1024 ** 3);
+  } catch {}
+  return {
+    os: `${process.platform} ${process.arch}`,
+    arch: process.arch,
+    totalMemoryGB,
+    nodeVersion: process.version,
+    pythonVersion,
+    gitVersion,
+    npmRegistry: npmRegistry || null,
+    shellProxy: process.env.SHELL_PROXY || null,
+    httpProxy: process.env.HTTP_PROXY || process.env.http_proxy || null,
+    httpsProxy: process.env.HTTPS_PROXY || process.env.https_proxy || null,
+    claudeVersion: process.env.CLAUDE_CODE_VERSION || null,
+    cwdHash: shortHash(process.cwd()),
+  };
+}
+
 function computeAgentSuffix(agent: string): string {
   return agent === 'claude-code' ? '_cc' : agent === 'openclaw' ? '_oc' : '';
 }
@@ -687,6 +734,8 @@ function createEvent(input: { agent?: string; message?: string; eventType?: stri
     sanitizedMessage,
     severity: input.severity || severityFromMsg(sanitizedMessage),
     localContext: { os: `${process.platform} ${process.release.name || process.platform}`, shell: process.env.SHELL || '', node: process.version, cwdHash: shortHash(process.cwd()) },
+    error_signals: extractErrorSignals(sanitizedMessage),
+    env_fingerprint: collectEnvFingerprint(),
     syncStatus: 'pending',
   };
 }
@@ -2385,11 +2434,28 @@ function uninstallHook(args: Record<string, unknown>) {
   return { profiles };
 }
 
+// Validate hook script JS syntax by running node --check
+function validateHookScript(filePath: string): { valid: boolean; error?: string } {
+  try {
+    const result = execFileSync('node', ['--check', filePath], { encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
+    return { valid: true };
+  } catch (e) {
+    const err = e as { status?: number; message?: string };
+    // exit code 1 = syntax error, exit code 2 = parse error
+    if (err.status === 1 || err.status === 2) {
+      return { valid: false, error: err.message || '语法错误' };
+    }
+    // Other errors (e.g. file not found) are not syntax errors
+    return { valid: true };
+  }
+}
+
 // Install SessionStart and PostToolUse hooks to ~/.claude/settings.json
-function installSettingsHook(): { hookType: 'settings'; hooks: string[] } {
+function installSettingsHook(): { hookType: 'settings'; hooks: string[]; warnings: string[] } {
   const settingsFile = join(getHome(), '.claude', 'settings.json');
   const hooksDir = join(getHome(), '.claude', 'hooks');
   ensureDir(hooksDir);
+  const warnings: string[] = [];
 
   // Resolve hook source files from hooks-src/ directory.
   const projectRoot = resolveProjectRootForHooks();
@@ -2413,6 +2479,16 @@ function installSettingsHook(): { hookType: 'settings'; hooks: string[] } {
     }
   } catch (e) {
     throw new Error(`无法复制 hook 脚本: ${e}`);
+  }
+
+  // Validate copied scripts have valid JS syntax
+  const sessionValidation = validateHookScript(sessionHookDest);
+  if (!sessionValidation.valid) {
+    throw new Error(`SessionStart hook 语法错误: ${sessionValidation.error}`);
+  }
+  const postToolValidation = validateHookScript(postToolHookDest);
+  if (!postToolValidation.valid) {
+    throw new Error(`PostToolUse hook 语法错误: ${postToolValidation.error}`);
   }
 
   // Read existing settings
@@ -2475,6 +2551,7 @@ function installSettingsHook(): { hookType: 'settings'; hooks: string[] } {
   return {
     hookType: 'settings',
     hooks: ['SessionStart (版本检查)', 'PostToolUse (错误捕获)'],
+    warnings,
   };
 }
 
@@ -2740,6 +2817,7 @@ export async function main(argv: string[]) {
   mac-aicheck agent enable --target claude-code|openclaw|all  一键启用监控（新方式，推荐）
   mac-aicheck agent migrate                迁移到 SessionStart Hook（新方式，推荐）
   mac-aicheck agent install-hook --target claude-code|openclaw|all
+  mac-aicheck agent hook-status                 查看 Hook 安装状态
   mac-aicheck agent uninstall-hook --target all
   mac-aicheck agent capture --agent <name> --message <text>
   mac-aicheck agent sync
@@ -2750,6 +2828,7 @@ export async function main(argv: string[]) {
   mac-aicheck agent draft-organizer status|run-once|enable|disable
   mac-aicheck agent advice --format json|markdown
   mac-aicheck agent diagnose          分析失败模式，类比 Evolver 信号诊断
+  mac-aicheck agent status                          查看绑定状态（connected/profileId/deviceId）
   mac-aicheck agent bind [--agent claude-code|openclaw]  绑定设备（自动打开浏览器确认）
   mac-aicheck agent review-list
   mac-aicheck agent review-submit <lease_id> --result success|partial|failed
@@ -2845,7 +2924,44 @@ export async function main(argv: string[]) {
     process.stdout.write('Worker 互助循环已重新启用。运行 worker start 启动后台循环。\n');
     return 0;
   }
-  if (command === 'install-hook') { const r = installHook(args); process.stdout.write(`已安装 Hook: ${r.agents.map((a: { target: string }) => a.target).join(', ')}\n`); return 0; }
+  if (command === 'hook-status') {
+    const hookStatus = claudeSettingsHookStatus();
+    process.stdout.write('Hook 安装状态\n\n');
+    process.stdout.write(`settings.json:  ${hookStatus.settings_file}\n`);
+    process.stdout.write(`hooks 目录:    ${join(getHome(), '.claude', 'hooks')}\n\n`);
+    process.stdout.write(`SessionStart hook:\n`);
+    process.stdout.write(`  脚本文件: ${hookStatus.session_hook_file_present ? '✓ 存在' : '✗ 缺失'}\n`);
+    process.stdout.write(`  settings 注册: ${hookStatus.session_hook_configured ? '✓ 已注册' : '✗ 未注册'}\n\n`);
+    process.stdout.write(`PostToolUse hook:\n`);
+    process.stdout.write(`  脚本文件: ${hookStatus.post_tool_hook_file_present ? '✓ 存在' : '✗ 缺失'}\n`);
+    process.stdout.write(`  settings 注册: ${hookStatus.post_tool_hook_configured ? '✓ 已注册' : '✗ 未注册'}\n`);
+    const allGood = hookStatus.session_hook_file_present && hookStatus.session_hook_configured
+      && hookStatus.post_tool_hook_file_present && hookStatus.post_tool_hook_configured;
+    process.stdout.write(`\n${allGood ? '✓' : '⚠'} PostTool Hook 系统: ${allGood ? '完全就绪' : '未完全配置 (运行 `mac-aicheck agent install-hook --target claude-code` 修复)'}\n`);
+    return 0;
+  }
+  if (command === 'install-hook') {
+    // Shell-based hook (for all targets)
+    const shellResult = installHook(args);
+    const outputs: string[] = shellResult.agents.map((a: { target: string }) => `shell: ${a.target}`);
+
+    // Claude Code settings.json hook (if targeting claude-code)
+    const target = String(args.target || 'all');
+    if (targetIncludesClaude(target)) {
+      try {
+        const settingsResult = installSettingsHook();
+        outputs.push(...settingsResult.hooks.map(h => `Claude Code settings: ${h}`));
+        if (settingsResult.warnings.length > 0) {
+          for (const w of settingsResult.warnings) process.stderr.write(`警告: ${w}\n`);
+        }
+      } catch (e) {
+        process.stderr.write(`Claude Code settings hook 安装失败: ${(e as Error).message}\n`);
+      }
+    }
+
+    process.stdout.write(`已安装 Hook: ${outputs.join(', ')}\n`);
+    return 0;
+  }
   if (command === 'install-local-agent') { const r = installLocalAgent(); process.stdout.write(JSON.stringify({ ok: true, ...r }) + '\n'); return 0; }
   if (command === 'enable') {
     // 一键安装：runner + 针对目标 Agent 的 hook + 启用同步
@@ -3018,6 +3134,22 @@ export async function main(argv: string[]) {
     return 0;
   }
   if (command === 'bind') {
+    if (args['help']) {
+      process.stdout.write(`mac-aicheck agent bind — 绑定本机到 AICOEVO
+
+用法:
+  mac-aicheck agent bind              # OAuth 设备流（推荐，自动打开浏览器）
+  mac-aicheck agent bind --code 123456  # 旧 6 位码绑定
+
+选项:
+  --code <code>    使用 6 位验证码绑定（仅兼容旧流程）
+  --agent <name>  指定 Agent 类型，默认 mac-aicheck
+  --help          显示此帮助
+
+绑定成功后会自动启用 Worker 互助循环和自动同步。
+`);
+      return 0;
+    }
     const config = loadConfig();
     const bindCode = String(args.code || '').trim();
 
@@ -3768,6 +3900,182 @@ export async function main(argv: string[]) {
       process.stdout.write(`  总分: ${data.total_score ?? '-'} / ${data.threshold ?? 70}\n`);
     } catch (e: unknown) { process.stdout.write(`提交复现验证失败: ${(e as Error).message}\n`); return 1; }
     return 0;
+  }
+
+  // ── Agent Status ──
+  if (command === 'status') {
+    const cfg = loadConfig();
+    const headers = agentApiKeyHeaders(cfg);
+    const connected = !!(headers);
+    const masked = maskConfigForOutput(cfg);
+    process.stdout.write(JSON.stringify({
+      connected,
+      profileId: cfg.profileId || null,
+      deviceId: cfg.deviceId || null,
+      agentType: cfg.agentType || null,
+      shareData: cfg.shareData || false,
+      autoSync: cfg.autoSync || false,
+      paused: cfg.paused || false,
+      workerEnabled: cfg.workerEnabled || false,
+      draftOrganizerEnabled: cfg.draftOrganizerEnabled || false,
+      lastConfirmedAt: cfg.confirmedAt || null,
+      // masked fields (authToken redacted)
+      hasAuthToken: !!cfg.authToken,
+      authTokenPrefix: cfg.authToken ? cfg.authToken.slice(0, 4) : null,
+    }, null, 2) + '\n');
+    return 0;
+  }
+
+  // ── Hermes Error Report ────────────────────────────────────────────────
+  if (command === 'report-error') {
+    const jsonArg = String(args.json || '');
+    let rawInput = '';
+    if (jsonArg === '-') {
+      // Read from stdin
+      const { createInterface } = await import('readline');
+      const rl = createInterface({ input: process.stdin });
+      for await (const line of rl) { rawInput += line; }
+    } else if (jsonArg) {
+      rawInput = jsonArg;
+    } else {
+      process.stdout.write('用法: mac-aicheck agent report-error --json \'{"type":"hermes-error","kind":"auth_failure","message":"..."}\'\n');
+      process.stdout.write('   或: echo \'{"type":"hermes-error",...}\' | mac-aicheck agent report-error --json -\n');
+      return 1;
+    }
+
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(rawInput);
+    } catch {
+      process.stderr.write(`report-error: invalid JSON\n`);
+      return 1;
+    }
+
+    const hermesOutboxPath = join(getBaseDir(), 'outbox', 'hermes-events.jsonl');
+    ensureDir(dirname(hermesOutboxPath));
+    const event = {
+      ...parsed,
+      receivedAt: new Date().toISOString(),
+      source: 'hermes',
+    };
+    appendFileSync(hermesOutboxPath, JSON.stringify(event) + '\n');
+
+    // Silently merge into main events outbox
+    const mainOutboxPath = join(getBaseDir(), 'outbox', 'events.jsonl');
+    const sanitized = trimForCapture(rawInput);
+    const fingerprint = String(parsed.fingerprint || shortHash(`hermes:${parsed.kind || 'unknown'}:${parsed.message || ''}`));
+    const mainEvent = {
+      eventId: `hermes_${Date.now()}`,
+      fingerprint,
+      source: 'hermes',
+      agent: String(parsed.agent || 'hermes'),
+      message: sanitized,
+      severity: String(parsed.severity || 'error'),
+      eventType: String(parsed.type || 'hermes_error'),
+      createdAt: String(parsed.timestamp || new Date().toISOString()),
+      syncStatus: 'pending',
+      syncAttempts: 0,
+      lastSyncAt: null,
+      lastSyncError: null,
+    };
+    ensureDir(dirname(mainOutboxPath));
+    appendFileSync(mainOutboxPath, JSON.stringify(mainEvent) + '\n');
+
+    process.stdout.write(JSON.stringify({ ok: true, eventId: mainEvent.eventId, writtenTo: hermesOutboxPath }) + '\n');
+    return 0;
+  }
+
+  // ── Hermes Status ──────────────────────────────────────────────────────
+  if (command === 'hermes-status') {
+    const cfg = loadConfig();
+    const hermesLogPath = (cfg as Record<string, unknown>).hermesLogPath || join(getHome(), '.hermes', 'logs');
+    const hermesOutboxPath = join(getBaseDir(), 'outbox', 'hermes-events.jsonl');
+    const mainOutboxPath = join(getBaseDir(), 'outbox', 'events.jsonl');
+
+    let hermesErrorCount = 0;
+    if (existsSync(hermesOutboxPath)) {
+      const lines = readFileSync(hermesOutboxPath, 'utf8').split(/\r?\n/).filter(Boolean);
+      hermesErrorCount = lines.length;
+    }
+
+    let mainErrorCount = 0;
+    if (existsSync(mainOutboxPath)) {
+      const lines = readFileSync(mainOutboxPath, 'utf8').split(/\r?\n/).filter(Boolean);
+      mainErrorCount = lines.filter((l: string) => {
+        try { const e = JSON.parse(l); return e.source === 'hermes'; } catch { return false; }
+      }).length;
+    }
+
+    process.stdout.write(JSON.stringify({
+      hermesConnected: !!(cfg as Record<string, unknown>).hermesLogPath,
+      hermesLogPath,
+      errorCount: hermesErrorCount,
+      mergedErrorCount: mainErrorCount,
+      lastErrorAt: hermesErrorCount > 0
+        ? (() => { try { const lines = readFileSync(hermesOutboxPath, 'utf8').split(/\r?\n/).filter(Boolean); if (!lines.length) return null; const last = JSON.parse(lines[lines.length - 1]); return last.receivedAt || null; } catch { return null; } })()
+        : null,
+    }, null, 2) + '\n');
+    return 0;
+  }
+
+  // ── Hermes Connect ─────────────────────────────────────────────────────
+  if (command === 'hermes-connect') {
+    const logPath = String(args.logPath || '').trim();
+    const cfg = loadConfig();
+    if (!logPath) {
+      process.stdout.write(`当前 Hermes 日志路径: ${(cfg as Record<string, unknown>).hermesLogPath || join(getHome(), '.hermes', 'logs')}\n`);
+      process.stdout.write('用法: mac-aicheck agent hermes-connect --log-path ~/.hermes/logs\n');
+      return 0;
+    }
+    (cfg as Record<string, unknown>).hermesLogPath = logPath;
+    saveConfig(cfg);
+    process.stdout.write(`Hermes 日志路径已设置为: ${logPath}\n`);
+    return 0;
+  }
+
+  // ── MCP Server ──────────────────────────────────────────────────────────
+  if (command === 'mcp') {
+    const [mcpSub] = rest;
+    if (mcpSub === 'serve') {
+      process.stdout.write('MCP 服务器模式: mac-aicheck agent mcp serve\n');
+      process.stdout.write('提供工具:\n');
+      process.stdout.write('  report_hermes_error(json) — 报告 Hermes 错误（等同于 agent report-error）\n');
+      process.stdout.write('  get_hermes_status()         — 获取 Hermes 连接状态\n');
+      process.stdout.write('注意: MCP 服务器模式需要实现 JSON-RPC 协议。\n');
+      process.stdout.write('当前版本请使用 CLI 模式: mac-aicheck agent report-error --json \'...\'\n');
+      return 0;
+    }
+    process.stdout.write('用法: mac-aicheck agent mcp serve\n');
+    return 1;
+  }
+
+  // ── Draft Organizer Status (shortcut) ─────────────────────────────────
+  if (command === 'draft-organizer') {
+    const [subcommand] = rest;
+    const cfg = loadConfig();
+    if (!subcommand || subcommand === 'status') {
+      process.stdout.write(JSON.stringify({
+        ok: true,
+        enabled: cfg.draftOrganizerEnabled,
+        mode: cfg.draftOrganizerMode,
+        triggerMode: cfg.draftOrganizerTriggerMode,
+        scheduleDays: cfg.draftOrganizerScheduleDays,
+        profileId: cfg.profileId || null,
+      }, null, 2) + '\n');
+      return 0;
+    }
+    if (subcommand === 'enable') { cfg.draftOrganizerEnabled = true; saveConfig(cfg); process.stdout.write('draft organizer enabled\n'); return 0; }
+    if (subcommand === 'disable') { cfg.draftOrganizerEnabled = false; saveConfig(cfg); process.stdout.write('draft organizer disabled\n'); return 0; }
+    if (subcommand === 'run-once') {
+      // Delegate to existing runDraftOrganizerOnce
+      try {
+        const result = await runDraftOrganizerOnce();
+        process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+        return 0;
+      } catch (e: unknown) { process.stderr.write(`draft-organizer run-once failed: ${(e as Error).message}\n`); return 1; }
+    }
+    process.stdout.write('用法: draft-organizer status|run-once|enable|disable\n');
+    return 1;
   }
 
   throw new Error(`未知 agent 命令: ${command}`);

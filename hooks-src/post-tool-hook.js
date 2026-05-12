@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-// mac-aicheck-hook-version: 1.0.0
-// PostToolUse hook: 捕获 Bash/Agent 执行错误，存储到经验库
+// mac-aicheck-hook-version: 2.0.0
+// PostToolUse hook: 捕获 Bash/Agent 执行结果，提取命令分类和错误信号
 // 从 stdin 读取 hook payload
 
 const { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
 const { homedir } = require('os');
 const crypto = require('crypto');
+const { execFileSync } = require('child_process');
 
 function getHome() { return process.env.HOME || homedir(); }
 const BASE_DIR = join(getHome(), '.mac-aicheck');
@@ -23,6 +24,68 @@ function today() { return nowIso().slice(0, 10); }
 
 function shortHash(v) {
   return crypto.createHash('sha256').update(v).digest('hex').slice(0, 16);
+}
+
+// ── 命令分类 ──
+function classifyCommand(cmd) {
+  const c = String(cmd || '').trim().toLowerCase();
+  if (/^git\s/.test(c) || c === 'git') return 'git';
+  if (/^npm\s|^npx\s|^yarn\s|^pnpm\s/.test(c)) return 'npm';
+  if (/^node\s|^bun\s|^deno\s/.test(c)) return 'node';
+  if (/^python\s|^python3\s|^pip\s|^pip3\s|^poetry\s|^uv\s/.test(c)) return 'python';
+  if (/^brew\s/.test(c)) return 'brew';
+  if (/^docker\s|^podman\s/.test(c)) return 'docker';
+  return 'shell';
+}
+
+// ── 错误信号提取 ──
+function extractErrorSignals(msg) {
+  const t = String(msg || '').toLowerCase();
+  const signals = [];
+  if (/econnrefused|connection refused/i.test(t)) signals.push('network_connection_refused');
+  if (/etimedout|timed?\s*out|timeout/i.test(t)) signals.push('network_timeout');
+  if (/sigkill|sigterm|killed|terminated/i.test(t)) signals.push('process_terminated');
+  if (/max.?token|context.?overflow|context.?window|token.?limit/i.test(t)) signals.push('context_overflow');
+  if (/rate.?limit|429|too many requests/i.test(t)) signals.push('rate_limited');
+  if (/eacces|permission denied|operation not permitted/i.test(t)) signals.push('permission_denied');
+  if (/command not found|enoent|not found/i.test(t)) signals.push('command_not_found');
+  if (/mcp.?server|mcp.?error/i.test(t)) signals.push('mcp_server_error');
+  if (/fatal:|git\s+(clone|pull|push|merge|rebase|checkout)/i.test(msg) && /fatal|error|conflict/i.test(t)) signals.push('git_error');
+  if (/traceback|python|syntaxerror|typeerror|importerror|modulenotfound/i.test(t)) signals.push('python_error');
+  if (/npm\s+err|node_modules|package\.json/i.test(t)) signals.push('npm_error');
+  if (signals.length === 0 && (t.includes('error') || t.includes('fail') || t.includes('fatal'))) signals.push('unknown_error');
+  return [...new Set(signals)];
+}
+
+// ── 环境指纹快照 ──
+function collectEnvFingerprint() {
+  let pythonVersion = null;
+  let gitVersion = null;
+  let npmRegistry = null;
+  try { pythonVersion = execFileSync('python3', ['--version'], { encoding: 'utf-8', timeout: 3000 }).trim().replace(/^python\s+/i, ''); } catch {}
+  try { gitVersion = execFileSync('git', ['--version'], { encoding: 'utf-8', timeout: 3000 }).trim().replace(/^git version\s+/i, ''); } catch {}
+  try { npmRegistry = execFileSync('npm', ['config', 'get', 'registry'], { encoding: 'utf-8', timeout: 3000 }).trim(); } catch {}
+
+  let totalMemoryGB = 0;
+  try {
+    const bytes = parseInt(execFileSync('sysctl', ['-n', 'hw.memsize'], { encoding: 'utf-8', timeout: 3000 }).trim(), 10);
+    if (!isNaN(bytes)) totalMemoryGB = Math.round(bytes / 1024 ** 3);
+  } catch {}
+
+  return {
+    os: `${process.platform} ${process.arch}`,
+    arch: process.arch,
+    totalMemoryGB,
+    nodeVersion: process.version,
+    pythonVersion,
+    gitVersion,
+    npmRegistry: npmRegistry || null,
+    shellProxy: process.env.SHELL_PROXY || null,
+    httpProxy: process.env.HTTP_PROXY || process.env.http_proxy || null,
+    httpsProxy: process.env.HTTPS_PROXY || process.env.https_proxy || null,
+    claudeVersion: process.env.CLAUDE_CODE_VERSION || null,
+    cwdHash: shortHash(process.cwd()),
+  };
 }
 
 // Experience patterns (same as agent-lite)
@@ -78,11 +141,26 @@ function handleToolResult(data) {
     return;
   }
 
+  // Extract command info from tool input
+  const toolInput = data.toolInput || data.tool_input || {};
+  const command = String(toolInput.command || '').slice(0, 500);
+  const commandCategory = classifyCommand(command);
+  const exitCode = data.exitCode;
+  const hasTimeout = /timeout|timed.?out/i.test(String(data.error || data.toolOutput?.stderr || ''));
+  const exitStatus = hasTimeout ? 'timeout' : (exitCode === undefined || exitCode === null) ? 'success' : (exitCode === 0 ? 'success' : 'failure');
+
+  // Build command audit record
+  const commandAudit = command ? {
+    command: command.slice(0, 500),
+    category: commandCategory,
+    exitStatus,
+    exitCode: exitCode !== undefined ? exitCode : undefined,
+  } : undefined;
+
   // Check for errors
   const errorMsg = data.error || data.toolOutput?.stderr || data.toolOutput?.error || '';
-  const exitCode = data.exitCode;
 
-  // No error = skip
+  // No error = skip (but still log successful commands for audit)
   if (!errorMsg && exitCode === 0) {
     return;
   }
@@ -102,12 +180,17 @@ function handleToolResult(data) {
     return;
   }
 
+  // Extract semantic error signals
+  const errorSignals = extractErrorSignals(errorMsg);
+
+  // Collect environment fingerprint
+  const envFingerprint = collectEnvFingerprint();
+
   const fingerprint = shortHash(`${data.toolName}\n${errorMsg.replace(/\d+/g, '<N>')}`);
 
   // Build tool context from Claude Code hook input
-  const toolInput = data.toolInput || data.tool_input || {};
   const toolContext = { toolName: data.toolName || 'unknown' };
-  if (toolInput.command) toolContext.command = String(toolInput.command).slice(0, 500);
+  if (command) toolContext.command = command;
   if (toolInput.file_path) toolContext.filePath = String(toolInput.file_path).slice(0, 300);
   const workingDir = String(
     toolInput.cwd || toolInput.working_directory || data.cwd || process.cwd() || ''
@@ -117,7 +200,7 @@ function handleToolResult(data) {
 
   // Create event
   const event = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     eventId: `evt_${Date.now()}_${Math.random().toString(36).slice(2)}`,
     clientId: 'hook',
     deviceId: 'hook',
@@ -135,6 +218,9 @@ function handleToolResult(data) {
       cwdHash: shortHash(process.cwd()),
     },
     toolContext: toolContext,
+    error_signals: errorSignals.length > 0 ? errorSignals : undefined,
+    command_audit: commandAudit,
+    env_fingerprint: envFingerprint,
     syncStatus: 'pending'
   };
 
@@ -216,5 +302,9 @@ function handleToolResult(data) {
     }
   }
 
-  process.stderr.write(`\nmac-aicheck: 已记录问题 ${event.eventId}\n`);
+  // Output summary with command classification and error signals
+  const parts = [`mac-aicheck: 已记录问题 ${event.eventId}`];
+  if (commandCategory !== 'unknown') parts.push(`命令类型: ${commandCategory}`);
+  if (errorSignals.length > 0) parts.push(`错误信号: ${errorSignals.join(', ')}`);
+  process.stderr.write(`\n${parts.join(' | ')}\n`);
 }

@@ -1,5 +1,51 @@
 // Agent Lite 类型定义
 
+/** 语义化错误信号标签 */
+export type ErrorSignal =
+  | 'network_connection_refused'  // ECONNREFUSED
+  | 'network_timeout'             // ETIMEDOUT / TIMEOUT
+  | 'process_terminated'          // SIGKILL / SIGTERM
+  | 'context_overflow'            // MAX_TOKEN / context window exceeded
+  | 'rate_limited'                // 429 / RATE_LIMIT
+  | 'permission_denied'           // EACCES / permission denied
+  | 'command_not_found'           // ENOENT / command not found
+  | 'mcp_server_error'            // MCP server errors
+  | 'git_error'                   // git fatal errors
+  | 'python_error'                // Python tracebacks
+  | 'npm_error'                   // npm/node errors
+  | 'unknown_error';
+
+/** 命令分类类型 */
+export type CommandCategory = 'git' | 'npm' | 'node' | 'python' | 'shell' | 'brew' | 'docker' | 'unknown';
+
+/** 命令执行结果 */
+export type CommandExitStatus = 'success' | 'failure' | 'timeout';
+
+/** 命令审计记录 */
+export interface CommandAudit {
+  command: string;
+  category: CommandCategory;
+  exitStatus: CommandExitStatus;
+  exitCode?: number;
+  durationMs?: number;
+}
+
+/** 环境指纹快照 */
+export interface EnvFingerprint {
+  os: string;
+  arch: string;
+  totalMemoryGB: number;
+  nodeVersion: string;
+  pythonVersion: string | null;
+  gitVersion: string | null;
+  npmRegistry: string | null;
+  shellProxy: string | null;
+  httpProxy: string | null;
+  httpsProxy: string | null;
+  claudeVersion: string | null;
+  cwdHash: string;
+}
+
 export interface AgentEvent {
   schemaVersion: number;
   eventId: string;
@@ -18,6 +64,12 @@ export interface AgentEvent {
     node: string;
     cwdHash: string;
   };
+  /** 语义化错误信号标签 */
+  error_signals?: ErrorSignal[];
+  /** 命令审计记录（来自 PostTool Hook） */
+  command_audit?: CommandAudit;
+  /** 环境指纹快照 */
+  env_fingerprint?: EnvFingerprint;
   syncStatus: 'pending' | 'synced';
   syncedAt?: string;
 }
