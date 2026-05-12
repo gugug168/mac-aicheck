@@ -1,5 +1,5 @@
 // Agent Lite CLI - 简洁实现
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, appendFileSync, unlinkSync, openSync, closeSync, statSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, appendFileSync, unlinkSync, openSync, closeSync, statSync, readdirSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import { homedir, hostname } from 'os';
 import { execFileSync, spawn } from 'child_process';
@@ -2611,6 +2611,29 @@ function installLocalAgent() {
   writeJson(join(p.agentDir, 'agent-lite.hash.json'), { sha256: hash, installedAt: nowIso() });
   const cmd = `#!/bin/bash\nSCRIPT_DIR="$(cd "$(dirname "\${BASH_SOURCE[0]}")" && pwd)"\nexec node "$SCRIPT_DIR/agent-lite.js" "$@"\n`;
   writeFileSync(p.agentCmd, cmd, 'utf-8'); chmodSync(p.agentCmd, 0o755);
+
+  // ── Install full dist/ tree to ~/.mac-aicheck/ (required by agent-lite.js) ─
+  // agent-lite.js uses relative requires: ../index.js, ../fixers/*, ../executor/*, etc.
+  const selfDir = dirname(selfPath);
+  const srcDist = join(selfDir);  // dist/ is the npm package root
+  const dstBase = p.base;
+  for (const entry of readdirSync(srcDist)) {
+    if (entry === 'agent') continue;  // agent/ already handled separately above
+    const srcEntry = join(srcDist, entry);
+    const dstEntry = join(dstBase, entry);
+    if (statSync(srcEntry).isDirectory()) {
+      // Mirror directory: copy all .js and .d.ts files
+      ensureDir(dstEntry);
+      for (const file of readdirSync(srcEntry)) {
+        if (file.endsWith('.js') || file.endsWith('.d.ts')) {
+          copyFileSync(join(srcEntry, file), join(dstEntry, file));
+        }
+      }
+    } else if (entry.endsWith('.js') || entry.endsWith('.d.ts')) {
+      copyFileSync(srcEntry, dstEntry);
+    }
+  }
+
   return { agentDir: p.agentDir, agentJs: p.agentJs, agentCmd: p.agentCmd };
 }
 
