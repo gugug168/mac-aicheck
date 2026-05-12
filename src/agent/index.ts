@@ -2614,15 +2614,34 @@ function installLocalAgent() {
 
   // ── Install full dist/ tree to ~/.mac-aicheck/ (required by agent-lite.js) ─
   // agent-lite.js uses relative requires: ../index.js, ../fixers/*, ../executor/*, etc.
+  // selfPath = dist/agent/index.js → selfDir = dist/agent/ → pkgRoot = dist/ (npm pkg root)
   const selfDir = dirname(selfPath);
-  const srcDist = join(selfDir);  // dist/ is the npm package root
+  const pkgRoot = dirname(selfDir);        // dist/agent/ → dist/
+  const srcDist = join(pkgRoot);          // dist/ = npm package root
   const dstBase = p.base;
+
+  // Recursive copy helper: copies all .js/.d.ts files from srcDir to dstDir
+  function copyDirRecursive(srcDir: string, dstDir: string) {
+    ensureDir(dstDir);
+    for (const entry of readdirSync(srcDir)) {
+      const srcPath = join(srcDir, entry);
+      const dstPath = join(dstDir, entry);
+      if (statSync(srcPath).isDirectory()) {
+        copyDirRecursive(srcPath, dstPath);
+      } else if (entry.endsWith('.js') || entry.endsWith('.d.ts')) {
+        copyFileSync(srcPath, dstPath);
+      }
+    }
+  }
+
   for (const entry of readdirSync(srcDist)) {
-    if (entry === 'agent') continue;  // agent/ already handled separately above
     const srcEntry = join(srcDist, entry);
     const dstEntry = join(dstBase, entry);
-    if (statSync(srcEntry).isDirectory()) {
-      // Mirror directory: copy all .js and .d.ts files
+    if (entry === 'agent') {
+      // Recursively mirror agent/ subdirectories (e.g. agent/hermes/)
+      copyDirRecursive(srcEntry, p.agentDir);
+    } else if (statSync(srcEntry).isDirectory()) {
+      // Mirror top-level directory: copy all .js and .d.ts files
       ensureDir(dstEntry);
       for (const file of readdirSync(srcEntry)) {
         if (file.endsWith('.js') || file.endsWith('.d.ts')) {
