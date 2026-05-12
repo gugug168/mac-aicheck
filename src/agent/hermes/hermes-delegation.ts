@@ -107,13 +107,19 @@ export class HermesDelegationService {
       let stderr = '';
       let killed = false;
 
-      const proc: ChildProcess = spawn(this.hermesPath, args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env },
-      });
+      // Build shell command: hermes chat -q '<escaped-goal>' -t terminal -Q ...
+      // args = ['chat', '-q', goal, '-t', 'terminal', '-Q', ...]
+      // goal is at args[2]; shell-escape it and rebuild command
+      const escapedGoal = query.replace(/'/g, "'\\''");
+      // Replace the unescaped goal in the args array with the escaped version
+      const safeArgs = [...args];
+      safeArgs[2] = `'${escapedGoal}'`;
+      const hermesCmd = 'hermes ' + safeArgs.join(' ');
 
-      // Query is already passed via -q flag in args — do NOT write to stdin
-      // (writing here would interfere with hermes's -q argument parsing)
+      // Spawn via bash -c so hermes sees a proper shell context (not bare Node pipe)
+      const proc: ChildProcess = spawn('/bin/bash', ['-c', hermesCmd],
+        { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env } }
+      );
 
       if (proc.stdout) {
         proc.stdout.on('data', (data: Buffer) => {
