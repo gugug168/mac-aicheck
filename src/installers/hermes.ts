@@ -9,8 +9,8 @@
 
 import { spawn, execSync } from 'child_process';
 import { existsSync } from 'fs';
-import * as path from 'path';
-import * as os from 'os';
+import { join, resolve } from 'path';
+import { homedir } from 'os';
 
 import { Installer, InstallEvent, InstallResult } from './index.js';
 
@@ -54,8 +54,8 @@ function npmInstall(pkg: string, onProgress: (event: InstallEvent) => void, regi
 export function isInstalled(): boolean {
   // Priority: which hermes > ~/hermes-agent > ~/.local/bin/hermes
   if (cmdExists('hermes')) return true;
-  if (existsSync(path.join(os.homedir(), 'hermes-agent'))) return true;
-  if (existsSync(path.join(os.homedir(), '.local', 'bin', 'hermes'))) return true;
+  if (existsSync(join(homedir(), 'hermes-agent'))) return true;
+  if (existsSync(join(homedir(), '.local', 'bin', 'hermes'))) return true;
   return false;
 }
 
@@ -83,7 +83,7 @@ async function installViaNpm(onProgress: (event: InstallEvent) => void): Promise
 }
 
 async function installViaGit(onProgress: (event: InstallEvent) => void): Promise<boolean> {
-  const destDir = path.join(os.homedir(), 'hermes-agent');
+  const destDir = join(homedir(), 'hermes-agent');
   if (!existsSync(destDir)) {
     onProgress({ type: 'progress', step: '正在克隆 Hermes Agent 仓库...', pct: 20 });
     onProgress({ type: 'log', line: `$ git clone https://github.com/NousResearch/hermes-agent.git ${destDir}` });
@@ -158,7 +158,7 @@ export async function upgrade(onProgress: (event: InstallEvent) => void): Promis
     return { success: false, message: 'Hermes Agent 未安装' };
   }
 
-  const hermesSrc = path.join(os.homedir(), 'hermes-agent');
+  const hermesSrc = join(homedir(), 'hermes-agent');
   if (existsSync(hermesSrc) && cmdExists('hermes')) {
     // If installed via git, try git pull
     onProgress({ type: 'progress', step: '正在更新 Hermes Agent (git pull)...', pct: 30 });
