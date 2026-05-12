@@ -66,7 +66,8 @@ export class HermesDelegationService {
     const startTime = Date.now();
 
     // Build hermes arguments
-    const args: string[] = ['chat', '-q', goal, '-t', 'terminal'];
+    // -Q = quiet mode (suppress session banner/progress, needed for pipe parsing)
+    const args: string[] = ['chat', '-q', goal, '-t', 'terminal', '-Q'];
 
     if (options?.toolsets && options.toolsets.length > 0) {
       args.push('--toolsets', options.toolsets.join(','));
@@ -78,10 +79,10 @@ export class HermesDelegationService {
       args.push('--model', options.model);
     }
 
-    // Add context as additional -q if provided
-    const fullCommand = context ? `${goal}\n\nContext:\n${context}` : goal;
+    // Context is appended to the goal as additional lines (no stdin needed)
+    const fullQuery = context ? `${goal}\n\nContext:\n${context}` : goal;
 
-    const result = await this.spawnHermes(taskId, fullCommand, args, timeoutMs, startTime);
+    const result = await this.spawnHermes(taskId, fullQuery, args, timeoutMs, startTime);
 
     // Write result to IPC file
     const resultPath = join(this.resultsDir, `${taskId}.json`);
@@ -111,11 +112,8 @@ export class HermesDelegationService {
         env: { ...process.env },
       });
 
-      // Send the query to stdin
-      if (proc.stdin) {
-        proc.stdin.write(query);
-        proc.stdin.end();
-      }
+      // Query is already passed via -q flag in args — do NOT write to stdin
+      // (writing here would interfere with hermes's -q argument parsing)
 
       if (proc.stdout) {
         proc.stdout.on('data', (data: Buffer) => {
