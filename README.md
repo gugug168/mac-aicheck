@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**macOS AI 开发环境检测工具 — 诊断 + 智能修复 + 工具安装**
+**macOS AI 开发环境检测工具 — 环境诊断 + AICO EVO 集成 + 智能修复**
 
 [![npm version](https://badge.fury.io/js/mac-aicheck.svg)](https://www.npmjs.com/package/mac-aicheck)
 [![macOS](https://img.shields.io/badge/macOS-12+-orange)](https://www.apple.com/mac/)
@@ -10,33 +10,48 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4-blue)](https://www.typescriptlang.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[功能特性](#功能特性) • [快速开始](#快速开始) • [使用文档](#使用文档) • [路线图](#路线图) • [常见问题](#常见问题)
+[功能特性](#功能特性) • [快速开始](#快速开始) • [使用文档](#使用文档) • [AICO EVO 集成](#aico-evo-agent) • [开发](#开发) • [贡献](#参与贡献)
 
 </div>
 
 ## 功能特性
 
-- 🔍 **21 项核心环境检测** — 覆盖 AI 工具链、系统权限、开发工具链、网络配置
-- 🧪 **33 项高级扩展检测** — 默认隐藏且不计分，避免把可选项误算成核心环境问题
-- 🛠️ **一键修复** — 检测到问题自动给出修复命令，点击即可执行
-- 📦 **AI 工具安装** — 从 Web UI 一键安装主流 AI 编程工具
-- 📊 **可视化报告** — 评分制 + 分类展示，支持导出历史记录
-- 🌏 **上报 AICO EVO** — 匿名上传诊断数据，贡献 AI 开发环境行业数据
+- 🔍 **49 项环境检测** — 25 项核心检测 + 24 项扩展检测
+- 🤖 **AI 工具链覆盖** — Claude Code、OpenClaw、Gemini CLI、CCSwitch 等
+- 🔧 **开发工具诊断** — Git、Node.js、Python、Homebrew、Xcode CLT
+- 🌐 **网络配置检测** — npm 镜像、代理配置、SSL 证书、DNS 解析
+- 🍎 **macOS 原生支持** — Apple Silicon、Rosetta 2、开发者模式、屏幕录制权限
+- 📊 **Web 可视化报告** — 本地 HTTP 服务 + 交互式评分展示
+- 🌏 **AICO EVO 集成** — 设备绑定、悬赏任务、Worker Daemon、Hermes 错误上报
 
 ## 支持的检测项
 
+### 核心检测（25 项，默认启用）
+
 | 类别 | 检测项 |
 |------|--------|
-| 🍺 Homebrew | Homebrew 安装 |
-| 🍎 macOS 系统 | Apple Silicon、Rosetta 2、屏幕录制权限、开发者模式 |
-| 🔧 开发工具链 | Git、Git 全局身份、Git 凭据链路、Xcode CLT、Node.js 版本、Python 版本、uv 包管理器 |
+| 🍺 Homebrew | Homebrew 安装状态 |
+| 🍎 macOS 系统 | Apple Silicon 架构、Rosetta 2、开发者模式 |
+| 🔧 开发工具链 | Git、Git 全局身份配置、Git 凭据健康、Xcode CLT、Node.js 版本、Python 版本、uv 包管理器 |
 | 🤖 AI 工具 | Claude Code、OpenClaw、Gemini CLI、CCSwitch |
-| 🔑 身份与权限 | admin 权限 |
-| 🌐 网络与证书 | npm 镜像、代理配置、SSL 证书、DNS 解析 |
+| 🔑 身份与权限 | Admin 权限 |
+| 🌐 网络与证书 | npm 镜像、代理配置、SSL 证书、DNS 解析、站点可达性 |
+| 📁 路径环境 | 路径中文字符、路径空格、环境变量路径长度 |
+
+### 扩展检测（24 项，默认隐藏）
+
+| 类别 | 检测项 |
+|------|--------|
+| 🔧 高级工具链 | C++ 编译器、CUDA 版本、GPU 驱动、GPU 监控、VRAM 使用 |
+| 🐍 Python 深度检测 | Python 项目虚拟环境、Python 环境对齐 |
+| 📦 包管理器 | 附加包管理器检测、Node 全局 bin 路径、Node 管理器冲突 |
+| 🔌 配置健康 | Claude CLI、Claude 配置健康、OpenClaw 配置健康、MCP 配置健康、Shell 编码健康、终端配置健康 |
+| 🌐 网络深度 | 镜像源、防火墙端口 |
+| 🖥️ 系统环境 | 时间同步、虚拟化支持、临时空间、WSL 版本、PowerShell 版本、MCP 命令可用性、Hermes 集成状态 |
 
 说明：
-- 默认评分只统计核心 21 项。
-- 高级扩展检测默认隐藏，不参与评分，用于更深的环境排查。
+- 核心检测参与评分，扩展检测默认隐藏不计分。
+- 使用 `--all` 参数可显示全部检测项。
 
 ## 三端生态
 
@@ -44,8 +59,8 @@ MacAICheck 是 AICO EVO 三端生态的 macOS 客户端：
 
 | 仓库 | 平台 | 技术栈 | 状态 |
 |------|------|--------|------|
-| [WinAICheck](https://github.com/gugug168/WinAICheck) | Windows | Bun + TypeScript | ✅ 37+ 扫描器 + 完整修复系统 |
-| **MacAICheck** | **macOS** | **Node + TypeScript** | 🚧 21 项检测 + 修复系统开发中 |
+| [WinAICheck](https://github.com/gugug168/WinAICheck) | Windows | Bun + TypeScript | ✅ 37+ 扫描器 + 完整修复系统 + Agent Lite |
+| **MacAICheck** | **macOS** | **Node + TypeScript** | ✅ 49 项检测 + AICO EVO 集成 |
 | [aicoevo-platform](https://github.com/gugug168/aicoevo-platform) | 服务端 | FastAPI + Next.js | 🔄 持续集成中 |
 
 ## 快速开始
@@ -103,15 +118,13 @@ docker run -it --rm \
 
 ## AI 工具支持
 
-| 工具 | 安装命令 | 状态 |
-|------|---------|------|
+| 工具 | 安装命令 | 检测状态 |
+|------|---------|---------|
 | Claude Code | `npm i -g @anthropic-ai/claude-code` | ✅ |
 | OpenClaw | `npm i -g openclaw` | ✅ |
 | Gemini CLI | `npm i -g @google/gemini-cli` | ✅ |
-| OpenCode | `npm i -g opencode-ai` | ✅ |
 | CCSwitch | `npm i -g ccswitch` | ✅ |
-| Cute Claude Hooks | `npm i -g cute-claude-hooks` | ✅ |
-| GitHub Copilot | `gh copilot` | ✅ 手动 |
+| GitHub Copilot | `gh extension install github/gh-copilot` | ✅ 手动 |
 | Xcode CLT | `xcode-select --install` | ✅ GUI |
 
 ## AICO EVO Agent
@@ -200,32 +213,22 @@ mac-aicheck agent owner-check
 mac-aicheck/
 ├── src/
 │   ├── index.ts              # CLI 入口 + HTTP 服务器
-│   ├── scanners/             # 核心 + 高级检测器
-│   │   ├── index.ts          # Scanner 注册表
+│   ├── scanners/             # 核心 + 高级检测器（49 项）
+│   │   ├── registry.ts       # Scanner 注册表
 │   │   ├── types.ts          # 类型定义
-│   │   ├── claude-code.ts    # Claude Code
-│   │   ├── openclaw.ts       # OpenClaw
-│   │   ├── gemini-cli.ts     # Gemini CLI
-│   │   ├── homebrew.ts       # Homebrew
-│   │   ├── xcode.ts          # Xcode CLT
-│   │   └── ...
-│   ├── agent/                 # AICO EVO Agent 模块
-│   │   ├── index.ts          # Agent 主逻辑 + 所有子命令
+│   │   └── *.ts              # 各类扫描器实现
+│   ├── agent/                # AICO EVO Agent 模块
+│   │   ├── index.ts          # Agent 主逻辑 + 子命令
 │   │   ├── embedded-agent-manager.ts  # Worker daemon 生命周期
 │   │   └── ...
-│   ├── scoring/
-│   │   └── calculator.ts     # 评分算法
-│   ├── installers/
-│   │   └── index.ts          # AI 工具安装器定义
 │   ├── api/
-│   │   └── aicoevo-client.ts # AICO EVO 上报客户端
-│   └── report/
-│       └── html.ts           # HTML 报告生成器
+│   │   └── aicoevo-client.ts # AICO EVO API 客户端
+│   └── web/                  # Web UI 静态资源
 ├── tests/
-│   ├── agent-e2e.test.ts      # Agent E2E 测试（11 cases）
-│   └── hermes-hook.test.ts    # Hermes hook 测试（10 cases）
+│   ├── agent-e2e.test.ts     # Agent E2E 测试
+│   └── hermes-hook.test.ts   # Hermes hook 测试
+├── docs/                     # 项目文档
 ├── dist/                     # 编译输出
-├── dist/web/                 # Web UI 运行时数据（如 scan-data.json）
 └── package.json
 ```
 
@@ -236,65 +239,31 @@ mac-aicheck/
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `AICO_EVO_URL` | `https://aicoevo.net` | AICO EVO API 地址 |
-| `AICO_EVO_TOKEN` | — | 上报认证 Token |
+| `AICO_EVO_TOKEN` | — | 设备绑定后自动生成的认证 Token |
 | `PORT` | `7890` | Web 服务端口 |
 
-### Agent Lite
+### Agent 协议说明
 
-```bash
-# Claude Code + OpenClaw 一起启用
-mac-aicheck agent enable --target all
-
-# 仅启用 OpenClaw 监控
-mac-aicheck agent enable --target openclaw
-
-# 在 macOS 真机上跑 OpenClaw 烟雾验收
-bash scripts/openclaw-smoke.sh
-```
-
-说明：
-- Claude Code 使用 `~/.claude/settings.json` 的 SessionStart/PostToolUse hooks。
-- OpenClaw 使用 shell hook 写入 `~/.zshrc` / `~/.bashrc` / `~/.bash_profile`。
-- 悬赏命令需要先运行 `mac-aicheck agent bind` 获取 Agent API Key。
-- `mac-aicheck agent bind` 的主流程会自动打开 AICOEVO 绑定页；如果浏览器里已经登录，只需在网页中点一次确认即可完成绑定。
-- 6 位绑定码仍保留为兼容兜底流程，仅在手动调试或旧客户端场景下使用，例如 `mac-aicheck agent bind --code 123456`。
-- Agent Protocol V2 的 P0 自动验证范围仅包含 owner validation（L0/L1）；当平台下发 `execution_task.kind=owner_repair` 且仍缺少 macOS rollback parity 时，MacAICheck 会显式阻断并返回 `blocked_pending_rollback_parity`，不会自动执行本地修复。
-
-### Phase 6 协议说明
-
-- MacAICheck 同时兼容 legacy `mode` 和 Phase 6 `lifecycle_state`，但 Phase 6 自动化行为只认服务端返回的 `lifecycle_state`、`risk_level`、`repair_capability`、`consent_state`、`rollback_state`。
-- 当前 MVP 只开放 L0/L1 自动验证；即使平台 payload 返回 `owner_repair` 或 `run_repair_now`，MacAICheck 在 backup/rollback parity 完成前也必须阻断，不执行 L2 自动修复。
-- 旧客户端或缺字段 payload 只能走“验证 / 人工提示”路径，不能默认升级到 L2 自动修复。
-- `L3` 永不静默执行。
-
-### 上报数据格式
-
-AICO EVO 使用与 WinAICheck 一致的格式：
-
-```json
-{
-  "timestamp": "2026-04-06T12:00:00.000Z",
-  "score": 85,
-  "results": [
-    { "id": "claude-code", "status": "pass", "message": "v2.1.92" }
-  ],
-  "systemInfo": {
-    "os": "darwin",
-    "version": "15.0",
-    "arch": "arm64",
-    "hostname": "Macmini"
-  }
-}
-```
+- Agent Protocol V2 支持 L0/L1 自动验证（owner validation）
+- `lifecycle_state` 驱动自动化行为：`pending_setup` → `ready` → `active` → `paused`
+- L2/L3 自动修复需要 backup/rollback parity 完成后才能启用
+- 详见 `docs/superpowers/specs/2026-04-14-agent-lite-design.md`
 
 ## 开发
 
 ```bash
-# 开发模式（监听编译）
-npm run watch
+# 克隆仓库
+git clone https://github.com/gugug168/mac-aicheck.git
+cd mac-aicheck
 
-# 类型检查
-npm run typecheck
+# 安装依赖
+npm install
+
+# 编译 TypeScript
+npm run build
+
+# 运行扫描
+npm run scan
 
 # 运行测试
 npm test
