@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**macOS AI 开发环境检测工具 — 诊断 + 一键修复 + 工具安装**
+**macOS AI 开发环境检测工具 — 诊断 + 智能修复 + 工具安装**
 
 [![macOS](https://img.shields.io/badge/macOS-12+-orange)](https://www.apple.com/mac/)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green)](https://nodejs.org/)
