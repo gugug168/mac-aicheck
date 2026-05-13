@@ -4,13 +4,13 @@
 
 **macOS AI 开发环境检测工具 — 诊断 + 智能修复 + 工具安装**
 
+[![npm version](https://badge.fury.io/js/mac-aicheck.svg)](https://www.npmjs.com/package/mac-aicheck)
 [![macOS](https://img.shields.io/badge/macOS-12+-orange)](https://www.apple.com/mac/)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4-blue)](https://www.typescriptlang.org/)
-[![npm version](https://badge.fury.io/js/mac-aicheck.svg)](https://www.npmjs.com/package/mac-aicheck)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[功能特性](#功能特性) • [快速开始](#快速开始) • [使用文档](#使用文档) • [开发指南](#开发指南)
+[功能特性](#功能特性) • [快速开始](#快速开始) • [使用文档](#使用文档) • [路线图](#路线图) • [常见问题](#常见问题)
 
 </div>
 
