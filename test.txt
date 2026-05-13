@@ -1,1 +1,1 @@
-test file
+test file for GOAL verification
