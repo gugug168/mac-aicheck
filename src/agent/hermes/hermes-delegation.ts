@@ -66,7 +66,8 @@ export class HermesDelegationService {
     const startTime = Date.now();
 
     // Build hermes arguments
-    const args: string[] = ['chat', '-q', goal, '-t', 'terminal'];
+    // -Q = quiet mode (suppress session banner/progress, needed for pipe parsing)
+    const args: string[] = ['chat', '-q', goal, '-t', 'terminal', '-Q'];
 
     if (options?.toolsets && options.toolsets.length > 0) {
       args.push('--toolsets', options.toolsets.join(','));
@@ -78,10 +79,10 @@ export class HermesDelegationService {
       args.push('--model', options.model);
     }
 
-    // Add context as additional -q if provided
-    const fullCommand = context ? `${goal}\n\nContext:\n${context}` : goal;
+    // Context is appended to the goal as additional lines (no stdin needed)
+    const fullQuery = context ? `${goal}\n\nContext:\n${context}` : goal;
 
-    const result = await this.spawnHermes(taskId, fullCommand, args, timeoutMs, startTime);
+    const result = await this.spawnHermes(taskId, fullQuery, args, timeoutMs, startTime);
 
     // Write result to IPC file
     const resultPath = join(this.resultsDir, `${taskId}.json`);
@@ -106,16 +107,19 @@ export class HermesDelegationService {
       let stderr = '';
       let killed = false;
 
-      const proc: ChildProcess = spawn(this.hermesPath, args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env },
-      });
+      // Build shell command: hermes chat -q '<escaped-goal>' -t terminal -Q ...
+      // args = ['chat', '-q', goal, '-t', 'terminal', '-Q', ...]
+      // goal is at args[2]; shell-escape it and rebuild command
+      const escapedGoal = query.replace(/'/g, "'\\''");
+      // Replace the unescaped goal in the args array with the escaped version
+      const safeArgs = [...args];
+      safeArgs[2] = `'${escapedGoal}'`;
+      const hermesCmd = 'hermes ' + safeArgs.join(' ');
 
-      // Send the query to stdin
-      if (proc.stdin) {
-        proc.stdin.write(query);
-        proc.stdin.end();
-      }
+      // Spawn via bash -c so hermes sees a proper shell context (not bare Node pipe)
+      const proc: ChildProcess = spawn('/bin/bash', ['-c', hermesCmd],
+        { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env } }
+      );
 
       if (proc.stdout) {
         proc.stdout.on('data', (data: Buffer) => {
