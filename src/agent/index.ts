@@ -2896,6 +2896,29 @@ export async function main(argv: string[]) {
   }
   if (command === 'sync') { const result = await syncEvents(); process.stdout.write(JSON.stringify(result) + '\n'); return result.ok || result.skipped ? 0 : 1; }
 
+  // ==================== Hermes Delegate CLI ====================
+  if (command === 'hermes-delegate') {
+    const showHelp = args.help || args.h || Object.keys(args).length === 0;
+    if (showHelp) {
+      process.stdout.write(`hermes-delegate - Hermes Delegation CLI
+
+用法:
+  mac-aicheck hermes-delegate --help        显示此帮助信息
+  mac-aicheck hermes-delegate <subcommand>  运行 Hermes 委托子命令
+
+描述:
+  Hermes 委托 CLI 用于与远程 Hermes Agent 实例通信，支持任务委托、状态查询等功能。
+
+示例:
+  mac-aicheck hermes-delegate --help
+
+`);
+      return 0;
+    }
+    process.stderr.write('hermes-delegate: 未知的选项或子命令。运行 --help 查看用法。\n');
+    return 1;
+  }
+
   if (command === 'report-tool-event') {
     const step = String(args.step || '').trim();
     const status = String(args.status || 'error').trim();
