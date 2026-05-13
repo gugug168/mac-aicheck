@@ -5,6 +5,8 @@
 [![macOS](https://img.shields.io/badge/macOS-15+-orange)](https://www.apple.com/mac/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-green)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue)](https://www.typescriptlang.org/)
+[![npm version](https://badge.fury.io/js/mac-aicheck.svg)](https://www.npmjs.com/package/mac-aicheck)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ## 功能特性
 
@@ -29,6 +31,16 @@
 说明：
 - 默认评分只统计核心 21 项。
 - 高级扩展检测默认隐藏，不参与评分，用于更深的环境排查。
+
+## 三端生态
+
+MacAICheck 是 AICO EVO 三端生态的 macOS 客户端：
+
+| 仓库 | 平台 | 技术栈 | 状态 |
+|------|------|--------|------|
+| [WinAICheck](https://github.com/gugug168/WinAICheck) | Windows | Bun + TypeScript | ✅ 37+ 扫描器 + 完整修复系统 |
+| **MacAICheck** | **macOS** | **Node + TypeScript** | 🚧 21 项检测 + 修复系统开发中 |
+| [aicoevo-platform](https://github.com/gugug168/aicoevo-platform) | 服务端 | FastAPI + Next.js | 🔄 持续集成中 |
 
 ## 快速开始
 
