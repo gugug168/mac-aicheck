@@ -1,12 +1,18 @@
 # MacAICheck
 
-> macOS AI 开发环境检测工具 — 诊断 + 一键修复 + 工具安装
+<div align="center">
 
-[![macOS](https://img.shields.io/badge/macOS-15+-orange)](https://www.apple.com/mac/)
-[![Node.js](https://img.shields.io/badge/Node.js-20+-green)](https://nodejs.org/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue)](https://www.typescriptlang.org/)
+**macOS AI 开发环境检测工具 — 诊断 + 一键修复 + 工具安装**
+
+[![macOS](https://img.shields.io/badge/macOS-12+-orange)](https://www.apple.com/mac/)
+[![Node.js](https://img.shields.io/badge/Node.js-18+-green)](https://nodejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.4-blue)](https://www.typescriptlang.org/)
 [![npm version](https://badge.fury.io/js/mac-aicheck.svg)](https://www.npmjs.com/package/mac-aicheck)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+[功能特性](#功能特性) • [快速开始](#快速开始) • [使用文档](#使用文档) • [开发指南](#开发指南)
+
+</div>
 
 ## 功能特性
 
