@@ -2,7 +2,18 @@ import type { Scanner, ScanResult } from './types';
 import * as https from 'https';
 import { registerScanner } from './registry';
 
+type HttpsCheckResult = { code: string; ok: boolean };
+
+declare global {
+  var __MAC_AICHECK_TEST_HTTPS_CHECK__:
+    | ((hostname: string, path?: string) => Promise<HttpsCheckResult>)
+    | undefined;
+}
+
 function checkHttpsSite(hostname: string, path: string = '/'): Promise<{ code: string; ok: boolean }> {
+  if (typeof globalThis.__MAC_AICHECK_TEST_HTTPS_CHECK__ === 'function') {
+    return globalThis.__MAC_AICHECK_TEST_HTTPS_CHECK__(hostname, path);
+  }
   return new Promise((resolve) => {
     const req = https.request({ hostname, path, method: 'HEAD', timeout: 5000 }, (res) => {
       const code = String(res.statusCode || 'FAIL');

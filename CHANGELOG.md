@@ -4,6 +4,8 @@ All notable changes will be documented in this file.
 
 ## [Unreleased]
 
+## [1.0.10] - 2026-05-14
+
 ### Changed
 
 - 轻量 `--serve` 页面新增吸顶导航、环境结论、当前最该处理和后续路线区块，并支持从卡片直接定位到对应问题项。

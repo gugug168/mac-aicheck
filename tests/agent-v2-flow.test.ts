@@ -672,7 +672,8 @@ describe('agent v2 flow', () => {
       latestVersion: '1.1.0',
       eventType: 'version_update_available',
     });
-    expect(output).toContain('mac-aicheck 新版本可用');
+    expect(output).toContain('发现新版本');
+    expect(output).toContain('mac-aicheck: 1.0.0 → 1.1.0');
 
     const cache = JSON.parse(readFileSync(cachePath, 'utf8')) as { notifiedSignature?: string };
     expect(cache.notifiedSignature).toBe('mac-aicheck:1.0.0->1.1.0');
@@ -680,15 +681,15 @@ describe('agent v2 flow', () => {
 
   it('falls back to local VERSION file when npm_package_version is missing', () => {
     const home = seedConfig();
-    writeFileSync(path.join(home, '.mac-aicheck', 'VERSION'), '1.0.9\n', 'utf8');
+    writeFileSync(path.join(home, '.mac-aicheck', 'VERSION'), '1.0.10\n', 'utf8');
     delete process.env.npm_package_version;
 
-    expect(_testHelpers.resolveLocalVersion()).toBe('1.0.9');
+    expect(_testHelpers.resolveLocalVersion()).toBe('1.0.10');
     expect(_testHelpers.buildToolAutoReport({
       step: 'bind',
       failedItems: ['bind-request'],
       message: 'bind failed',
-    }).env_summary.tool_version).toBe('1.0.9');
+    }).env_summary.tool_version).toBe('1.0.10');
   });
 
   it('treats failed upgrade results as unsuccessful', () => {
@@ -768,7 +769,7 @@ describe('worker-on (TASK-091)', () => {
     expect(cfg.workerEnabled).toBe(true);
   });
 
-  it('upgradeNotify defaults to true and autoUpgrade defaults to true in config', () => {
+  it('upgradeNotify defaults to true and autoUpgrade defaults to false in config', () => {
     const home = createTempHome();
     homes.push(home);
     const configDir = path.join(home, '.mac-aicheck');
@@ -785,7 +786,7 @@ describe('worker-on (TASK-091)', () => {
 
     const cfg = _testHelpers.loadConfig();
     expect(cfg.upgradeNotify).toBe(true);
-    expect(cfg.autoUpgrade).toBe(true);
+    expect(cfg.autoUpgrade).toBe(false);
   });
 
   it('config set/get persists runtime boolean settings', async () => {
@@ -2245,7 +2246,7 @@ describe('worker-on (TASK-091)', () => {
         expect(body.env_summary.event_type).toBe('step_failed');
         expect(body.env_summary.failed_items).toEqual(['bind-request']);
         expect(body.env_summary.failure_signature).toBe('mac-aicheck:bind:bind-request:500');
-        expect(body.env_summary.tool_version).toBe('1.0.9');
+        expect(body.env_summary.tool_version).toBe('1.0.10');
         return mockResponse({ status: 'received' });
       }
       throw new Error(`unexpected fetch ${url}`);

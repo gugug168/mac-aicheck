@@ -21,6 +21,7 @@ function commandError(status = 1, stdout = '', stderr = ''): Error & {
 
 afterEach(() => {
   _test.mockExecSync = null;
+  delete globalThis.__MAC_AICHECK_TEST_HTTPS_CHECK__;
 });
 
 describe('scanner regressions', () => {
@@ -126,10 +127,10 @@ describe('scanner regressions', () => {
   });
 
   it('ssl-certs downgrades partial HTTPS failures to warn', async () => {
-    _test.mockExecSync = (cmd: string) => {
-      if (cmd.includes('https://github.com')) return Buffer.from('200');
-      if (cmd.includes('https://registry.npmjs.org')) throw commandError(60, '000');
-      throw commandError();
+    globalThis.__MAC_AICHECK_TEST_HTTPS_CHECK__ = async (hostname: string) => {
+      if (hostname === 'github.com') return { code: '200', ok: true };
+      if (hostname === 'registry.npmjs.org') return { code: 'FAIL', ok: false };
+      return { code: 'FAIL', ok: false };
     };
 
     const scanner = getScannerById('ssl-certs');
