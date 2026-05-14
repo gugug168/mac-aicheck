@@ -1,13 +1,6 @@
 # MacAICheck
 
-macOS AI 开发环境一键检测与修复工具。自动扫描 55+ 项环境配置，定位 AI 开发工具链问题，并提供自动修复方案。
-
-## 功能概览
-
-- **环境扫描** — 55+ 检测项，覆盖工具链、AI 工具、网络、权限等 7 大类别
-- **自动修复** — 内置 Fixer 系统，对常见问题提供一键修复
-- **评分报告** — 综合评分 + HTML 可视化报告
-- **云端同步** — 扫描结果上传至 AICoEvo 平台，跨设备追踪环境健康度
+macOS AI 开发环境一键检测与修复工具。55+ 项自动扫描，覆盖 AI 工具链、系统配置、网络环境，并提供智能修复建议。
 
 ## 快速开始
 
@@ -15,115 +8,113 @@ macOS AI 开发环境一键检测与修复工具。自动扫描 55+ 项环境配
 # 安装
 npm install -g mac-aicheck
 
-# 运行扫描
-mac-aicheck scan
+# 运行检测（默认命令）
+mac-aicheck
 
-# 生成 HTML 报告
-mac-aicheck report
+# 检测并上传结果
+mac-aicheck --upload
 
-# 上传扫描结果
-mac-aicheck upload
+# JSON 格式输出
+mac-aicheck --json
 ```
 
-## 检测项一览
+## 功能概览
 
-MacAICheck 内置 55+ 扫描器，按 7 个类别组织：
+| 功能 | 命令 | 说明 |
+|------|------|------|
+| 环境检测 | `mac-aicheck scan` | 55+ 项自动扫描，评分并给出建议 |
+| 智能修复 | `mac-aicheck fix` | 按风险等级过滤，自动修复环境问题 |
+| 生成报告 | `mac-aicheck report` | 输出 HTML/JSON 格式的检测报告 |
+| 数据上传 | `mac-aicheck upload` | 上传扫描结果至云端平台 |
+| Web 面板 | `mac-aicheck --serve` | 本地 Web Dashboard 可视化查看结果 |
+| AI Agent | `mac-aicheck agent` | 启动嵌入式 Hermes Agent 辅助诊断 |
 
-| 类别 | 检测项 | 示例 |
-|------|--------|------|
-| **Apple** | Apple Silicon、Rosetta 2、GPU/Metal、开发者模式、虚拟化、屏幕录制权限 | `apple-silicon` `rosetta` `gpu-driver` `virtualization` |
-| **工具链** | Node.js、Python、Git、Xcode CLT、C++ 编译器、uv、包管理器 | `node-version` `python-versions` `git` `xcode` `cpp-compiler` |
-| **AI 工具** | Claude Code、Gemini CLI、Hermes Agent、OpenClaw、MCP 配置 | `claude-code` `gemini-cli` `hermes` `mcp-config-health` |
-| **网络** | DNS 解析、SSL 证书、代理配置、AI 站点连通性、镜像源 | `dns-resolution` `ssl-certs` `site-reachability` `npm-mirror` |
-| **权限** | 管理员权限、防火墙端口、Shell 执行策略、终端配置 | `admin-perms` `firewall-ports` `shell-encoding-health` |
-| **系统** | PATH 长度、磁盘空间、GPU 内存压力、路径中文字符、长路径 | `env-path-length` `temp-space` `vram-usage` `path-chinese` |
-| **包管理** | Homebrew 安装与配置 | `homebrew` |
+## 扫描器分类（55+）
 
-每项检测返回 `pass` / `warn` / `fail` 三级状态，综合计算环境健康评分。
+### AI 工具 (10)
 
-## 自动修复
+CCSwitch · Claude Code CLI · Claude Code 配置 · Gemini CLI · Hermes Agent · MCP 命令可用性 · MCP 配置健康 · OpenClaw 配置 · OpenClaw
 
-MacAICheck 内置 Fixer 系统，对扫描发现的问题提供自动修复：
+### Apple 平台 (8)
 
-```
-scanAll() → 识别问题 → 匹配 Fixer → preflight → backup → execute → verify
-```
+Apple Silicon 检测 · Apple GPU/MPS · 开发者模式 · GPU/Metal 驱动 · Rosetta 2 · 屏幕录制权限 · 虚拟化支持 · WSL/Linux 环境
 
-已实现的 Fixer（12 项）：
+### 工具链 (16)
 
-- `homebrew-fixer` — Homebrew 安装与修复
-- `xcode-fixer` — Xcode Command Line Tools 安装
-- `node-version-fixer` — Node.js 版本修复
-- `python-versions-fixer` — Python 版本修复
-- `git-fixer` / `git-identity-fixer` — Git 配置修复
-- `npm-mirror-fixer` — npm 镜像源配置
-- `rosetta-fixer` — Rosetta 2 安装
-- `developer-mode-fixer` — 开发者模式启用
-- `disk-space-fixer` — 磁盘空间清理指导
-- `uv-package-manager-fixer` — uv 包管理器安装
-- `ai-tools-fixer` — AI 工具安装配置
+Git · Git 身份配置 · Git 凭据链路 · Git PATH · Node.js · Node 版本管理器 · Node 版本冲突 · Node 全局 bin 路径 · Python · Python 环境一致性 · Python 项目 venv · uv 包管理器 · C/C++ 编译器 · Xcode CLT · 包管理器 · Unix 命令
 
-修复流程包含验证闭环：修复后自动重扫确认问题已解决。
+### 网络 (6)
 
-## 项目架构
+DNS 解析 · 镜像源配置 · npm 镜像源 · 代理配置 · AI 站点连通性 · SSL 证书
 
-```
-src/
-├── scanners/          # 扫描器实现（自注册到 registry）
-│   ├── registry.ts   # 扫描器注册表
-│   ├── types.ts      # ScanResult 类型定义
-│   └── index.ts      # scanAll() 编排
-├── fixers/           # 修复器实现
-│   ├── types.ts      # Fixer 接口与 FixResult
-│   ├── registry.ts   # 修复器注册表
-│   ├── errors.ts     # 错误分类系统
-│   ├── verify.ts     # 验证闭环
-│   ├── orchestrator.ts # 修复编排
-│   └── index.ts      # fixAll() 入口
-├── scoring/          # 评分计算
-├── report/           # HTML/JSON 报告生成
-├── web/              # Web Dashboard 渲染
-├── api/              # AICoEvo API 客户端
-├── agent/            # Agent 子系统（bind、事件、Hermes hook）
-├── installers/       # AI 工具安装器
-├── shared/           # 共享工具（错误信号等）
-└── cli/              # CLI 参数解析
+### 权限 (6)
+
+管理员权限 · 防火墙端口 · Shell 脚本执行策略 · 终端编码兼容 · 终端配置 · 时间同步
+
+### 系统 (7)
+
+PATH 长度 · GPU 检测 · 长路径 · 路径中文字符 · 路径空格 · 临时目录磁盘 · GPU 内存压力
+
+### 包管理 (1)
+
+Homebrew
+
+## 修复系统
+
+内置 11 个自动修复器，采用三阶段安全流程：**预检 → 执行 → 验证**。
+
+```bash
+# 查看可修复项（不实际执行）
+mac-aicheck fix --dry-run
+
+# 仅修复绿色（低风险）项
+mac-aicheck fix --green
+
+# 修复绿色和黄色项
+mac-aicheck fix --green --yellow
 ```
 
-## 三端生态
+支持的修复器：Homebrew · Node.js 版本 · Python 版本 · Git/Git 身份 · npm 镜像 · Rosetta · 开发者模式 · 磁盘空间 · Xcode · uv 包管理器
 
-MacAICheck 是 AICoEvo 三端生态的 macOS 客户端：
+## 报告
 
-| 仓库 | 平台 | 技术栈 |
-|------|------|--------|
-| [WinAICheck](https://github.com/gugug168/WinAICheck) | Windows | Bun + TypeScript |
-| **MacAICheck** | macOS | Node + TypeScript |
-| [aicoevo-platform](https://github.com/gugug168/aicoevo-platform) | 服务端 | FastAPI + Next.js + SQLite |
+```bash
+# 扫描并生成 HTML 报告
+mac-aicheck report --scan
+
+# 输出 JSON 格式
+mac-aicheck report --scan --format json
+
+# 指定输出文件
+mac-aicheck report --scan --output result.json
+
+# 扫描 + 修复 + 报告一步完成
+mac-aicheck report --scan --fix
+```
 
 ## 开发
 
 ```bash
-# 克隆仓库
 git clone https://github.com/gugug168/mac-aicheck.git
 cd mac-aicheck
-
-# 安装依赖
 npm install
-
-# 构建
 npm run build
 
 # 运行测试
 npm test
 
-# 本地扫描
+# 本地开发扫描
 npm run scan
 ```
 
-## 贡献
+## 三端生态
 
-请阅读 [CONTRIBUTING.md](./CONTRIBUTING.md) 了解协作规范。
+| 平台 | 仓库 | 技术栈 |
+|------|------|--------|
+| macOS | [mac-aicheck](https://github.com/gugug168/mac-aicheck) | Node.js + TypeScript |
+| Windows | [WinAICheck](https://github.com/gugug168/WinAICheck) | Bun + TypeScript |
+| 服务端 | aicoevo-platform | FastAPI + Next.js + SQLite |
 
-## 许可
+## License
 
 MIT
