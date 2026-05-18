@@ -115,6 +115,17 @@ npm run scan
 | Windows | [WinAICheck](https://github.com/gugug168/WinAICheck) | Bun + TypeScript |
 | 服务端 | aicoevo-platform | FastAPI + Next.js + SQLite |
 
+## 🤖 AI每日情报
+
+作者维护的每日 AI 科技 Newsletter——每天 06:00 自动推送，用 AI 整理前两天最重要的 AI 动态，每条附深度解读。
+
+**免费样刊**：[github.com/gugug168/ai-daily-intelligence/issues/1](https://github.com/gugug168/ai-daily-intelligence/issues/1)
+
+**订阅**：微信搜索「知识星球」→ 搜索「AI每日情报」→ 加入
+早鸟价 ¥99/年（原价 ¥199/年）
+
+---
+
 ## License
 
 MIT
