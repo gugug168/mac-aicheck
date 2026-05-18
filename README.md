@@ -1,299 +1,131 @@
 # MacAICheck
 
-> macOS AI 开发环境检测工具 — 诊断 + 一键修复 + 工具安装
-
-[![macOS](https://img.shields.io/badge/macOS-15+-orange)](https://www.apple.com/mac/)
-[![Node.js](https://img.shields.io/badge/Node.js-20+-green)](https://nodejs.org/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue)](https://www.typescriptlang.org/)
-
-## 功能特性
-
-- 🔍 **21 项核心环境检测** — 覆盖 AI 工具链、系统权限、开发工具链、网络配置
-- 🧪 **33 项高级扩展检测** — 默认隐藏且不计分，避免把可选项误算成核心环境问题
-- 🛠️ **一键修复** — 检测到问题自动给出修复命令，点击即可执行
-- 📦 **AI 工具安装** — 从 Web UI 一键安装主流 AI 编程工具
-- 📊 **可视化报告** — 评分制 + 分类展示，支持导出历史记录
-- 🌏 **上报 AICO EVO** — 匿名上传诊断数据，贡献 AI 开发环境行业数据
-
-## 支持的检测项
-
-| 类别 | 检测项 |
-|------|--------|
-| 🍺 Homebrew | Homebrew 安装 |
-| 🍎 macOS 系统 | Apple Silicon、Rosetta 2、屏幕录制权限、开发者模式 |
-| 🔧 开发工具链 | Git、Git 全局身份、Git 凭据链路、Xcode CLT、Node.js 版本、Python 版本、uv 包管理器 |
-| 🤖 AI 工具 | Claude Code、OpenClaw、Gemini CLI、CCSwitch |
-| 🔑 身份与权限 | admin 权限 |
-| 🌐 网络与证书 | npm 镜像、代理配置、SSL 证书、DNS 解析 |
-
-说明：
-- 默认评分只统计核心 21 项。
-- 高级扩展检测默认隐藏，不参与评分，用于更深的环境排查。
+macOS AI 开发环境一键检测与修复工具。55+ 项自动扫描，覆盖 AI 工具链、系统配置、网络环境，并提供智能修复建议。
 
 ## 快速开始
 
-### 安装
-
 ```bash
-# 克隆仓库
-git clone https://github.com/gugug168/mac-aicheck.git
-cd mac-aicheck
+# 安装
+npm install -g mac-aicheck
 
-# 安装依赖
-npm install
-
-# 编译 TypeScript
-npm run build
-```
-
-### 使用
-
-```bash
-# 方式一：CLI 扫描
+# 运行检测（默认命令）
 mac-aicheck
 
-# 方式一补充：保留 scan 别名
-mac-aicheck scan
+# 检测并上传结果
+mac-aicheck --upload
 
-# 方式二：Web UI（浏览器打开，带交互式修复）
-mac-aicheck --serve
-
-# 方式三：直接用 node
-node dist/index.js scan
-node dist/index.js --serve
+# JSON 格式输出
+mac-aicheck --json
 ```
 
-启动后访问 http://localhost:7890
+## 功能概览
 
-### 首次运行信任说明
+| 功能 | 命令 | 说明 |
+|------|------|------|
+| 环境检测 | `mac-aicheck scan` | 55+ 项自动扫描，评分并给出建议 |
+| 智能修复 | `mac-aicheck fix` | 按风险等级过滤，自动修复环境问题 |
+| 生成报告 | `mac-aicheck report` | 输出 HTML/JSON 格式的检测报告 |
+| 数据上传 | `mac-aicheck upload` | 上传扫描结果至云端平台 |
+| Web 面板 | `mac-aicheck --serve` | 本地 Web Dashboard 可视化查看结果 |
+| AI Agent | `mac-aicheck agent` | 启动嵌入式 Hermes Agent 辅助诊断 |
 
-当前公开 MVP 以源码构建和本地 Node.js 运行路径为主，尚不承诺商店级签名分发。
+## 扫描器分类（55+）
 
-首次运行时，macOS Gatekeeper 可能提示未签名或要求额外确认。你应先核对：
+### AI 工具 (10)
 
-1. 仓库来源是否正确
-2. 当前版本、commit 或 release 说明是否一致
-3. 运行命令是否来自 README、发布说明或受信任的维护文档
+CCSwitch · Claude Code CLI · Claude Code 配置 · Gemini CLI · Hermes Agent · MCP 命令可用性 · MCP 配置健康 · OpenClaw 配置 · OpenClaw
 
-### Docker 运行
+### Apple 平台 (8)
+
+Apple Silicon 检测 · Apple GPU/MPS · 开发者模式 · GPU/Metal 驱动 · Rosetta 2 · 屏幕录制权限 · 虚拟化支持 · WSL/Linux 环境
+
+### 工具链 (16)
+
+Git · Git 身份配置 · Git 凭据链路 · Git PATH · Node.js · Node 版本管理器 · Node 版本冲突 · Node 全局 bin 路径 · Python · Python 环境一致性 · Python 项目 venv · uv 包管理器 · C/C++ 编译器 · Xcode CLT · 包管理器 · Unix 命令
+
+### 网络 (6)
+
+DNS 解析 · 镜像源配置 · npm 镜像源 · 代理配置 · AI 站点连通性 · SSL 证书
+
+### 权限 (6)
+
+管理员权限 · 防火墙端口 · Shell 脚本执行策略 · 终端编码兼容 · 终端配置 · 时间同步
+
+### 系统 (7)
+
+PATH 长度 · GPU 检测 · 长路径 · 路径中文字符 · 路径空格 · 临时目录磁盘 · GPU 内存压力
+
+### 包管理 (1)
+
+Homebrew
+
+## 修复系统
+
+内置 11 个自动修复器，采用三阶段安全流程：**预检 → 执行 → 验证**。
 
 ```bash
-docker run -it --rm \
-  --name mac-aicheck \
-  ghcr.io/gugug168/mac-aicheck:latest
+# 查看可修复项（不实际执行）
+mac-aicheck fix --dry-run
+
+# 仅修复绿色（低风险）项
+mac-aicheck fix --green
+
+# 修复绿色和黄色项
+mac-aicheck fix --green --yellow
 ```
 
-## AI 工具支持
+支持的修复器：Homebrew · Node.js 版本 · Python 版本 · Git/Git 身份 · npm 镜像 · Rosetta · 开发者模式 · 磁盘空间 · Xcode · uv 包管理器
 
-| 工具 | 安装命令 | 状态 |
-|------|---------|------|
-| Claude Code | `npm i -g @anthropic-ai/claude-code` | ✅ |
-| OpenClaw | `npm i -g openclaw` | ✅ |
-| Gemini CLI | `npm i -g @google/gemini-cli` | ✅ |
-| OpenCode | `npm i -g opencode-ai` | ✅ |
-| CCSwitch | `npm i -g ccswitch` | ✅ |
-| Cute Claude Hooks | `npm i -g cute-claude-hooks` | ✅ |
-| GitHub Copilot | `gh copilot` | ✅ 手动 |
-| Xcode CLT | `xcode-select --install` | ✅ GUI |
-
-## AICO EVO Agent
-
-mac-aicheck 支持 AICO EVO bounty 自主任务系统，在后台运行 Worker Daemon 自动领取并解决悬赏任务。
-
-### 绑定设备
+## 报告
 
 ```bash
-mac-aicheck agent bind
-```
+# 扫描并生成 HTML 报告
+mac-aicheck report --scan
 
-会打开浏览器引导你在 AICO EVO 平台完成设备授权。绑定码（6位数）保留用于兼容旧客户端流程。
+# 输出 JSON 格式
+mac-aicheck report --scan --format json
 
-### 查看连接状态
+# 指定输出文件
+mac-aicheck report --scan --output result.json
 
-```bash
-mac-aicheck agent status
-```
-
-返回设备绑定状态、authToken 有效性、Worker 自动化就绪情况。
-
-### 悬赏任务
-
-```bash
-# 查看平台推荐悬赏
-mac-aicheck agent bounty-recommended
-
-# 分页浏览所有悬赏
-mac-aicheck agent bounty-list --page 1 --limit 20
-
-# 手动领取悬赏
-mac-aicheck agent bounty-claim --id <bounty_id>
-
-# 提交解题结果
-mac-aicheck agent bounty-submit --id <bounty_id> --answer "解决方案"
-```
-
-### Worker Daemon
-
-Worker 在后台持续领取并执行悬赏任务，支持自动循环：
-
-```bash
-# 启动 Worker（自动进入悬赏循环）
-mac-aicheck agent worker start
-
-# 查看 Worker 状态（daemon 信息 + 自动化就绪标志）
-mac-aicheck agent worker status
-
-# 停止 Worker
-mac-aicheck agent worker stop
-```
-
-Worker 自动化前提：已绑定（`status` 显示 `connected:true`）、Worker 已启用（`workerEnabled:true`）、未暂停（`paused:false`）。
-
-### Hermes 错误上报
-
-mac-aicheck 可接收来自 Hermes Agent 的错误事件：
-
-```bash
-# 上报 Hermes 错误
-mac-aicheck agent report-error --json '{"type":"hermes-error","kind":"auth_failure","message":"401 invalid api key"}'
-
-# 查看 Hermes 集成状态
-mac-aicheck agent hermes-status
-
-# 配置 Hermes 日志路径
-mac-aicheck agent hermes-connect --log-path ~/.hermes/logs
-```
-
-详见 [docs/hermes-integration.md](docs/hermes-integration.md)。
-
-### Review 流程
-
-```bash
-# 查看当前需要 review 的项目
-mac-aicheck agent review-list
-
-# 确认 owner 验证
-mac-aicheck agent owner-check
-```
-
-## 目录结构
-
-```
-mac-aicheck/
-├── src/
-│   ├── index.ts              # CLI 入口 + HTTP 服务器
-│   ├── scanners/             # 核心 + 高级检测器
-│   │   ├── index.ts          # Scanner 注册表
-│   │   ├── types.ts          # 类型定义
-│   │   ├── claude-code.ts    # Claude Code
-│   │   ├── openclaw.ts       # OpenClaw
-│   │   ├── gemini-cli.ts     # Gemini CLI
-│   │   ├── homebrew.ts       # Homebrew
-│   │   ├── xcode.ts          # Xcode CLT
-│   │   └── ...
-│   ├── agent/                 # AICO EVO Agent 模块
-│   │   ├── index.ts          # Agent 主逻辑 + 所有子命令
-│   │   ├── embedded-agent-manager.ts  # Worker daemon 生命周期
-│   │   └── ...
-│   ├── scoring/
-│   │   └── calculator.ts     # 评分算法
-│   ├── installers/
-│   │   └── index.ts          # AI 工具安装器定义
-│   ├── api/
-│   │   └── aicoevo-client.ts # AICO EVO 上报客户端
-│   └── report/
-│       └── html.ts           # HTML 报告生成器
-├── tests/
-│   ├── agent-e2e.test.ts      # Agent E2E 测试（11 cases）
-│   └── hermes-hook.test.ts    # Hermes hook 测试（10 cases）
-├── dist/                     # 编译输出
-├── dist/web/                 # Web UI 运行时数据（如 scan-data.json）
-└── package.json
-```
-
-## 配置
-
-### 环境变量
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `AICO_EVO_URL` | `https://aicoevo.net` | AICO EVO API 地址 |
-| `AICO_EVO_TOKEN` | — | 上报认证 Token |
-| `PORT` | `7890` | Web 服务端口 |
-
-### Agent Lite
-
-```bash
-# Claude Code + OpenClaw 一起启用
-mac-aicheck agent enable --target all
-
-# 仅启用 OpenClaw 监控
-mac-aicheck agent enable --target openclaw
-
-# 在 macOS 真机上跑 OpenClaw 烟雾验收
-bash scripts/openclaw-smoke.sh
-```
-
-说明：
-- Claude Code 使用 `~/.claude/settings.json` 的 SessionStart/PostToolUse hooks。
-- OpenClaw 使用 shell hook 写入 `~/.zshrc` / `~/.bashrc` / `~/.bash_profile`。
-- 悬赏命令需要先运行 `mac-aicheck agent bind` 获取 Agent API Key。
-- `mac-aicheck agent bind` 的主流程会自动打开 AICOEVO 绑定页；如果浏览器里已经登录，只需在网页中点一次确认即可完成绑定。
-- 6 位绑定码仍保留为兼容兜底流程，仅在手动调试或旧客户端场景下使用，例如 `mac-aicheck agent bind --code 123456`。
-- Agent Protocol V2 的 P0 自动验证范围仅包含 owner validation（L0/L1）；当平台下发 `execution_task.kind=owner_repair` 且仍缺少 macOS rollback parity 时，MacAICheck 会显式阻断并返回 `blocked_pending_rollback_parity`，不会自动执行本地修复。
-
-### Phase 6 协议说明
-
-- MacAICheck 同时兼容 legacy `mode` 和 Phase 6 `lifecycle_state`，但 Phase 6 自动化行为只认服务端返回的 `lifecycle_state`、`risk_level`、`repair_capability`、`consent_state`、`rollback_state`。
-- 当前 MVP 只开放 L0/L1 自动验证；即使平台 payload 返回 `owner_repair` 或 `run_repair_now`，MacAICheck 在 backup/rollback parity 完成前也必须阻断，不执行 L2 自动修复。
-- 旧客户端或缺字段 payload 只能走“验证 / 人工提示”路径，不能默认升级到 L2 自动修复。
-- `L3` 永不静默执行。
-
-### 上报数据格式
-
-AICO EVO 使用与 WinAICheck 一致的格式：
-
-```json
-{
-  "timestamp": "2026-04-06T12:00:00.000Z",
-  "score": 85,
-  "results": [
-    { "id": "claude-code", "status": "pass", "message": "v2.1.92" }
-  ],
-  "systemInfo": {
-    "os": "darwin",
-    "version": "15.0",
-    "arch": "arm64",
-    "hostname": "Macmini"
-  }
-}
+# 扫描 + 修复 + 报告一步完成
+mac-aicheck report --scan --fix
 ```
 
 ## 开发
 
 ```bash
-# 开发模式（监听编译）
-npm run watch
-
-# 类型检查
-npm run typecheck
+git clone https://github.com/gugug168/mac-aicheck.git
+cd mac-aicheck
+npm install
+npm run build
 
 # 运行测试
 npm test
+
+# 本地开发扫描
+npm run scan
 ```
 
-## 微信交流群
+## 三端生态
 
-扫描二维码加入 MacAICheck 交流群，获取使用帮助和最新动态：
+| 平台 | 仓库 | 技术栈 |
+|------|------|--------|
+| macOS | [mac-aicheck](https://github.com/gugug168/mac-aicheck) | Node.js + TypeScript |
+| Windows | [WinAICheck](https://github.com/gugug168/WinAICheck) | Bun + TypeScript |
+| 服务端 | aicoevo-platform | FastAPI + Next.js + SQLite |
 
-<p align="center">
-  <img src=".github/assets/wechat-qr.png" alt="微信群二维码" width="200">
-</p>
+## 🤖 AI每日情报
 
-## 参与贡献
+作者维护的每日 AI 科技 Newsletter——每天 06:00 自动推送，用 AI 整理前两天最重要的 AI 动态，每条附深度解读。
 
-欢迎提交 Issue 和 Pull Request！详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+**免费样刊**：[github.com/gugug168/ai-daily-intelligence/issues/1](https://github.com/gugug168/ai-daily-intelligence/issues/1)
 
-## 许可
+**订阅**：微信搜索「知识星球」→ 搜索「AI每日情报」→ 加入
+早鸟价 ¥99/年（原价 ¥199/年）
 
-MIT License
+---
+
+## License
+
+MIT
